@@ -1,6 +1,7 @@
-"""Daily entry point: scan eBay + Craigslist for the watchlist, flag
-underpriced listings against comp medians, dedupe against prior runs, and
-email a ranked report.
+"""Daily entry point: scan eBay for the watchlist, flag underpriced
+listings against comp medians, dedupe against prior runs, and email a
+ranked report (plus ready-to-click Craigslist search links -- see
+craigslist_links.py for why Craigslist isn't scraped automatically).
 
 Run manually:   python -m src.main
 Dry run (no email sent, no dedupe file written):   python -m src.main --dry-run
@@ -16,7 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src import comps, craigslist_client, dedupe, ebay_client, emailer, matcher, report
+from src import comps, craigslist_links, dedupe, ebay_client, emailer, matcher, report
 from src.config import ROOT_DIR, load_config
 from src.models import Listing
 
@@ -97,31 +98,11 @@ def active_price_buckets(active_listings: list[Listing]) -> dict[tuple[str, str]
     return buckets
 
 
-def fetch_craigslist_active(cfg, players: list[str]) -> list[Listing]:
-    listings = []
-    with craigslist_client.CraigslistSession(headless=cfg.craigslist_headless) as session:
-        for player in players:
-            results = session.search(f"{player} card", cfg.craigslist_site, cfg.craigslist_category)
-            for result in results:
-                title = result["title"]
-                matched_player = matcher.match_player(title, [player])
-                if not matched_player or result["price"] is None:
-                    continue
-                card_type, grader, grade = matcher.detect_grading(title)
-                listings.append(
-                    Listing(
-                        id=result["link"],
-                        source="craigslist",
-                        title=title,
-                        price=result["price"],
-                        url=result["link"],
-                        player=matched_player,
-                        card_type=card_type,
-                        grader=grader,
-                        grade=grade,
-                    )
-                )
-    return listings
+def build_craigslist_links(cfg, players: list[str]) -> dict[str, str]:
+    return {
+        player: craigslist_links.search_url(f"{player} card", cfg.craigslist_site, cfg.craigslist_category)
+        for player in players
+    }
 
 
 def flag_deals(
@@ -164,15 +145,13 @@ def main() -> None:
     logger.info("Fetching eBay sold comps for %d players", len(cfg.players))
     sold_buckets = fetch_ebay_sold_buckets(cfg, cfg.players, token)
 
-    logger.info("Fetching Craigslist (%s) active listings for %d players", cfg.craigslist_site, len(cfg.players))
-    cl_active = fetch_craigslist_active(cfg, cfg.players)
+    cl_links = build_craigslist_links(cfg, cfg.players)
 
     fallback_buckets = active_price_buckets(ebay_active)
     comp_table = comps.build_comp_table(sold_buckets, cfg.ebay_min_comps_required, fallback_buckets)
     logger.info("Built comps for %d (player, card_type) buckets", len(comp_table))
 
-    all_active = ebay_active + cl_active
-    candidate_deals = flag_deals(all_active, comp_table, cfg.discount_threshold_pct)
+    candidate_deals = flag_deals(ebay_active, comp_table, cfg.discount_threshold_pct)
     logger.info("%d listing(s) clear the %.0f%% discount threshold", len(candidate_deals), cfg.discount_threshold_pct)
 
     seen = dedupe.load_seen(cfg.seen_listings_path)
@@ -184,7 +163,7 @@ def main() -> None:
             dedupe.record_flagged(deal.id, deal.price, seen, today_str)
     logger.info("%d deal(s) are new or price-dropped since last run", len(new_deals))
 
-    subject, body = report.build_report(new_deals, cfg.discount_threshold_pct, date.today())
+    subject, body = report.build_report(new_deals, cfg.discount_threshold_pct, date.today(), cl_links)
     subject = f"{cfg.email_subject_prefix} {subject}"
 
     if args.dry_run:

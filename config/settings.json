@@ -11,10 +11,9 @@
   },
 
   "craigslist": {
+    "_comment": "Craigslist blocks automated scraping outright (confirmed against both headless and headed browser automation), so these just build ready-to-click search links included in the daily email instead of being fetched automatically.",
     "site": "chicago",
-    "category": "sss",
-    "_headless_comment": "Craigslist blocks plain HTTP requests, so this drives a real (headless) Chromium instance instead. If headless still gets blocked, flip this to false -- it'll pop a visible browser window instead, which only works when run while logged into the Mac's desktop (not from cron unattended).",
-    "headless": true
+    "category": "sss"
   },
 
   "dedupe": {

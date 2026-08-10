@@ -51,3 +51,25 @@ def test_fallback_comp_is_labeled_in_report():
     listing = make_listing(comp_is_fallback=True)
     _, body = report.build_report([listing], 30, date(2026, 8, 10))
     assert "active-listing proxy" in body
+
+
+def test_craigslist_links_included_with_deals():
+    listing = make_listing()
+    links = {"Michael Jordan": "https://chicago.craigslist.org/search/sss?query=Michael+Jordan+card"}
+    _, body = report.build_report([listing], 30, date(2026, 8, 10), links)
+    assert "Craigslist quick check" in body
+    assert links["Michael Jordan"] in body
+
+
+def test_craigslist_links_included_with_no_deals():
+    links = {"Michael Jordan": "https://chicago.craigslist.org/search/sss?query=Michael+Jordan+card"}
+    subject, body = report.build_report([], 30, date(2026, 8, 10), links)
+    assert "No deals today" in subject
+    assert "Craigslist quick check" in body
+    assert links["Michael Jordan"] in body
+
+
+def test_no_craigslist_section_when_links_omitted():
+    listing = make_listing()
+    _, body = report.build_report([listing], 30, date(2026, 8, 10))
+    assert "Craigslist" not in body

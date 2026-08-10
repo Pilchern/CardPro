@@ -1,21 +1,30 @@
-"""Builds the plain-text email body from a ranked list of flagged deals."""
+"""Builds the plain-text email body from a ranked list of flagged eBay
+deals, plus a Craigslist quick-check section (see craigslist_links.py --
+Craigslist isn't scraped, just linked)."""
 from __future__ import annotations
 
 from datetime import date
+from typing import Optional
 
 from src.models import Listing
 
-SOURCE_LABELS = {"ebay": "eBay", "craigslist": "Craigslist"}
+SOURCE_LABELS = {"ebay": "eBay"}
 
 
 def rank_deals(deals: list[Listing]) -> list[Listing]:
     return sorted(deals, key=lambda d: d.pct_under_market or 0, reverse=True)
 
 
-def build_report(deals: list[Listing], threshold_pct: float, run_date: date) -> tuple[str, str]:
+def build_report(
+    deals: list[Listing],
+    threshold_pct: float,
+    run_date: date,
+    craigslist_links: Optional[dict[str, str]] = None,
+) -> tuple[str, str]:
     """Returns (subject, body)."""
     ranked = rank_deals(deals)
     date_str = run_date.strftime("%B %d, %Y")
+    cl_section = _build_craigslist_section(craigslist_links)
 
     if not ranked:
         subject = f"No deals today ({date_str})"
@@ -24,7 +33,7 @@ def build_report(deals: list[Listing], threshold_pct: float, run_date: date) -> 
             f"{threshold_pct:.0f}% under comp median threshold today.\n\n"
             f"This is an automated 'still running' confirmation, not an error."
         )
-        return subject, body
+        return subject, body + cl_section
 
     subject = f"{len(ranked)} card deal{'s' if len(ranked) != 1 else ''} found ({date_str})"
 
@@ -41,4 +50,15 @@ def build_report(deals: list[Listing], threshold_pct: float, run_date: date) -> 
             f"   {deal.url}\n"
         )
     lines.append(f"\nThreshold: flagging listings {threshold_pct:.0f}%+ under their comp median.")
-    return subject, "\n".join(lines)
+    return subject, "\n".join(lines) + cl_section
+
+
+def _build_craigslist_section(craigslist_links: Optional[dict[str, str]]) -> str:
+    if not craigslist_links:
+        return ""
+    lines = [
+        "\n\n---\nCraigslist quick check (not auto-scanned -- eyeball these yourself):"
+    ]
+    for player, url in craigslist_links.items():
+        lines.append(f"  {player}: {url}")
+    return "\n".join(lines)

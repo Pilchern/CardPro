@@ -1,20 +1,24 @@
 # Card Deal Scraper
 
-Daily scan of eBay + Craigslist for underpriced sports card listings on a
-watchlist, emailed to you as a ranked report.
+Daily scan of eBay for underpriced sports card listings on a watchlist,
+emailed to you as a ranked report -- plus ready-to-click Craigslist search
+links, since Craigslist can't be scraped automatically (see below).
 
 ## What it does
 
-1. For each player on your watchlist, pulls **active** listings from eBay
-   (Browse API) and Craigslist (RSS search, chicago.craigslist.org).
+1. For each player on your watchlist, pulls **active** eBay listings
+   (Browse API).
 2. Pulls eBay **sold** comps for the same players and computes the median
    sold price per (player, raw-vs-graded) bucket.
-3. Flags any active listing priced 30%+ (configurable) below its matched
-   comp median.
+3. Flags any active eBay listing priced 30%+ (configurable) below its
+   matched comp median.
 4. Drops anything already emailed in a prior run, unless its price has
    dropped further.
-5. Emails you a ranked report -- biggest discount first. If nothing
-   qualifies, you still get a short "nothing today" email, not silence.
+5. Emails you a ranked report -- biggest discount first -- plus a
+   Craigslist quick-check link per watchlist player so you can eyeball
+   that source yourself in a few seconds. If no eBay deals qualify, you
+   still get a short "nothing today" email (with the Craigslist links
+   still attached), not silence.
 
 ## Known limitation: eBay sold comps
 
@@ -33,22 +37,32 @@ and any deal flagged using the fallback is labeled in the report as
 difference at a glance. Once/if you get Insights access, real sold comps
 are used automatically and this note stops appearing.
 
-## Known limitation: Craigslist bot blocking
+## Why Craigslist isn't scraped
 
-Craigslist's bot mitigation hard-blocks plain HTTP requests (Python
-`requests`, `curl`) with a 403 "Your request has been blocked" page --
-confirmed against a realistic browser User-Agent too, so it isn't a header
-problem. A real browser on the same network loads the same URL fine, which
-means it's detecting something about the request itself (TLS/JS
-fingerprint), not blocking the IP.
+The original plan was to hit Craigslist's RSS search feed the same way as
+eBay. In testing, Craigslist's bot mitigation turned out to hard-block
+automated access outright:
 
-The fix: `craigslist_client.py` drives a real (headless) Chromium instance
-via Playwright instead of raw HTTP, so it presents a genuine browser
-fingerprint. This requires the extra one-time `playwright install chromium`
-step below. If headless mode ever gets blocked too, flip
-`craigslist.headless` to `false` in `config/settings.json` -- it'll open a
-visible browser window instead (only works while logged into the Mac's
-desktop, not from an unattended cron run).
+- Plain HTTP requests (Python `requests`, `curl`) got a 403 "Your request
+  has been blocked" page (with a `blockID`), even with a fully realistic
+  browser User-Agent -- ruling out a simple header problem.
+- A real, manually-used browser on the same network loaded the same URL
+  fine -- ruling out an IP-level block.
+- Driving an actual Chromium instance via Playwright (both headless *and*
+  headed/visible) got the **same** block page -- meaning Craigslist is
+  fingerprinting the browser-automation layer itself (Playwright/CDP), not
+  just headers or rendering mode.
+
+Getting past that would require deliberately defeating Craigslist's
+anti-automation controls (spoofing `navigator.webdriver`, hiding CDP
+artifacts, etc.). That's a different thing than presenting as a normal
+browser, and isn't something this project does, regardless of how low-
+stakes a personal card-deal script is.
+
+Instead, `src/craigslist_links.py` just builds a plain search URL per
+watchlist player, and the daily email includes them under a "Craigslist
+quick check" section so you can skim Craigslist yourself in a few
+seconds. No scraping, no automation, fully within Craigslist's terms.
 
 ## Setup
 
@@ -57,25 +71,16 @@ desktop, not from an unattended cron run).
 eBay developer account approval can take a day or so. Everything below
 except step 1 (eBay keys) can be done in the meantime:
 
-- **Set up Gmail now** (step 2) and verify it works standalone:
-  ```bash
-  cp .env.example .env   # fill in just the GMAIL_* / EMAIL_TO lines for now
-  pip install -r requirements.txt
-  python -m scripts.test_email
-  ```
-  Sends one real test email using only your Gmail credentials -- no eBay
-  keys required.
+```bash
+cp .env.example .env   # fill in just the GMAIL_* / EMAIL_TO lines for now
+pip install -r requirements.txt
+python -m scripts.test_email
+```
 
-- **Verify Craigslist scraping** against your real watchlist right now:
-  ```bash
-  playwright install chromium   # one-time, downloads a real Chromium build
-  python -m scripts.test_craigslist
-  ```
-  Runs the actual search per player through a real (headless) browser and
-  prints what it would match (title, parsed price, detected grading,
-  link) -- no eBay or email involved, nothing written to disk. See "Known
-  limitation: Craigslist bot blocking" above for why this needs a real
-  browser instead of a plain HTTP request.
+Sends one real test email using only your Gmail credentials -- no eBay
+keys required. (Craigslist needs no separate testing now that it's just
+link generation -- you'll see the links in any report the scraper
+produces, including a `--dry-run`.)
 
 Once your eBay keys land, drop them into `.env` and pick up at step 4
 below.
@@ -109,7 +114,6 @@ cd cardpro
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-playwright install chromium   # downloads a real Chromium build for Craigslist
 
 cp .env.example .env
 # then edit .env and fill in:
@@ -171,8 +175,8 @@ your Mac's cron may need Full Disk Access under System Settings > Privacy
 ## Running tests
 
 The matching/comps/dedupe/report logic and the full daily-run orchestration
-(with eBay/Craigslist/email mocked out) are covered by a pytest suite that
-needs no real credentials:
+(with eBay/email mocked out) are covered by a pytest suite that needs no
+real credentials:
 
 ```bash
 pip install -r requirements-dev.txt
@@ -192,12 +196,8 @@ pytest
 Add or remove names freely, one per line in the `players` array. Matching
 is case-insensitive and requires every word of the name to appear in the
 listing title (e.g. "Walter Payton" requires both "walter" and "payton"
-somewhere in the title) -- no code changes needed.
-
-The list currently ships with the Chicago legends only. The "current
-Bulls/Bears" slot from the original spec is intentionally left for you to
-fill in -- active rosters change (trades, cuts, draft picks) often enough
-that hardcoding them risked shipping stale names.
+somewhere in the title) -- no code changes needed. The same list drives
+both the eBay searches and the Craigslist quick-check links.
 
 ### Discount threshold -- `config/settings.json`
 
@@ -215,20 +215,22 @@ deal. Lower = more (weaker) deals reported; higher = fewer, stronger ones.
 | `ebay.category_id` | eBay category to search within (defaults to `212`, "Sports Trading Cards"). eBay renumbers categories occasionally -- if results look off-topic, re-check the current ID via `python -m scripts.lookup_ebay_category`. |
 | `ebay.sold_lookback_days` | How far back to pull sold comps (default 60 days). |
 | `ebay.min_comps_required` | Minimum sold (or fallback) data points needed before trusting a median (default 3). Buckets below this are skipped entirely rather than flagged off a shaky number. |
-| `craigslist.site` | Which Craigslist subdomain to search (default `chicago`). |
-| `craigslist.category` | Craigslist search category (default `sss`, all-for-sale). |
-| `craigslist.headless` | Whether the Craigslist browser runs headless (default `true`). Set `false` only if headless mode itself gets blocked -- requires being logged into the Mac's desktop, won't work from unattended cron. |
+| `craigslist.site` | Which Craigslist subdomain the quick-check links point at (default `chicago`). |
+| `craigslist.category` | Craigslist search category for those links (default `sss`, all-for-sale). |
 | `dedupe.prune_after_days` | How long a listing stays in the "already seen" file after its last flag before it's forgotten (default 120). |
 
 ## How dedupe works
 
 `data/seen_listings.json` (gitignored -- it's local run state, not code)
-tracks every listing ID (eBay itemId, or the Craigslist URL) that's ever
-been emailed, along with the price it was flagged at. A listing is
-included in the report again only if:
+tracks every eBay listing ID that's ever been emailed, along with the
+price it was flagged at. A listing is included in the report again only
+if:
 
 - it's never been flagged before, **or**
 - its price has dropped further since the last time it was flagged.
+
+(Craigslist links aren't deduped -- they're static search URLs, not
+individual listings, so the same links just appear in every email.)
 
 If you ever want to re-see everything (e.g. after changing the threshold),
 delete or edit `data/seen_listings.json`.
@@ -244,12 +246,12 @@ src/
   models.py              -- Listing dataclass
   matcher.py              -- title -> player, graded/raw detection
   ebay_client.py           -- eBay OAuth, active search, sold comps
-  craigslist_client.py      -- RSS search
-  comps.py                   -- median comp calculation
-  dedupe.py                   -- seen-listings tracking
-  report.py                    -- ranked report text
-  emailer.py                    -- Gmail SMTP send
-  main.py                        -- orchestrates the daily run
+  craigslist_links.py       -- builds quick-check search URLs (no scraping)
+  comps.py                    -- median comp calculation
+  dedupe.py                    -- seen-listings tracking
+  report.py                     -- ranked report text + Craigslist links
+  emailer.py                     -- Gmail SMTP send
+  main.py                         -- orchestrates the daily run
 data/
   seen_listings.json (gitignored) -- dedupe state
 logs/
@@ -258,14 +260,16 @@ scripts/
   install_cron.sh -- crontab installer helper
   lookup_ebay_category.py -- verifies the eBay category ID with real credentials
   test_email.py -- standalone Gmail send check (no eBay needed)
-  test_craigslist.py -- standalone Craigslist search check (no eBay needed)
 tests/
-  pytest suite covering matcher/comps/dedupe/report + a mocked full-run test
+  pytest suite covering matcher/comps/dedupe/report/craigslist_links + a
+  mocked full-run test
 ```
 
 ## Explicitly out of scope (v1)
 
 - Facebook Marketplace scraping.
+- Automated Craigslist scraping -- see "Why Craigslist isn't scraped"
+  above; it's quick-check links instead.
 - Fuzzy/ML-based title matching or comp modeling -- matching is
   keyword-based and comps are plain medians on purpose, so you can see
   exactly why something was (or wasn't) flagged.

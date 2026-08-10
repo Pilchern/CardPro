@@ -1,6 +1,7 @@
-"""End-to-end orchestration test with the network layer mocked out --
-confirms fetch -> comp-building -> flagging -> dedupe -> report wiring
-works together, without hitting real eBay/Craigslist/Gmail.
+"""End-to-end orchestration test with the eBay/email network layer mocked
+out -- confirms fetch -> comp-building -> flagging -> dedupe -> report
+wiring works together, without hitting real eBay/Gmail. Craigslist link
+generation is a pure function (no network), so it isn't mocked.
 """
 from __future__ import annotations
 
@@ -10,7 +11,7 @@ from unittest import mock
 
 import pytest
 
-from src import craigslist_client, ebay_client, emailer
+from src import ebay_client, emailer
 
 
 @pytest.fixture
@@ -28,7 +29,7 @@ def project(tmp_path, monkeypatch):
                     "sold_lookback_days": 60,
                     "min_comps_required": 3,
                 },
-                "craigslist": {"site": "chicago", "category": "sss", "headless": True},
+                "craigslist": {"site": "chicago", "category": "sss"},
                 "dedupe": {"seen_listings_path": "data/seen_listings.json", "prune_after_days": 120},
                 "email": {"subject_prefix": "[Card Deals]"},
             }
@@ -67,28 +68,6 @@ def fake_sold(query, token, category_id, marketplace_id, lookback_days, limit=10
     return [{"title": "Michael Jordan PSA 9 rookie", "price": {"value": p}} for p in ("9000", "10000", "9500")]
 
 
-class FakeCraigslistSession:
-    """Stands in for craigslist_client.CraigslistSession -- same context-
-    manager + search() interface, no real browser involved."""
-
-    def __init__(self, headless: bool = True):
-        self.headless = headless
-
-    def search(self, term, site, category="sss"):
-        if "Michael Jordan" not in term:
-            return []
-        return [{"title": "Michael Jordan rookie card PSA 9 - $6000", "link": "http://cl/1", "price": 6000.0}]
-
-    def close(self):
-        pass
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc_info):
-        self.close()
-
-
 def test_full_run_flags_underpriced_listings_and_emails_report(project, monkeypatch):
     sent = {}
 
@@ -99,24 +78,24 @@ def test_full_run_flags_underpriced_listings_and_emails_report(project, monkeypa
     monkeypatch.setattr(ebay_client, "get_app_token", lambda cid, secret: "fake-token")
     monkeypatch.setattr(ebay_client, "search_active_listings", fake_active)
     monkeypatch.setattr(ebay_client, "search_sold_items", fake_sold)
-    monkeypatch.setattr(craigslist_client, "CraigslistSession", FakeCraigslistSession)
     monkeypatch.setattr(emailer, "send_email", fake_send_email)
     monkeypatch.setattr("sys.argv", ["main.py"])
 
     project.main()
 
-    assert "2 card deals found" in sent["subject"]
+    assert "1 card deal found" in sent["subject"]
     assert "eBay" in sent["body"]
-    assert "Craigslist" in sent["body"]
     # the $10 "raw" reprint has no raw comps (all sold comps were graded) so it must NOT be flagged
     assert "reprint" not in sent["body"]
+    # Craigslist isn't scraped, but a quick-check link for the player should still be included
+    assert "Craigslist quick check" in sent["body"]
+    assert "chicago.craigslist.org/search/sss" in sent["body"]
 
 
 def test_second_run_with_unchanged_prices_reports_nothing_new(project, monkeypatch):
     monkeypatch.setattr(ebay_client, "get_app_token", lambda cid, secret: "fake-token")
     monkeypatch.setattr(ebay_client, "search_active_listings", fake_active)
     monkeypatch.setattr(ebay_client, "search_sold_items", fake_sold)
-    monkeypatch.setattr(craigslist_client, "CraigslistSession", FakeCraigslistSession)
     monkeypatch.setattr("sys.argv", ["main.py"])
 
     sent_subjects = []
@@ -134,7 +113,6 @@ def test_dry_run_does_not_send_email_or_write_dedupe_file(project, monkeypatch, 
     monkeypatch.setattr(ebay_client, "get_app_token", lambda cid, secret: "fake-token")
     monkeypatch.setattr(ebay_client, "search_active_listings", fake_active)
     monkeypatch.setattr(ebay_client, "search_sold_items", fake_sold)
-    monkeypatch.setattr(craigslist_client, "CraigslistSession", FakeCraigslistSession)
     monkeypatch.setattr(emailer, "send_email", mock.Mock(side_effect=AssertionError("should not send in dry-run")))
     monkeypatch.setattr("sys.argv", ["main.py", "--dry-run"])
 
@@ -144,4 +122,4 @@ def test_dry_run_does_not_send_email_or_write_dedupe_file(project, monkeypatch, 
 
     cfg = load_config()
     assert not cfg.seen_listings_path.exists()
-    assert "card deals found" in capsys.readouterr().out
+    assert "card deal found" in capsys.readouterr().out

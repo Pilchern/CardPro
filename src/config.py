@@ -31,7 +31,6 @@ class Config:
 
     craigslist_site: str
     craigslist_category: str
-    craigslist_headless: bool
 
     seen_listings_path: Path
     prune_after_days: int
@@ -73,7 +72,6 @@ def load_config() -> Config:
         ebay_min_comps_required=int(settings["ebay"]["min_comps_required"]),
         craigslist_site=settings["craigslist"]["site"],
         craigslist_category=settings["craigslist"]["category"],
-        craigslist_headless=bool(settings["craigslist"].get("headless", True)),
         seen_listings_path=ROOT_DIR / settings["dedupe"]["seen_listings_path"],
         prune_after_days=int(settings["dedupe"]["prune_after_days"]),
         email_subject_prefix=settings["email"]["subject_prefix"],
