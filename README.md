@@ -35,6 +35,31 @@ are used automatically and this note stops appearing.
 
 ## Setup
 
+### While you wait on eBay approval
+
+eBay developer account approval can take a day or so. Everything below
+except step 1 (eBay keys) can be done in the meantime:
+
+- **Set up Gmail now** (step 2) and verify it works standalone:
+  ```bash
+  cp .env.example .env   # fill in just the GMAIL_* / EMAIL_TO lines for now
+  pip install -r requirements.txt
+  python -m scripts.test_email
+  ```
+  Sends one real test email using only your Gmail credentials -- no eBay
+  keys required.
+
+- **Verify Craigslist scraping** against your real watchlist right now:
+  ```bash
+  python -m scripts.test_craigslist
+  ```
+  Runs the actual RSS search per player and prints what it would match
+  (title, parsed price, detected grading, link) -- no eBay or email
+  involved, nothing written to disk.
+
+Once your eBay keys land, drop them into `.env` and pick up at step 4
+below.
+
 ### 1. Get an eBay developer account + keys
 
 - Sign up at https://developer.ebay.com (free).
@@ -210,6 +235,8 @@ logs/
 scripts/
   install_cron.sh -- crontab installer helper
   lookup_ebay_category.py -- verifies the eBay category ID with real credentials
+  test_email.py -- standalone Gmail send check (no eBay needed)
+  test_craigslist.py -- standalone Craigslist search check (no eBay needed)
 tests/
   pytest suite covering matcher/comps/dedupe/report + a mocked full-run test
 ```
