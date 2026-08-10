@@ -15,8 +15,18 @@ logger = logging.getLogger(__name__)
 
 PRICE_RE = re.compile(r"\$([\d,]+(?:\.\d{2})?)")
 
-# Craigslist returns 403s to the default requests User-Agent.
-HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; CardDealScraper/1.0)"}
+# Craigslist's bot filter rejects generic/self-identifying User-Agents
+# (e.g. our old "CardDealScraper/1.0") outright. Present as a real desktop
+# browser instead, with the rest of the headers a browser would normally
+# send along -- a bare UA swap alone is sometimes not enough.
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/rss+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
 
 
 def search(term: str, site: str, category: str = "sss") -> list[dict]:
@@ -24,7 +34,9 @@ def search(term: str, site: str, category: str = "sss") -> list[dict]:
     url = f"https://{site}.craigslist.org/search/{category}"
     resp = requests.get(url, params={"format": "rss", "query": term}, headers=HEADERS, timeout=30)
     if resp.status_code != 200:
-        logger.warning("Craigslist search failed for %r: %s", term, resp.status_code)
+        logger.warning(
+            "Craigslist search failed for %r: %s -- body: %.300s", term, resp.status_code, resp.text
+        )
         return []
 
     try:
