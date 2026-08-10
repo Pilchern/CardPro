@@ -1,0 +1,189 @@
+# Card Deal Scraper
+
+Daily scan of eBay + Craigslist for underpriced sports card listings on a
+watchlist, emailed to you as a ranked report.
+
+## What it does
+
+1. For each player on your watchlist, pulls **active** listings from eBay
+   (Browse API) and Craigslist (RSS search, chicago.craigslist.org).
+2. Pulls eBay **sold** comps for the same players and computes the median
+   sold price per (player, raw-vs-graded) bucket.
+3. Flags any active listing priced 30%+ (configurable) below its matched
+   comp median.
+4. Drops anything already emailed in a prior run, unless its price has
+   dropped further.
+5. Emails you a ranked report -- biggest discount first. If nothing
+   qualifies, you still get a short "nothing today" email, not silence.
+
+## Known limitation: eBay sold comps
+
+eBay's Browse API only returns **active** listings. Real historical sold
+prices come from eBay's **Marketplace Insights API**, which is a
+limited-release API -- a standard free developer account is not granted
+access to it by default; you have to apply for it separately in the eBay
+developer portal.
+
+Until/unless that access is approved, this scraper falls back to using the
+median price of **currently active** listings for a player/card-type as a
+rough stand-in for "market value." That's a weaker signal than real sold
+comps (it reflects what sellers are asking, not what buyers actually paid),
+and any deal flagged using the fallback is labeled in the report as
+`[comp = active-listing proxy, not real sold data]` so you can tell the
+difference at a glance. Once/if you get Insights access, real sold comps
+are used automatically and this note stops appearing.
+
+## Setup
+
+### 1. Get an eBay developer account + keys
+
+- Sign up at https://developer.ebay.com (free).
+- Create an application to get a production **Client ID** and **Client
+  Secret** (Browse API access is included by default; Marketplace Insights
+  requires separately applying for access, see above).
+
+### 2. Get a Gmail App Password
+
+This uses your own Gmail account via SMTP -- no third-party email service,
+no extra account to manage, free. Tradeoff: deliverability/analytics are
+whatever Gmail gives you, which is fine for a single daily email to
+yourself.
+
+- Enable 2-Step Verification on the sending Gmail account if it isn't
+  already: https://myaccount.google.com/security
+- Generate an App Password: https://myaccount.google.com/apppasswords
+  (choose "Mail" / "Other", copy the 16-character password it gives you).
+
+### 3. Install
+
+```bash
+cd ~/Documents/AI-Lab
+git clone <this-repo-url> cardpro
+cd cardpro
+
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+cp .env.example .env
+# then edit .env and fill in:
+#   EBAY_CLIENT_ID, EBAY_CLIENT_SECRET
+#   GMAIL_ADDRESS, GMAIL_APP_PASSWORD
+#   EMAIL_TO (defaults to GMAIL_ADDRESS if left out)
+```
+
+### 4. Test it
+
+```bash
+python -m src.main --dry-run
+```
+
+This prints the report to your terminal instead of emailing it, and does
+**not** touch the dedupe file -- safe to run repeatedly while testing.
+Check `logs/scraper.log` for details if something looks off (e.g. a 403
+from eBay usually means the app doesn't have Marketplace Insights access
+yet -- see the limitation above, it's expected and handled).
+
+Once a dry run looks right, run it for real:
+
+```bash
+python -m src.main
+```
+
+### 5. Install the daily cron job
+
+```bash
+bash scripts/install_cron.sh        # defaults to 8:00am daily
+bash scripts/install_cron.sh 7 30   # or specify HOUR MINUTE, e.g. 7:30am
+```
+
+This adds (or replaces) a single crontab entry that runs the scraper daily
+using this project's virtualenv if present, and appends output to
+`logs/cron.log`. Verify with `crontab -l`. To remove it later, run
+`crontab -e` and delete the line marked `# card-deal-scraper`.
+
+**Note on macOS + cron:** if `logs/cron.log` stays empty and nothing runs,
+your Mac's cron may need Full Disk Access under System Settings > Privacy
+& Security (this varies by macOS version) -- grant it to `/usr/sbin/cron`.
+
+## Configuring
+
+### Watchlist -- `config/watchlist.json`
+
+```json
+{
+  "players": ["Michael Jordan", "Walter Payton", "..."]
+}
+```
+
+Add or remove names freely, one per line in the `players` array. Matching
+is case-insensitive and requires every word of the name to appear in the
+listing title (e.g. "Walter Payton" requires both "walter" and "payton"
+somewhere in the title) -- no code changes needed.
+
+### Discount threshold -- `config/settings.json`
+
+```json
+"discount_threshold_pct": 30
+```
+
+Change `30` to whatever percent-under-comp-median you want to flag as a
+deal. Lower = more (weaker) deals reported; higher = fewer, stronger ones.
+
+### Other tunables in `config/settings.json`
+
+| Key | What it does |
+|---|---|
+| `ebay.category_id` | eBay category to search within (defaults to `212`, "Sports Trading Cards"). eBay renumbers categories occasionally -- if results look off-topic, re-check the current ID via eBay's Taxonomy API. |
+| `ebay.sold_lookback_days` | How far back to pull sold comps (default 60 days). |
+| `ebay.min_comps_required` | Minimum sold (or fallback) data points needed before trusting a median (default 3). Buckets below this are skipped entirely rather than flagged off a shaky number. |
+| `craigslist.site` | Which Craigslist subdomain to search (default `chicago`). |
+| `craigslist.category` | Craigslist search category (default `sss`, all-for-sale). |
+| `dedupe.prune_after_days` | How long a listing stays in the "already seen" file after its last flag before it's forgotten (default 120). |
+
+## How dedupe works
+
+`data/seen_listings.json` (gitignored -- it's local run state, not code)
+tracks every listing ID (eBay itemId, or the Craigslist URL) that's ever
+been emailed, along with the price it was flagged at. A listing is
+included in the report again only if:
+
+- it's never been flagged before, **or**
+- its price has dropped further since the last time it was flagged.
+
+If you ever want to re-see everything (e.g. after changing the threshold),
+delete or edit `data/seen_listings.json`.
+
+## Project layout
+
+```
+config/
+  watchlist.json      -- editable player list
+  settings.json        -- threshold + API/site tuning
+src/
+  config.py             -- loads .env + config JSON
+  models.py              -- Listing dataclass
+  matcher.py              -- title -> player, graded/raw detection
+  ebay_client.py           -- eBay OAuth, active search, sold comps
+  craigslist_client.py      -- RSS search
+  comps.py                   -- median comp calculation
+  dedupe.py                   -- seen-listings tracking
+  report.py                    -- ranked report text
+  emailer.py                    -- Gmail SMTP send
+  main.py                        -- orchestrates the daily run
+data/
+  seen_listings.json (gitignored) -- dedupe state
+logs/
+  scraper.log, cron.log (gitignored) -- run logs
+scripts/
+  install_cron.sh -- crontab installer helper
+```
+
+## Explicitly out of scope (v1)
+
+- Facebook Marketplace scraping.
+- Fuzzy/ML-based title matching or comp modeling -- matching is
+  keyword-based and comps are plain medians on purpose, so you can see
+  exactly why something was (or wasn't) flagged.
+- Sub-bucketing comps by exact grade (e.g. PSA 9 vs PSA 10 priced
+  separately) -- grading is only split raw vs. graded for now.

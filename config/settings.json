@@ -1,0 +1,26 @@
+{
+  "discount_threshold_pct": 30,
+
+  "ebay": {
+    "_comment": "category_id 212 is eBay's 'Sports Trading Cards' category as of 2026. eBay occasionally renumbers categories -- if active-listing results look wrong, look up the current ID via the Taxonomy API (GET /commerce/taxonomy/v1/category_tree/0) and update this value.",
+    "category_id": "212",
+    "marketplace_id": "EBAY_US",
+    "active_listing_limit_per_player": 50,
+    "sold_lookback_days": 60,
+    "min_comps_required": 3
+  },
+
+  "craigslist": {
+    "site": "chicago",
+    "category": "sss"
+  },
+
+  "dedupe": {
+    "seen_listings_path": "data/seen_listings.json",
+    "prune_after_days": 120
+  },
+
+  "email": {
+    "subject_prefix": "[Card Deals]"
+  }
+}
