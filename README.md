@@ -175,6 +175,13 @@ using this project's virtualenv if present, and appends output to
 your Mac's cron may need Full Disk Access under System Settings > Privacy
 & Security (this varies by macOS version) -- grant it to `/usr/sbin/cron`.
 
+**Note on logs:** `logs/scraper.log` (the script's own detailed log) is
+capped at ~2MB with 5 rotated backups, so it won't grow unbounded over
+months of daily runs. `logs/cron.log` (cron's redirected stdout/stderr,
+just a few lines a day) isn't rotated -- it's tiny enough not to matter,
+but nothing stops you from truncating it (`> logs/cron.log`) whenever you
+feel like it.
+
 ## Running tests
 
 The matching/comps/dedupe/report logic and the full daily-run orchestration
@@ -185,6 +192,10 @@ real credentials:
 pip install -r requirements-dev.txt
 pytest
 ```
+
+This same suite runs automatically on every push via GitHub Actions
+(`.github/workflows/tests.yml`, against Python 3.9 and 3.12) -- no
+credentials needed there either, since everything external is mocked.
 
 ## Configuring
 

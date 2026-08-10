@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import importlib
 import json
+import logging
+from logging.handlers import RotatingFileHandler
 from unittest import mock
 
 import pytest
@@ -156,3 +158,18 @@ def test_dry_run_does_not_send_failure_email_on_error(project, monkeypatch):
 
     with pytest.raises(RuntimeError, match="eBay is down"):
         project.main()
+
+
+def test_logging_is_rotated_not_unbounded(project, monkeypatch):
+    monkeypatch.setattr(ebay_client, "get_app_token", lambda cid, secret: "fake-token")
+    monkeypatch.setattr(ebay_client, "search_active_listings", fake_active)
+    monkeypatch.setattr(ebay_client, "search_sold_items", fake_sold)
+    monkeypatch.setattr(emailer, "send_email", lambda *a, **kw: None)
+    monkeypatch.setattr("sys.argv", ["main.py"])
+
+    project.main()
+
+    file_handlers = [h for h in logging.getLogger().handlers if isinstance(h, RotatingFileHandler)]
+    assert len(file_handlers) == 1
+    assert file_handlers[0].maxBytes == project.LOG_MAX_BYTES
+    assert file_handlers[0].backupCount == project.LOG_BACKUP_COUNT

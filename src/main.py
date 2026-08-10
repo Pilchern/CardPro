@@ -13,6 +13,7 @@ import logging
 import sys
 from collections import defaultdict
 from datetime import date, datetime, timezone
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -23,13 +24,20 @@ from src.models import Listing
 
 LOG_PATH = ROOT_DIR / "logs" / "scraper.log"
 
+# Caps scraper.log at ~2MB, keeping 5 rotated backups (scraper.log.1 .. .5)
+# so a script that runs once a day forever doesn't grow the log unbounded.
+LOG_MAX_BYTES = 2_000_000
+LOG_BACKUP_COUNT = 5
+
 
 def setup_logging() -> None:
     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    file_handler = RotatingFileHandler(LOG_PATH, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUP_COUNT)
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        handlers=[logging.FileHandler(LOG_PATH), logging.StreamHandler(sys.stdout)],
+        handlers=[file_handler, logging.StreamHandler(sys.stdout)],
+        force=True,
     )
 
 
