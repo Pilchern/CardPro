@@ -8,7 +8,9 @@ dedupe file.
 
 Usage:
     python -m scripts.test_craigslist
-    python -m scripts.test_craigslist "Michael Jordan"   # just one player
+    python -m scripts.test_craigslist "Michael Jordan"     # just one player
+    python -m scripts.test_craigslist --show                # visible browser window, for debugging
+    python -m scripts.test_craigslist --show "Michael Jordan"
 """
 from __future__ import annotations
 
@@ -29,26 +31,35 @@ def main() -> None:
     with open(ROOT_DIR / "config" / "settings.json") as f:
         cl_settings = json.load(f)["craigslist"]
 
-    if len(sys.argv) > 1:
-        players = [" ".join(sys.argv[1:])]
+    args = sys.argv[1:]
+    show = "--show" in args
+    args = [a for a in args if a != "--show"]
+
+    if args:
+        players = [" ".join(args)]
 
     site, category = cl_settings["site"], cl_settings["category"]
-    print(f"Searching {site}.craigslist.org (category={category}) for {len(players)} player(s)...\n")
+    headless = not show and bool(cl_settings.get("headless", True))
+    print(
+        f"Searching {site}.craigslist.org (category={category}) for {len(players)} "
+        f"player(s), headless={headless}...\n"
+    )
 
     total = 0
-    for player in players:
-        term = f"{player} card"
-        results = craigslist_client.search(term, site, category)
-        matched = [r for r in results if matcher.match_player(r["title"], [player]) and r["price"] is not None]
-        total += len(matched)
+    with craigslist_client.CraigslistSession(headless=headless) as session:
+        for player in players:
+            term = f"{player} card"
+            results = session.search(term, site, category)
+            matched = [r for r in results if matcher.match_player(r["title"], [player]) and r["price"] is not None]
+            total += len(matched)
 
-        print(f"--- {player} ({len(results)} raw hits, {len(matched)} matched with a price) ---")
-        for r in matched:
-            card_type, grader, grade = matcher.detect_grading(r["title"])
-            grading = f"{grader} {grade}" if card_type == "graded" else "raw"
-            print(f"  ${r['price']:>8.2f}  [{grading:>8}]  {r['title']}")
-            print(f"             {r['link']}")
-        print()
+            print(f"--- {player} ({len(results)} raw hits, {len(matched)} matched with a price) ---")
+            for r in matched:
+                card_type, grader, grade = matcher.detect_grading(r["title"])
+                grading = f"{grader} {grade}" if card_type == "graded" else "raw"
+                print(f"  ${r['price']:>8.2f}  [{grading:>8}]  {r['title']}")
+                print(f"             {r['link']}")
+            print()
 
     print(f"Total matched listings across all players: {total}")
 

@@ -33,6 +33,23 @@ and any deal flagged using the fallback is labeled in the report as
 difference at a glance. Once/if you get Insights access, real sold comps
 are used automatically and this note stops appearing.
 
+## Known limitation: Craigslist bot blocking
+
+Craigslist's bot mitigation hard-blocks plain HTTP requests (Python
+`requests`, `curl`) with a 403 "Your request has been blocked" page --
+confirmed against a realistic browser User-Agent too, so it isn't a header
+problem. A real browser on the same network loads the same URL fine, which
+means it's detecting something about the request itself (TLS/JS
+fingerprint), not blocking the IP.
+
+The fix: `craigslist_client.py` drives a real (headless) Chromium instance
+via Playwright instead of raw HTTP, so it presents a genuine browser
+fingerprint. This requires the extra one-time `playwright install chromium`
+step below. If headless mode ever gets blocked too, flip
+`craigslist.headless` to `false` in `config/settings.json` -- it'll open a
+visible browser window instead (only works while logged into the Mac's
+desktop, not from an unattended cron run).
+
 ## Setup
 
 ### While you wait on eBay approval
@@ -51,11 +68,14 @@ except step 1 (eBay keys) can be done in the meantime:
 
 - **Verify Craigslist scraping** against your real watchlist right now:
   ```bash
+  playwright install chromium   # one-time, downloads a real Chromium build
   python -m scripts.test_craigslist
   ```
-  Runs the actual RSS search per player and prints what it would match
-  (title, parsed price, detected grading, link) -- no eBay or email
-  involved, nothing written to disk.
+  Runs the actual search per player through a real (headless) browser and
+  prints what it would match (title, parsed price, detected grading,
+  link) -- no eBay or email involved, nothing written to disk. See "Known
+  limitation: Craigslist bot blocking" above for why this needs a real
+  browser instead of a plain HTTP request.
 
 Once your eBay keys land, drop them into `.env` and pick up at step 4
 below.
@@ -89,6 +109,7 @@ cd cardpro
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+playwright install chromium   # downloads a real Chromium build for Craigslist
 
 cp .env.example .env
 # then edit .env and fill in:
@@ -196,6 +217,7 @@ deal. Lower = more (weaker) deals reported; higher = fewer, stronger ones.
 | `ebay.min_comps_required` | Minimum sold (or fallback) data points needed before trusting a median (default 3). Buckets below this are skipped entirely rather than flagged off a shaky number. |
 | `craigslist.site` | Which Craigslist subdomain to search (default `chicago`). |
 | `craigslist.category` | Craigslist search category (default `sss`, all-for-sale). |
+| `craigslist.headless` | Whether the Craigslist browser runs headless (default `true`). Set `false` only if headless mode itself gets blocked -- requires being logged into the Mac's desktop, won't work from unattended cron. |
 | `dedupe.prune_after_days` | How long a listing stays in the "already seen" file after its last flag before it's forgotten (default 120). |
 
 ## How dedupe works

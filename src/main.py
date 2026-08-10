@@ -99,27 +99,28 @@ def active_price_buckets(active_listings: list[Listing]) -> dict[tuple[str, str]
 
 def fetch_craigslist_active(cfg, players: list[str]) -> list[Listing]:
     listings = []
-    for player in players:
-        results = craigslist_client.search(f"{player} card", cfg.craigslist_site, cfg.craigslist_category)
-        for result in results:
-            title = result["title"]
-            matched_player = matcher.match_player(title, [player])
-            if not matched_player or result["price"] is None:
-                continue
-            card_type, grader, grade = matcher.detect_grading(title)
-            listings.append(
-                Listing(
-                    id=result["link"],
-                    source="craigslist",
-                    title=title,
-                    price=result["price"],
-                    url=result["link"],
-                    player=matched_player,
-                    card_type=card_type,
-                    grader=grader,
-                    grade=grade,
+    with craigslist_client.CraigslistSession(headless=cfg.craigslist_headless) as session:
+        for player in players:
+            results = session.search(f"{player} card", cfg.craigslist_site, cfg.craigslist_category)
+            for result in results:
+                title = result["title"]
+                matched_player = matcher.match_player(title, [player])
+                if not matched_player or result["price"] is None:
+                    continue
+                card_type, grader, grade = matcher.detect_grading(title)
+                listings.append(
+                    Listing(
+                        id=result["link"],
+                        source="craigslist",
+                        title=title,
+                        price=result["price"],
+                        url=result["link"],
+                        player=matched_player,
+                        card_type=card_type,
+                        grader=grader,
+                        grade=grade,
+                    )
                 )
-            )
     return listings
 
 

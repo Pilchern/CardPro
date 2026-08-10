@@ -12,7 +12,9 @@
 
   "craigslist": {
     "site": "chicago",
-    "category": "sss"
+    "category": "sss",
+    "_headless_comment": "Craigslist blocks plain HTTP requests, so this drives a real (headless) Chromium instance instead. If headless still gets blocked, flip this to false -- it'll pop a visible browser window instead, which only works when run while logged into the Mac's desktop (not from cron unattended).",
+    "headless": true
   },
 
   "dedupe": {
