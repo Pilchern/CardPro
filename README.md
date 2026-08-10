@@ -72,7 +72,23 @@ cp .env.example .env
 #   EMAIL_TO (defaults to GMAIL_ADDRESS if left out)
 ```
 
-### 4. Test it
+### 4. Verify the eBay category ID
+
+eBay reorganizes its trading-card category tree from time to time, so
+before your first real run, confirm `config/settings.json`'s
+`ebay.category_id` (defaults to `212`, "Sports Trading Cards") is still
+current for your account/marketplace:
+
+```bash
+python -m scripts.lookup_ebay_category
+python -m scripts.lookup_ebay_category "Football Cards"   # or any other query
+```
+
+This calls eBay's Taxonomy API with your real credentials and prints the
+matching category IDs + their place in the tree. Update
+`ebay.category_id` if it's changed.
+
+### 5. Test it
 
 ```bash
 python -m src.main --dry-run
@@ -90,7 +106,7 @@ Once a dry run looks right, run it for real:
 python -m src.main
 ```
 
-### 5. Install the daily cron job
+### 6. Install the daily cron job
 
 ```bash
 bash scripts/install_cron.sh        # defaults to 8:00am daily
@@ -105,6 +121,17 @@ using this project's virtualenv if present, and appends output to
 **Note on macOS + cron:** if `logs/cron.log` stays empty and nothing runs,
 your Mac's cron may need Full Disk Access under System Settings > Privacy
 & Security (this varies by macOS version) -- grant it to `/usr/sbin/cron`.
+
+## Running tests
+
+The matching/comps/dedupe/report logic and the full daily-run orchestration
+(with eBay/Craigslist/email mocked out) are covered by a pytest suite that
+needs no real credentials:
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
 
 ## Configuring
 
@@ -121,6 +148,11 @@ is case-insensitive and requires every word of the name to appear in the
 listing title (e.g. "Walter Payton" requires both "walter" and "payton"
 somewhere in the title) -- no code changes needed.
 
+The list currently ships with the Chicago legends only. The "current
+Bulls/Bears" slot from the original spec is intentionally left for you to
+fill in -- active rosters change (trades, cuts, draft picks) often enough
+that hardcoding them risked shipping stale names.
+
 ### Discount threshold -- `config/settings.json`
 
 ```json
@@ -134,7 +166,7 @@ deal. Lower = more (weaker) deals reported; higher = fewer, stronger ones.
 
 | Key | What it does |
 |---|---|
-| `ebay.category_id` | eBay category to search within (defaults to `212`, "Sports Trading Cards"). eBay renumbers categories occasionally -- if results look off-topic, re-check the current ID via eBay's Taxonomy API. |
+| `ebay.category_id` | eBay category to search within (defaults to `212`, "Sports Trading Cards"). eBay renumbers categories occasionally -- if results look off-topic, re-check the current ID via `python -m scripts.lookup_ebay_category`. |
 | `ebay.sold_lookback_days` | How far back to pull sold comps (default 60 days). |
 | `ebay.min_comps_required` | Minimum sold (or fallback) data points needed before trusting a median (default 3). Buckets below this are skipped entirely rather than flagged off a shaky number. |
 | `craigslist.site` | Which Craigslist subdomain to search (default `chicago`). |
@@ -177,6 +209,9 @@ logs/
   scraper.log, cron.log (gitignored) -- run logs
 scripts/
   install_cron.sh -- crontab installer helper
+  lookup_ebay_category.py -- verifies the eBay category ID with real credentials
+tests/
+  pytest suite covering matcher/comps/dedupe/report + a mocked full-run test
 ```
 
 ## Explicitly out of scope (v1)
