@@ -18,7 +18,10 @@ links, since Craigslist can't be scraped automatically (see below).
    Craigslist quick-check link per watchlist player so you can eyeball
    that source yourself in a few seconds. If no eBay deals qualify, you
    still get a short "nothing today" email (with the Craigslist links
-   still attached), not silence.
+   still attached), not silence. If the run crashes outright (network
+   blip, eBay API issue, etc.), you get a short "Scan FAILED" email
+   instead of nothing at all -- same "not silence" principle applied to
+   errors, not just the zero-deals case.
 
 ## Known limitation: eBay sold comps
 

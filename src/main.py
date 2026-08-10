@@ -125,12 +125,7 @@ def flag_deals(
     return flagged
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--dry-run", action="store_true", help="Print the report instead of emailing it; don't touch the dedupe file")
-    args = parser.parse_args()
-
-    setup_logging()
+def run(args: argparse.Namespace) -> None:
     logger = logging.getLogger("main")
     logger.info("Starting daily card deal scan (dry_run=%s)", args.dry_run)
 
@@ -176,6 +171,50 @@ def main() -> None:
     seen = dedupe.prune_old(seen, cfg.prune_after_days, today)
     dedupe.save_seen(cfg.seen_listings_path, seen)
     logger.info("Done")
+
+
+def _notify_failure() -> None:
+    """Best-effort failure email so a crashed cron run doesn't fail silently
+    -- mirrors the "send something, not silence" rule that already applies
+    to the zero-deals case, extended to actual errors.
+    """
+    logger = logging.getLogger("main")
+    try:
+        cfg = load_config()
+    except Exception:
+        logger.error("Can't send a failure email either -- config itself failed to load")
+        return
+    try:
+        emailer.send_email(
+            subject=f"{cfg.email_subject_prefix} Scan FAILED -- check logs/scraper.log",
+            body=(
+                "Today's card deal scan crashed with an unhandled error and did not "
+                "complete. See logs/scraper.log on the machine that ran it for the "
+                "full traceback."
+            ),
+            gmail_address=cfg.gmail_address,
+            gmail_app_password=cfg.gmail_app_password,
+            to_address=cfg.email_to,
+        )
+    except Exception:
+        logger.exception("Failure-notification email itself failed to send")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dry-run", action="store_true", help="Print the report instead of emailing it; don't touch the dedupe file")
+    args = parser.parse_args()
+
+    setup_logging()
+    logger = logging.getLogger("main")
+
+    try:
+        run(args)
+    except Exception:
+        logger.exception("Card deal scan failed with an unhandled error")
+        if not args.dry_run:
+            _notify_failure()
+        raise
 
 
 if __name__ == "__main__":

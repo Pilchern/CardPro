@@ -123,3 +123,36 @@ def test_dry_run_does_not_send_email_or_write_dedupe_file(project, monkeypatch, 
     cfg = load_config()
     assert not cfg.seen_listings_path.exists()
     assert "card deal found" in capsys.readouterr().out
+
+
+def test_unhandled_error_still_sends_a_failure_email(project, monkeypatch):
+    def boom(client_id, client_secret):
+        raise RuntimeError("eBay is down")
+
+    sent = {}
+
+    def fake_send_email(subject, body, gmail_address, gmail_app_password, to_address):
+        sent["subject"] = subject
+        sent["body"] = body
+
+    monkeypatch.setattr(ebay_client, "get_app_token", boom)
+    monkeypatch.setattr(emailer, "send_email", fake_send_email)
+    monkeypatch.setattr("sys.argv", ["main.py"])
+
+    with pytest.raises(RuntimeError, match="eBay is down"):
+        project.main()
+
+    assert "FAILED" in sent["subject"]
+    assert "scraper.log" in sent["body"]
+
+
+def test_dry_run_does_not_send_failure_email_on_error(project, monkeypatch):
+    def boom(client_id, client_secret):
+        raise RuntimeError("eBay is down")
+
+    monkeypatch.setattr(ebay_client, "get_app_token", boom)
+    monkeypatch.setattr(emailer, "send_email", mock.Mock(side_effect=AssertionError("should not send in dry-run")))
+    monkeypatch.setattr("sys.argv", ["main.py", "--dry-run"])
+
+    with pytest.raises(RuntimeError, match="eBay is down"):
+        project.main()
