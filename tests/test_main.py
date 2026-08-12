@@ -160,6 +160,29 @@ def test_dry_run_does_not_send_failure_email_on_error(project, monkeypatch):
         project.main()
 
 
+def test_runs_successfully_without_ebay_credentials(project, monkeypatch):
+    monkeypatch.delenv("EBAY_CLIENT_ID", raising=False)
+    monkeypatch.delenv("EBAY_CLIENT_SECRET", raising=False)
+    monkeypatch.setattr(
+        ebay_client, "get_app_token", mock.Mock(side_effect=AssertionError("eBay should not be called"))
+    )
+
+    sent = {}
+
+    def fake_send_email(subject, body, gmail_address, gmail_app_password, to_address):
+        sent["subject"] = subject
+        sent["body"] = body
+
+    monkeypatch.setattr(emailer, "send_email", fake_send_email)
+    monkeypatch.setattr("sys.argv", ["main.py"])
+
+    project.main()
+
+    assert "eBay not configured" in sent["subject"]
+    assert "Craigslist quick check" in sent["body"]
+    assert "chicago.craigslist.org/search/sss" in sent["body"]
+
+
 def test_logging_is_rotated_not_unbounded(project, monkeypatch):
     monkeypatch.setattr(ebay_client, "get_app_token", lambda cid, secret: "fake-token")
     monkeypatch.setattr(ebay_client, "search_active_listings", fake_active)

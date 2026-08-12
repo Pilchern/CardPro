@@ -5,6 +5,7 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
 from dotenv import load_dotenv
 
@@ -14,8 +15,12 @@ CONFIG_DIR = ROOT_DIR / "config"
 
 @dataclass
 class Config:
-    ebay_client_id: str
-    ebay_client_secret: str
+    # Optional: eBay access isn't required to run. If EBAY_CLIENT_ID/SECRET
+    # aren't set (e.g. the developer account is declined/pending), the
+    # scraper just skips eBay and sends Craigslist links only -- see
+    # main.py's ebay_enabled check.
+    ebay_client_id: Optional[str]
+    ebay_client_secret: Optional[str]
     gmail_address: str
     gmail_app_password: str
     email_to: str
@@ -41,11 +46,8 @@ class Config:
 def load_config() -> Config:
     load_dotenv(ROOT_DIR / ".env")
 
-    missing = [
-        name
-        for name in ("EBAY_CLIENT_ID", "EBAY_CLIENT_SECRET", "GMAIL_ADDRESS", "GMAIL_APP_PASSWORD")
-        if not os.environ.get(name)
-    ]
+    # Only Gmail is truly required -- eBay is optional (see Config docstring).
+    missing = [name for name in ("GMAIL_ADDRESS", "GMAIL_APP_PASSWORD") if not os.environ.get(name)]
     if missing:
         raise RuntimeError(
             f"Missing required .env values: {', '.join(missing)}. "
@@ -57,9 +59,17 @@ def load_config() -> Config:
     with open(CONFIG_DIR / "settings.json") as f:
         settings = json.load(f)
 
+    # Treat the unfilled-in placeholder from .env.example the same as "not set".
+    ebay_client_id = os.environ.get("EBAY_CLIENT_ID") or None
+    if ebay_client_id == "your_ebay_client_id":
+        ebay_client_id = None
+    ebay_client_secret = os.environ.get("EBAY_CLIENT_SECRET") or None
+    if ebay_client_secret == "your_ebay_client_secret":
+        ebay_client_secret = None
+
     return Config(
-        ebay_client_id=os.environ["EBAY_CLIENT_ID"],
-        ebay_client_secret=os.environ["EBAY_CLIENT_SECRET"],
+        ebay_client_id=ebay_client_id,
+        ebay_client_secret=ebay_client_secret,
         gmail_address=os.environ["GMAIL_ADDRESS"],
         gmail_app_password=os.environ["GMAIL_APP_PASSWORD"],
         email_to=os.environ.get("EMAIL_TO") or os.environ["GMAIL_ADDRESS"],

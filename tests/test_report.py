@@ -73,3 +73,17 @@ def test_no_craigslist_section_when_links_omitted():
     listing = make_listing()
     _, body = report.build_report([listing], 30, date(2026, 8, 10))
     assert "Craigslist" not in body
+
+
+def test_ebay_disabled_gives_not_configured_email_even_with_deals_passed():
+    links = {"Michael Jordan": "https://chicago.craigslist.org/search/sss?query=Michael+Jordan+card"}
+    subject, body = report.build_report([], 30, date(2026, 8, 10), links, ebay_enabled=False)
+    assert "eBay not configured" in subject
+    assert "Craigslist quick check" in body
+    assert links["Michael Jordan"] in body
+
+
+def test_ebay_enabled_defaults_to_true_for_backwards_compatibility():
+    listing = make_listing()
+    subject, _ = report.build_report([listing], 30, date(2026, 8, 10))
+    assert "eBay not configured" not in subject

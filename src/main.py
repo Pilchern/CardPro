@@ -140,22 +140,31 @@ def run(args: argparse.Namespace) -> None:
     cfg = load_config()
     today = datetime.now(timezone.utc)
 
-    token = ebay_client.get_app_token(cfg.ebay_client_id, cfg.ebay_client_secret)
+    ebay_enabled = bool(cfg.ebay_client_id and cfg.ebay_client_secret)
+    candidate_deals: list[Listing] = []
 
-    logger.info("Fetching eBay active listings for %d players", len(cfg.players))
-    ebay_active = fetch_ebay_active(cfg, cfg.players, token)
+    if ebay_enabled:
+        token = ebay_client.get_app_token(cfg.ebay_client_id, cfg.ebay_client_secret)
 
-    logger.info("Fetching eBay sold comps for %d players", len(cfg.players))
-    sold_buckets = fetch_ebay_sold_buckets(cfg, cfg.players, token)
+        logger.info("Fetching eBay active listings for %d players", len(cfg.players))
+        ebay_active = fetch_ebay_active(cfg, cfg.players, token)
+
+        logger.info("Fetching eBay sold comps for %d players", len(cfg.players))
+        sold_buckets = fetch_ebay_sold_buckets(cfg, cfg.players, token)
+
+        fallback_buckets = active_price_buckets(ebay_active)
+        comp_table = comps.build_comp_table(sold_buckets, cfg.ebay_min_comps_required, fallback_buckets)
+        logger.info("Built comps for %d (player, card_type) buckets", len(comp_table))
+
+        candidate_deals = flag_deals(ebay_active, comp_table, cfg.discount_threshold_pct)
+        logger.info("%d listing(s) clear the %.0f%% discount threshold", len(candidate_deals), cfg.discount_threshold_pct)
+    else:
+        logger.warning(
+            "EBAY_CLIENT_ID/EBAY_CLIENT_SECRET not set -- skipping eBay entirely, "
+            "sending Craigslist links only"
+        )
 
     cl_links = build_craigslist_links(cfg, cfg.players)
-
-    fallback_buckets = active_price_buckets(ebay_active)
-    comp_table = comps.build_comp_table(sold_buckets, cfg.ebay_min_comps_required, fallback_buckets)
-    logger.info("Built comps for %d (player, card_type) buckets", len(comp_table))
-
-    candidate_deals = flag_deals(ebay_active, comp_table, cfg.discount_threshold_pct)
-    logger.info("%d listing(s) clear the %.0f%% discount threshold", len(candidate_deals), cfg.discount_threshold_pct)
 
     seen = dedupe.load_seen(cfg.seen_listings_path)
     today_str = today.strftime("%Y-%m-%d")
@@ -166,7 +175,7 @@ def run(args: argparse.Namespace) -> None:
             dedupe.record_flagged(deal.id, deal.price, seen, today_str)
     logger.info("%d deal(s) are new or price-dropped since last run", len(new_deals))
 
-    subject, body = report.build_report(new_deals, cfg.discount_threshold_pct, date.today(), cl_links)
+    subject, body = report.build_report(new_deals, cfg.discount_threshold_pct, date.today(), cl_links, ebay_enabled)
     subject = f"{cfg.email_subject_prefix} {subject}"
 
     if args.dry_run:

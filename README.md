@@ -4,6 +4,15 @@ Daily scan of eBay for underpriced sports card listings on a watchlist,
 emailed to you as a ranked report -- plus ready-to-click Craigslist search
 links, since Craigslist can't be scraped automatically (see below).
 
+**Current status: eBay isn't connected yet.** The eBay developer account
+application was declined (not just the Marketplace Insights piece -- the
+whole account), so right now the scraper runs in Craigslist-links-only
+mode: no automated deal-flagging, just the daily quick-check links. See
+"eBay account declined" below for what that means and what to do about it.
+The eBay integration is fully built and will resume working automatically
+the moment real `EBAY_CLIENT_ID`/`EBAY_CLIENT_SECRET` land in `.env` -- no
+code changes needed.
+
 ## What it does
 
 1. For each player on your watchlist, pulls **active** eBay listings
@@ -22,6 +31,31 @@ links, since Craigslist can't be scraped automatically (see below).
    blip, eBay API issue, etc.), you get a short "Scan FAILED" email
    instead of nothing at all -- same "not silence" principle applied to
    errors, not just the zero-deals case.
+
+## eBay account declined
+
+eBay's developer account registration was rejected with their generic
+automated message: *"Your account registration was rejected due to
+problems with the data provided or other irregularities."* This is a
+common, non-specific rejection -- it doesn't require basic Browse API
+access to go through any manual review at all normally, so a full-account
+decline usually points to something in the account data itself (name/
+address mismatch between the eBay account and the application, a very new
+or thin eBay purchase/selling history, unverified phone, etc.) rather than
+a policy objection to the use case.
+
+**Worth trying:** the Contact Channels / FAQ page linked from the
+rejection screen, or emailing `developer-support@ebay.com` directly and
+asking specifically what triggered it. If that gets resolved and you get
+real keys, nothing else needs to change -- see the status note at the top
+of this README.
+
+**In the meantime:** `EBAY_CLIENT_ID`/`EBAY_CLIENT_SECRET` are optional.
+Leave them unset (or as the `.env.example` placeholder text) and the
+scraper runs fine without eBay -- it logs a warning, skips straight to
+building the Craigslist links, and sends a short "eBay not configured"
+email instead of crashing. Once real credentials are added, eBay scanning
+resumes automatically on the next run.
 
 ## Known limitation: eBay sold comps
 
@@ -69,15 +103,16 @@ seconds. No scraping, no automation, fully within Craigslist's terms.
 
 ## Setup
 
-### While you wait on eBay approval
+### Running without eBay (current situation)
 
-eBay developer account approval can take a day or so. Everything below
-except step 1 (eBay keys) can be done in the meantime:
+eBay access is optional -- see "eBay account declined" above. Everything
+below except step 1 (eBay keys) works fine without it:
 
 ```bash
 cp .env.example .env   # fill in just the GMAIL_* / EMAIL_TO lines for now
 pip install -r requirements.txt
 python -m scripts.test_email
+python -m src.main --dry-run   # will show "eBay not configured" + Craigslist links
 ```
 
 Sends one real test email using only your Gmail credentials -- no eBay
@@ -85,8 +120,9 @@ keys required. (Craigslist needs no separate testing now that it's just
 link generation -- you'll see the links in any report the scraper
 produces, including a `--dry-run`.)
 
-Once your eBay keys land, drop them into `.env` and pick up at step 4
-below.
+If/when real eBay keys land (approval or a resolved appeal), drop them
+into `.env` and pick up at step 4 below -- no code changes needed, eBay
+scanning just starts working on the next run.
 
 ### 1. Get an eBay developer account + keys
 
@@ -94,6 +130,8 @@ below.
 - Create an application to get a production **Client ID** and **Client
   Secret** (Browse API access is included by default; Marketplace Insights
   requires separately applying for access, see above).
+- If the account itself gets rejected, see "eBay account declined" above
+  before giving up on this step -- it's usually fixable.
 
 ### 2. Get a Gmail App Password
 
@@ -120,12 +158,12 @@ pip install -r requirements.txt
 
 cp .env.example .env
 # then edit .env and fill in:
-#   EBAY_CLIENT_ID, EBAY_CLIENT_SECRET
-#   GMAIL_ADDRESS, GMAIL_APP_PASSWORD
+#   GMAIL_ADDRESS, GMAIL_APP_PASSWORD  (required)
 #   EMAIL_TO (defaults to GMAIL_ADDRESS if left out)
+#   EBAY_CLIENT_ID, EBAY_CLIENT_SECRET (optional -- leave blank/placeholder if you don't have them yet)
 ```
 
-### 4. Verify the eBay category ID
+### 4. Verify the eBay category ID (skip if you don't have eBay keys yet)
 
 eBay reorganizes its trading-card category tree from time to time, so
 before your first real run, confirm `config/settings.json`'s

@@ -20,11 +20,22 @@ def build_report(
     threshold_pct: float,
     run_date: date,
     craigslist_links: Optional[dict[str, str]] = None,
+    ebay_enabled: bool = True,
 ) -> tuple[str, str]:
     """Returns (subject, body)."""
     ranked = rank_deals(deals)
     date_str = run_date.strftime("%B %d, %Y")
     cl_section = _build_craigslist_section(craigslist_links)
+
+    if not ebay_enabled:
+        subject = f"eBay not configured ({date_str})"
+        body = (
+            f"Card deal scan for {date_str}: eBay wasn't scanned today because "
+            f"EBAY_CLIENT_ID/EBAY_CLIENT_SECRET aren't set in .env (no eBay API "
+            f"access yet). This is expected, not an error -- once eBay access is "
+            f"sorted out, deals will resume showing up here automatically."
+        )
+        return subject, body + cl_section
 
     if not ranked:
         subject = f"No deals today ({date_str})"
