@@ -4,21 +4,27 @@ Daily scan of eBay for underpriced sports card listings on a watchlist,
 emailed to you as a ranked report -- plus ready-to-click Craigslist search
 links, since Craigslist can't be scraped automatically (see below).
 
-**Current status: eBay isn't connected yet.** The eBay developer account
-application was declined (not just the Marketplace Insights piece -- the
-whole account), so right now the scraper runs in Craigslist-links-only
-mode: no automated deal-flagging, just the daily quick-check links. See
-"eBay account declined" below for what that means and what to do about it.
-The eBay integration is fully built and will resume working automatically
-the moment real `EBAY_CLIENT_ID`/`EBAY_CLIENT_SECRET` land in `.env` -- no
-code changes needed.
+**Current status: eBay API access was declined; email-alerts path built as
+an alternative.** eBay's developer account application was rejected
+outright (see "eBay account declined" below), so the eBay Browse API path
+in this README's step 1 isn't usable right now. Instead, there's a second
+way to get eBay data without any API access at all: eBay's own
+saved-search email alerts, read via IMAP -- see "eBay via saved-search
+email alerts" below. It's built, tested against synthetic fixtures, and
+disabled by default (`ebay_alerts.enabled: false` in
+`config/settings.json`) until you turn it on and validate it against a
+real alert email. Until then, or if you'd rather just wait for the API
+appeal, the scraper runs fine in Craigslist-links-only mode.
 
 ## What it does
 
-1. For each player on your watchlist, pulls **active** eBay listings
-   (Browse API).
-2. Pulls eBay **sold** comps for the same players and computes the median
-   sold price per (player, raw-vs-graded) bucket.
+1. For each player on your watchlist, pulls **active** eBay listings --
+   either via the Browse API, or via eBay's own saved-search email alerts
+   if the API isn't available (see below for both).
+2. Builds comps (market-value medians) per player/card-type: real eBay
+   sold data when the API + Marketplace Insights are available, otherwise
+   a self-building history of observed prices (from the API's active
+   listings, or from alert emails) that gets more reliable over time.
 3. Flags any active eBay listing priced 30%+ (configurable) below its
    matched comp median.
 4. Drops anything already emailed in a prior run, unless its price has
@@ -52,10 +58,69 @@ of this README.
 
 **In the meantime:** `EBAY_CLIENT_ID`/`EBAY_CLIENT_SECRET` are optional.
 Leave them unset (or as the `.env.example` placeholder text) and the
-scraper runs fine without eBay -- it logs a warning, skips straight to
-building the Craigslist links, and sends a short "eBay not configured"
-email instead of crashing. Once real credentials are added, eBay scanning
-resumes automatically on the next run.
+scraper runs fine without eBay -- either by falling through to the
+email-alerts path below if you've enabled it, or (if that's not enabled
+either) by logging a warning, skipping straight to building the Craigslist
+links, and sending a short "eBay not configured" email instead of
+crashing. Once real API credentials are added, eBay scanning switches back
+to the Browse API automatically on the next run.
+
+## eBay via saved-search email alerts
+
+Since the API is unavailable, this is a second way to get real eBay
+listing data with **zero API access required**: eBay itself has a
+saved-search feature that emails you when new matching listings appear.
+You set that up once on eBay's site; this just reads those emails out of
+your own Gmail inbox over IMAP (same Gmail App Password already used for
+SMTP -- App Passwords work for IMAP too, no new credential needed) and
+feeds them into the same matching/flagging/report pipeline as the API
+path. Nothing about eBay's own systems is touched or automated against --
+eBay decides what to send and when; this only processes mail you already
+receive.
+
+**One real tradeoff worth knowing:** eBay's saved-search alerts only cover
+*newly listed* items, not their full standing inventory, and there's no
+sold-comps feed on this path. So comps are built by accumulating every
+price this script observes in alert emails over time
+(`data/ebay_alert_price_history.json`, pruned after 180 days by default) --
+weaker than real sold data, same "not real sold data" caveat already
+labeled elsewhere in the report, and it starts from nothing: expect zero
+flagged deals for the first several days until enough history accumulates
+per player/card-type (`ebay_alerts.price_history_max_age_days` and the
+existing `ebay.min_comps_required` control this).
+
+### Setup
+
+1. On eBay's site (not in this repo): for each watchlist player, search
+   for their cards, then use eBay's "Save this search" option and turn on
+   email alerts for it. Repeat for every player you want covered.
+2. In `config/settings.json`, set `ebay_alerts.enabled` to `true`.
+3. Run the standalone check against your real inbox:
+   ```bash
+   python -m scripts.test_ebay_alerts
+   python -m scripts.test_ebay_alerts --raw   # also shows listings before player-matching
+   ```
+   This prints what it can extract from your actual alert emails --
+   nothing is sent or written to disk. **This step matters**: the HTML
+   parsing in `src/ebay_email_alerts.py` was built from eBay's known-
+   stable `/itm/<id>` link format plus a nearby-price heuristic, tested
+   against synthetic fixture emails, but has not been validated against a
+   real eBay alert email (eBay's actual notification template could
+   differ from what's assumed). If matched listings come back empty or
+   obviously wrong, tell me what `--raw` shows and the parsing logic can
+   be adjusted to match eBay's real template.
+4. Once that looks right, `python -m src.main --dry-run` will show the
+   full report, comps included.
+
+### Config (`config/settings.json`'s `ebay_alerts` section)
+
+| Key | What it does |
+|---|---|
+| `enabled` | Turns this path on. Only takes effect when `EBAY_CLIENT_ID`/`SECRET` are absent (the Browse API path always wins if both are configured). |
+| `sender_contains` | IMAP filters alert emails to ones whose From address contains this (default `ebay.com`). If real alerts come from an address that doesn't match, alerts won't be found -- `test_ebay_alerts.py` will tell you if that's happening. |
+| `lookback_days` | How many days back to search the inbox each run (default 2 -- eBay sends these roughly daily). |
+| `price_history_path` | Where the self-building comp history is stored (default `data/ebay_alert_price_history.json`, gitignored). |
+| `price_history_max_age_days` | How long an observed price stays in the comp history before aging out (default 180). |
 
 ## Known limitation: eBay sold comps
 
@@ -297,24 +362,28 @@ src/
   config.py             -- loads .env + config JSON
   models.py              -- Listing dataclass
   matcher.py              -- title -> player, graded/raw detection
-  ebay_client.py           -- eBay OAuth, active search, sold comps
-  craigslist_links.py       -- builds quick-check search URLs (no scraping)
-  comps.py                    -- median comp calculation
-  dedupe.py                    -- seen-listings tracking
-  report.py                     -- ranked report text + Craigslist links
-  emailer.py                     -- Gmail SMTP send
-  main.py                         -- orchestrates the daily run
+  ebay_client.py           -- eBay Browse API: OAuth, active search, sold comps
+  ebay_email_alerts.py      -- eBay-via-IMAP: reads saved-search alert emails
+  price_history.py           -- self-building comp history for the alerts path
+  craigslist_links.py         -- builds quick-check search URLs (no scraping)
+  comps.py                     -- median comp calculation
+  dedupe.py                     -- seen-listings tracking
+  report.py                      -- ranked report text + Craigslist links
+  emailer.py                      -- Gmail SMTP send
+  main.py                          -- orchestrates the daily run
 data/
   seen_listings.json (gitignored) -- dedupe state
+  ebay_alert_price_history.json (gitignored) -- self-built comp history (alerts path)
 logs/
   scraper.log, cron.log (gitignored) -- run logs
 scripts/
   install_cron.sh -- crontab installer helper
   lookup_ebay_category.py -- verifies the eBay category ID with real credentials
   test_email.py -- standalone Gmail send check (no eBay needed)
+  test_ebay_alerts.py -- standalone check of the email-alerts path against your real inbox
 tests/
-  pytest suite covering matcher/comps/dedupe/report/craigslist_links + a
-  mocked full-run test
+  pytest suite covering matcher/comps/dedupe/report/craigslist_links/
+  price_history/ebay_email_alerts + mocked full-run tests for both eBay paths
 ```
 
 ## Explicitly out of scope (v1)

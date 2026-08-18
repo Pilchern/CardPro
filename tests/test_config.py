@@ -17,6 +17,13 @@ def _write_config_files(tmp_path):
                     "sold_lookback_days": 60,
                     "min_comps_required": 3,
                 },
+                "ebay_alerts": {
+                    "enabled": False,
+                    "sender_contains": "ebay.com",
+                    "lookback_days": 2,
+                    "price_history_path": "data/ebay_alert_price_history.json",
+                    "price_history_max_age_days": 180,
+                },
                 "craigslist": {"site": "chicago", "category": "sss"},
                 "dedupe": {"seen_listings_path": "data/seen_listings.json", "prune_after_days": 120},
                 "email": {"subject_prefix": "[Card Deals]"},
@@ -71,6 +78,21 @@ def test_real_ebay_values_pass_through(tmp_path, monkeypatch):
 
     assert cfg.ebay_client_id == "real-id-123"
     assert cfg.ebay_client_secret == "real-secret-456"
+
+
+def test_ebay_alerts_config_loads(tmp_path, monkeypatch):
+    _write_config_files(tmp_path)
+    _base_env(monkeypatch)
+    monkeypatch.setattr(config_module, "ROOT_DIR", tmp_path)
+    monkeypatch.setattr(config_module, "CONFIG_DIR", tmp_path / "config")
+
+    cfg = config_module.load_config()
+
+    assert cfg.ebay_alerts_enabled is False
+    assert cfg.ebay_alerts_sender_contains == "ebay.com"
+    assert cfg.ebay_alerts_lookback_days == 2
+    assert cfg.ebay_alert_price_history_path == tmp_path / "data" / "ebay_alert_price_history.json"
+    assert cfg.ebay_alert_price_history_max_age_days == 180
 
 
 def test_missing_gmail_still_raises(tmp_path, monkeypatch):

@@ -8,7 +8,7 @@ from typing import Optional
 
 from src.models import Listing
 
-SOURCE_LABELS = {"ebay": "eBay"}
+SOURCE_LABELS = {"ebay": "eBay", "ebay-alert": "eBay (saved-search alert)"}
 
 
 def rank_deals(deals: list[Listing]) -> list[Listing]:
@@ -30,10 +30,11 @@ def build_report(
     if not ebay_enabled:
         subject = f"eBay not configured ({date_str})"
         body = (
-            f"Card deal scan for {date_str}: eBay wasn't scanned today because "
-            f"EBAY_CLIENT_ID/EBAY_CLIENT_SECRET aren't set in .env (no eBay API "
-            f"access yet). This is expected, not an error -- once eBay access is "
-            f"sorted out, deals will resume showing up here automatically."
+            f"Card deal scan for {date_str}: eBay wasn't scanned today because neither "
+            f"EBAY_CLIENT_ID/EBAY_CLIENT_SECRET nor ebay_alerts.enabled are set up in "
+            f".env / config/settings.json. This is expected, not an error -- once "
+            f"either eBay path is configured, deals will resume showing up here "
+            f"automatically."
         )
         return subject, body + cl_section
 

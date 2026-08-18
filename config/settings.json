@@ -10,6 +10,15 @@
     "min_comps_required": 3
   },
 
+  "ebay_alerts": {
+    "_comment": "Used instead of the eBay API (declined account) if enabled: reads eBay's own saved-search alert emails from your Gmail inbox via IMAP. Requires you to first create a saved search + email alert on eBay's site for each watchlist player -- see README 'eBay via saved-search email alerts'. PROVISIONAL: the HTML parsing hasn't been validated against a real alert email yet.",
+    "enabled": false,
+    "sender_contains": "ebay.com",
+    "lookback_days": 2,
+    "price_history_path": "data/ebay_alert_price_history.json",
+    "price_history_max_age_days": 180
+  },
+
   "craigslist": {
     "_comment": "Craigslist blocks automated scraping outright (confirmed against both headless and headed browser automation), so these just build ready-to-click search links included in the daily email instead of being fetched automatically.",
     "site": "chicago",

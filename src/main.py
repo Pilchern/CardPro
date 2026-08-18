@@ -18,7 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src import comps, craigslist_links, dedupe, ebay_client, emailer, matcher, report
+from src import comps, craigslist_links, dedupe, ebay_client, ebay_email_alerts, emailer, matcher, price_history, report
 from src.config import ROOT_DIR, load_config
 from src.models import Listing
 
@@ -106,6 +106,38 @@ def active_price_buckets(active_listings: list[Listing]) -> dict[tuple[str, str]
     return buckets
 
 
+def fetch_ebay_alert_active(cfg, today_str: str) -> list[Listing]:
+    """eBay-via-email-alerts path (see ebay_email_alerts.py). Returns
+    matched Listings; also records every observed price into the
+    self-building comp history as a side effect, since that's the only
+    comp signal available on this path.
+    """
+    items = ebay_email_alerts.fetch_alert_listings(
+        cfg.gmail_address, cfg.gmail_app_password, cfg.ebay_alerts_sender_contains, cfg.ebay_alerts_lookback_days
+    )
+
+    listings = []
+    for item in items:
+        matched_player = matcher.match_player(item["title"], cfg.players)
+        if not matched_player or item["price"] is None:
+            continue
+        card_type, grader, grade = matcher.detect_grading(item["title"])
+        listings.append(
+            Listing(
+                id=item["url"],
+                source="ebay-alert",
+                title=item["title"],
+                price=item["price"],
+                url=item["url"],
+                player=matched_player,
+                card_type=card_type,
+                grader=grader,
+                grade=grade,
+            )
+        )
+    return listings
+
+
 def build_craigslist_links(cfg, players: list[str]) -> dict[str, str]:
     return {
         player: craigslist_links.search_url(f"{player} card", cfg.craigslist_site, cfg.craigslist_category)
@@ -139,11 +171,13 @@ def run(args: argparse.Namespace) -> None:
 
     cfg = load_config()
     today = datetime.now(timezone.utc)
+    today_str = today.strftime("%Y-%m-%d")
 
-    ebay_enabled = bool(cfg.ebay_client_id and cfg.ebay_client_secret)
+    ebay_api_enabled = bool(cfg.ebay_client_id and cfg.ebay_client_secret)
+    ebay_data_available = ebay_api_enabled or cfg.ebay_alerts_enabled
     candidate_deals: list[Listing] = []
 
-    if ebay_enabled:
+    if ebay_api_enabled:
         token = ebay_client.get_app_token(cfg.ebay_client_id, cfg.ebay_client_secret)
 
         logger.info("Fetching eBay active listings for %d players", len(cfg.players))
@@ -158,16 +192,39 @@ def run(args: argparse.Namespace) -> None:
 
         candidate_deals = flag_deals(ebay_active, comp_table, cfg.discount_threshold_pct)
         logger.info("%d listing(s) clear the %.0f%% discount threshold", len(candidate_deals), cfg.discount_threshold_pct)
+
+    elif cfg.ebay_alerts_enabled:
+        logger.info("eBay API unavailable -- using saved-search email alerts (IMAP) instead")
+        ebay_active = fetch_ebay_alert_active(cfg, today_str)
+        logger.info("Matched %d listing(s) from eBay alert emails", len(ebay_active))
+
+        history = price_history.load(cfg.ebay_alert_price_history_path)
+        for listing in ebay_active:
+            price_history.record(history, listing.player, listing.card_type, listing.price, today_str)
+        history = price_history.prune_old(history, cfg.ebay_alert_price_history_max_age_days, today)
+
+        comp_table = comps.build_comp_table(
+            sold_by_bucket={},
+            min_comps_required=cfg.ebay_min_comps_required,
+            fallback_by_bucket=price_history.as_buckets(history),
+        )
+        logger.info("Built comps for %d (player, card_type) buckets from accumulated alert history", len(comp_table))
+
+        candidate_deals = flag_deals(ebay_active, comp_table, cfg.discount_threshold_pct)
+        logger.info("%d listing(s) clear the %.0f%% discount threshold", len(candidate_deals), cfg.discount_threshold_pct)
+
+        if not args.dry_run:
+            price_history.save(cfg.ebay_alert_price_history_path, history)
+
     else:
         logger.warning(
-            "EBAY_CLIENT_ID/EBAY_CLIENT_SECRET not set -- skipping eBay entirely, "
+            "Neither the eBay API nor eBay email alerts are configured -- skipping eBay entirely, "
             "sending Craigslist links only"
         )
 
     cl_links = build_craigslist_links(cfg, cfg.players)
 
     seen = dedupe.load_seen(cfg.seen_listings_path)
-    today_str = today.strftime("%Y-%m-%d")
     new_deals = []
     for deal in candidate_deals:
         if dedupe.is_new_or_price_drop(deal.id, deal.price, seen):
@@ -175,7 +232,7 @@ def run(args: argparse.Namespace) -> None:
             dedupe.record_flagged(deal.id, deal.price, seen, today_str)
     logger.info("%d deal(s) are new or price-dropped since last run", len(new_deals))
 
-    subject, body = report.build_report(new_deals, cfg.discount_threshold_pct, date.today(), cl_links, ebay_enabled)
+    subject, body = report.build_report(new_deals, cfg.discount_threshold_pct, date.today(), cl_links, ebay_data_available)
     subject = f"{cfg.email_subject_prefix} {subject}"
 
     if args.dry_run:

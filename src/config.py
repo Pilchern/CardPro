@@ -37,6 +37,14 @@ class Config:
     craigslist_site: str
     craigslist_category: str
 
+    # eBay-via-email-alerts: an alternate to the (declined) eBay API. See
+    # ebay_email_alerts.py and price_history.py.
+    ebay_alerts_enabled: bool
+    ebay_alerts_sender_contains: str
+    ebay_alerts_lookback_days: int
+    ebay_alert_price_history_path: Path
+    ebay_alert_price_history_max_age_days: int
+
     seen_listings_path: Path
     prune_after_days: int
 
@@ -82,6 +90,11 @@ def load_config() -> Config:
         ebay_min_comps_required=int(settings["ebay"]["min_comps_required"]),
         craigslist_site=settings["craigslist"]["site"],
         craigslist_category=settings["craigslist"]["category"],
+        ebay_alerts_enabled=bool(settings["ebay_alerts"]["enabled"]),
+        ebay_alerts_sender_contains=settings["ebay_alerts"]["sender_contains"],
+        ebay_alerts_lookback_days=int(settings["ebay_alerts"]["lookback_days"]),
+        ebay_alert_price_history_path=ROOT_DIR / settings["ebay_alerts"]["price_history_path"],
+        ebay_alert_price_history_max_age_days=int(settings["ebay_alerts"]["price_history_max_age_days"]),
         seen_listings_path=ROOT_DIR / settings["dedupe"]["seen_listings_path"],
         prune_after_days=int(settings["dedupe"]["prune_after_days"]),
         email_subject_prefix=settings["email"]["subject_prefix"],

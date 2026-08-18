@@ -1,0 +1,195 @@
+"""Reads eBay's own saved-search alert emails out of your Gmail inbox via
+IMAP, instead of eBay's API (this account's application was declined) or
+scraping eBay's site (nobody's asked us to fight eBay's own defenses, and
+this isn't that).
+
+Setup this depends on (one-time, on eBay's site, not in this repo): for
+each watchlist player, create a saved search on eBay and turn on email
+alerts for it. eBay decides what to send and when (their docs say once
+daily, only when new matching listings appeared in the last 24h) -- this
+just reads mail you already receive, using the same Gmail App Password
+already used for SMTP (App Passwords work for IMAP too, no new credential).
+
+PROVISIONAL: extract_listings_from_html() is built from eBay's long-stable
+/itm/<id> item-link URL format plus a nearby-price heuristic, but it has
+NOT been validated against a real alert email -- eBay's notification
+template could differ from what's assumed here. Run
+`python -m scripts.test_ebay_alerts` after you have at least one real
+alert email in your inbox, and adjust this file if the results look wrong.
+"""
+from __future__ import annotations
+
+import email
+import imaplib
+import logging
+import re
+from datetime import datetime, timedelta, timezone
+from email.message import Message
+from typing import Optional
+from urllib.parse import unquote
+
+from bs4 import BeautifulSoup
+
+logger = logging.getLogger(__name__)
+
+IMAP_HOST = "imap.gmail.com"
+IMAP_PORT = 993
+
+PRICE_RE = re.compile(r"\$([\d,]+(?:\.\d{2})?)")
+ITEM_URL_RE = re.compile(r"(https?://[^\s\"'<>]*?/itm/\d+)|(/itm/\d+)")
+
+
+def fetch_alert_messages(
+    gmail_address: str,
+    gmail_app_password: str,
+    sender_contains: str,
+    lookback_days: int,
+) -> list[Message]:
+    """Logs into Gmail read-only over IMAP and returns parsed Message
+    objects for recent emails from `sender_contains`. Never deletes,
+    marks read, or modifies anything -- opens INBOX readonly.
+    """
+    messages: list[Message] = []
+    with imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT) as imap:
+        imap.login(gmail_address, gmail_app_password)
+        imap.select("INBOX", readonly=True)
+
+        since = _imap_date(lookback_days)
+        status, data = imap.search(None, f'(SINCE {since} FROM "{sender_contains}")')
+        if status != "OK" or not data or not data[0]:
+            return messages
+
+        for num in data[0].split():
+            status, msg_data = imap.fetch(num, "(RFC822)")
+            if status != "OK" or not msg_data or not msg_data[0]:
+                continue
+            messages.append(email.message_from_bytes(msg_data[0][1]))
+    return messages
+
+
+def _imap_date(lookback_days: int) -> str:
+    since_dt = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+    return since_dt.strftime("%d-%b-%Y")
+
+
+def get_html_body(msg: Message) -> Optional[str]:
+    if msg.is_multipart():
+        for part in msg.walk():
+            if part.get_content_type() == "text/html":
+                payload = part.get_payload(decode=True)
+                if payload:
+                    charset = part.get_content_charset() or "utf-8"
+                    return payload.decode(charset, errors="replace")
+        return None
+    if msg.get_content_type() == "text/html":
+        payload = msg.get_payload(decode=True)
+        if payload:
+            charset = msg.get_content_charset() or "utf-8"
+            return payload.decode(charset, errors="replace")
+    return None
+
+
+def extract_listings_from_html(html: str) -> list[dict]:
+    """Returns [{title, url, price}] best-effort -- see module docstring
+    on why this is provisional.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    results = []
+    seen_urls = set()
+
+    for a in soup.find_all("a", href=True):
+        clean_url = _find_item_url(a["href"])
+        if not clean_url or clean_url in seen_urls:
+            continue
+
+        title = a.get_text(strip=True)
+        if not title:
+            continue
+
+        price = _find_nearby_price(a)
+        seen_urls.add(clean_url)
+        results.append({"title": title, "url": clean_url, "price": price})
+
+    return results
+
+
+def _find_item_url(href: str) -> Optional[str]:
+    """Matches eBay's stable /itm/<id> item-link pattern directly in the
+    href, and falls back to URL-decoding first -- marketing/redirect links
+    often wrap the real destination as a percent-encoded query param (e.g.
+    ...?url=https%3A%2F%2Fwww.ebay.com%2Fitm%2F123), which won't match
+    literally without decoding first.
+    """
+    match = ITEM_URL_RE.search(href) or ITEM_URL_RE.search(unquote(href))
+    if not match:
+        return None
+    url = match.group(1) or match.group(2)
+    if not url.startswith("http"):
+        url = "https://www.ebay.com" + url
+    return url
+
+
+def _find_nearby_price(anchor_tag) -> Optional[float]:
+    """Looks for a price close to this specific listing's title link --
+    deliberately scoped narrowly so it doesn't pick up a neighboring
+    listing's price when several listings share a flat structure with no
+    per-listing wrapper (title link, then a price element as its sibling,
+    repeated -- a common real-world email-template pattern).
+    """
+    # 1. the link's own text
+    price = _extract_price(anchor_tag.get_text(" ", strip=True))
+    if price is not None:
+        return price
+
+    # 2. next siblings at the same level, stopping at the next item link
+    #    (that belongs to the next listing, not this one)
+    for sibling in anchor_tag.find_next_siblings():
+        if getattr(sibling, "find", None) and (
+            (sibling.name == "a" and sibling.get("href") and ITEM_URL_RE.search(sibling.get("href", "")))
+            or sibling.find("a", href=ITEM_URL_RE)
+        ):
+            break
+        price = _extract_price(sibling.get_text(" ", strip=True) if hasattr(sibling, "get_text") else str(sibling))
+        if price is not None:
+            return price
+
+    # 3. fall back to the narrowest ancestor that doesn't itself contain
+    #    another listing's item link (too broad = wrong listing's price)
+    for ancestor in anchor_tag.parents:
+        other_item_links = [
+            a for a in ancestor.find_all("a", href=True) if a is not anchor_tag and ITEM_URL_RE.search(a["href"])
+        ]
+        if other_item_links:
+            break
+        price = _extract_price(ancestor.get_text(" ", strip=True))
+        if price is not None:
+            return price
+
+    return None
+
+
+def _extract_price(text: str) -> Optional[float]:
+    match = PRICE_RE.search(text)
+    if not match:
+        return None
+    try:
+        return float(match.group(1).replace(",", ""))
+    except ValueError:
+        return None
+
+
+def fetch_alert_listings(
+    gmail_address: str,
+    gmail_app_password: str,
+    sender_contains: str,
+    lookback_days: int,
+) -> list[dict]:
+    """Full pipeline: IMAP fetch -> HTML extraction -> [{title, url, price}]."""
+    messages = fetch_alert_messages(gmail_address, gmail_app_password, sender_contains, lookback_days)
+    listings = []
+    for msg in messages:
+        html = get_html_body(msg)
+        if not html:
+            continue
+        listings.extend(extract_listings_from_html(html))
+    return listings

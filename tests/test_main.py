@@ -13,7 +13,7 @@ from unittest import mock
 
 import pytest
 
-from src import ebay_client, emailer
+from src import ebay_client, ebay_email_alerts, emailer
 
 
 @pytest.fixture
@@ -31,6 +31,13 @@ def project(tmp_path, monkeypatch):
                     "sold_lookback_days": 60,
                     "min_comps_required": 3,
                 },
+                "ebay_alerts": {
+                    "enabled": False,
+                    "sender_contains": "ebay.com",
+                    "lookback_days": 2,
+                    "price_history_path": "data/ebay_alert_price_history.json",
+                    "price_history_max_age_days": 180,
+                },
                 "craigslist": {"site": "chicago", "category": "sss"},
                 "dedupe": {"seen_listings_path": "data/seen_listings.json", "prune_after_days": 120},
                 "email": {"subject_prefix": "[Card Deals]"},
@@ -39,6 +46,54 @@ def project(tmp_path, monkeypatch):
     )
     monkeypatch.setenv("EBAY_CLIENT_ID", "fake_id")
     monkeypatch.setenv("EBAY_CLIENT_SECRET", "fake_secret")
+    monkeypatch.setenv("GMAIL_ADDRESS", "fake@gmail.com")
+    monkeypatch.setenv("GMAIL_APP_PASSWORD", "fakepassword")
+    monkeypatch.setenv("EMAIL_TO", "fake@gmail.com")
+
+    from src import config as config_module
+
+    monkeypatch.setattr(config_module, "ROOT_DIR", tmp_path)
+    monkeypatch.setattr(config_module, "CONFIG_DIR", tmp_path / "config")
+
+    from src import main as main_module
+
+    importlib.reload(main_module)
+    monkeypatch.setattr(main_module, "LOG_PATH", tmp_path / "logs" / "scraper.log")
+    return main_module
+
+
+@pytest.fixture
+def project_with_alerts_enabled(tmp_path, monkeypatch):
+    """Same as `project`, but eBay API creds are absent and
+    ebay_alerts.enabled=True, so run() takes the IMAP-alerts branch."""
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "watchlist.json").write_text(json.dumps({"players": ["Michael Jordan"]}))
+    (tmp_path / "config" / "settings.json").write_text(
+        json.dumps(
+            {
+                "discount_threshold_pct": 30,
+                "ebay": {
+                    "category_id": "212",
+                    "marketplace_id": "EBAY_US",
+                    "active_listing_limit_per_player": 50,
+                    "sold_lookback_days": 60,
+                    "min_comps_required": 3,
+                },
+                "ebay_alerts": {
+                    "enabled": True,
+                    "sender_contains": "ebay.com",
+                    "lookback_days": 2,
+                    "price_history_path": "data/ebay_alert_price_history.json",
+                    "price_history_max_age_days": 180,
+                },
+                "craigslist": {"site": "chicago", "category": "sss"},
+                "dedupe": {"seen_listings_path": "data/seen_listings.json", "prune_after_days": 120},
+                "email": {"subject_prefix": "[Card Deals]"},
+            }
+        )
+    )
+    monkeypatch.delenv("EBAY_CLIENT_ID", raising=False)
+    monkeypatch.delenv("EBAY_CLIENT_SECRET", raising=False)
     monkeypatch.setenv("GMAIL_ADDRESS", "fake@gmail.com")
     monkeypatch.setenv("GMAIL_APP_PASSWORD", "fakepassword")
     monkeypatch.setenv("EMAIL_TO", "fake@gmail.com")
@@ -181,6 +236,69 @@ def test_runs_successfully_without_ebay_credentials(project, monkeypatch):
     assert "eBay not configured" in sent["subject"]
     assert "Craigslist quick check" in sent["body"]
     assert "chicago.craigslist.org/search/sss" in sent["body"]
+
+
+def test_ebay_alerts_path_cold_start_flags_nothing_yet(project_with_alerts_enabled, monkeypatch):
+    """With fewer than min_comps_required observations, no comp exists yet
+    for the bucket, so nothing should be flagged -- not a false deal."""
+    monkeypatch.setattr(
+        ebay_email_alerts,
+        "fetch_alert_listings",
+        lambda *a, **kw: [{"title": "Michael Jordan PSA 9 rookie", "url": "https://www.ebay.com/itm/1001", "price": 100.0}],
+    )
+    sent = {}
+    monkeypatch.setattr(
+        emailer, "send_email", lambda subject, body, *a, **kw: sent.update(subject=subject, body=body)
+    )
+    monkeypatch.setattr("sys.argv", ["main.py"])
+
+    project_with_alerts_enabled.main()
+
+    assert "No deals today" in sent["subject"]
+
+
+def test_ebay_alerts_path_flags_deal_once_enough_history_accumulated(project_with_alerts_enabled, monkeypatch):
+    responses = [
+        [{"title": "Michael Jordan PSA 9 rookie", "url": "https://www.ebay.com/itm/1001", "price": 9000.0}],
+        [{"title": "Michael Jordan PSA 9 rookie", "url": "https://www.ebay.com/itm/1002", "price": 9500.0}],
+        [{"title": "Michael Jordan PSA 9 rookie", "url": "https://www.ebay.com/itm/1003", "price": 10000.0}],
+        [{"title": "Michael Jordan PSA 9 rookie", "url": "https://www.ebay.com/itm/1004", "price": 5000.0}],
+    ]
+    call_index = {"n": -1}
+
+    def fake_fetch(*a, **kw):
+        call_index["n"] += 1
+        return responses[call_index["n"]]
+
+    monkeypatch.setattr(ebay_email_alerts, "fetch_alert_listings", fake_fetch)
+
+    sent = []
+    monkeypatch.setattr(emailer, "send_email", lambda subject, body, *a, **kw: sent.append((subject, body)))
+    monkeypatch.setattr("sys.argv", ["main.py"])
+
+    for _ in range(4):
+        project_with_alerts_enabled.main()
+
+    last_subject, last_body = sent[-1]
+    assert "1 card deal found" in last_subject
+    assert "eBay (saved-search alert)" in last_body
+
+
+def test_ebay_alerts_dry_run_does_not_persist_price_history(project_with_alerts_enabled, monkeypatch):
+    monkeypatch.setattr(
+        ebay_email_alerts,
+        "fetch_alert_listings",
+        lambda *a, **kw: [{"title": "Michael Jordan PSA 9 rookie", "url": "https://www.ebay.com/itm/1001", "price": 100.0}],
+    )
+    monkeypatch.setattr(emailer, "send_email", mock.Mock(side_effect=AssertionError("should not send in dry-run")))
+    monkeypatch.setattr("sys.argv", ["main.py", "--dry-run"])
+
+    project_with_alerts_enabled.main()
+
+    from src.config import load_config
+
+    cfg = load_config()
+    assert not cfg.ebay_alert_price_history_path.exists()
 
 
 def test_logging_is_rotated_not_unbounded(project, monkeypatch):
