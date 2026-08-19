@@ -4,17 +4,15 @@ Daily scan of eBay for underpriced sports card listings on a watchlist,
 emailed to you as a ranked report -- plus ready-to-click Craigslist search
 links, since Craigslist can't be scraped automatically (see below).
 
-**Current status: eBay API access was declined; email-alerts path built as
-an alternative.** eBay's developer account application was rejected
-outright (see "eBay account declined" below), so the eBay Browse API path
-in this README's step 1 isn't usable right now. Instead, there's a second
-way to get eBay data without any API access at all: eBay's own
-saved-search email alerts, read via IMAP -- see "eBay via saved-search
-email alerts" below. It's built, tested against synthetic fixtures, and
-disabled by default (`ebay_alerts.enabled: false` in
-`config/settings.json`) until you turn it on and validate it against a
-real alert email. Until then, or if you'd rather just wait for the API
-appeal, the scraper runs fine in Craigslist-links-only mode.
+**Current status: eBay API access was declined; running on the
+email-alerts path instead.** eBay's developer account application was
+rejected outright (see "eBay account declined" below), so the eBay Browse
+API path in this README's step 1 isn't usable. Instead, eBay data comes
+from its own saved-search email alerts, read via IMAP -- see "eBay via
+saved-search email alerts" below. Validated against real alert emails
+(2026-08-18) and working. If the API appeal ever succeeds, the Browse API
+path takes over automatically with no config changes needed -- it's
+checked first.
 
 ## What it does
 
@@ -78,16 +76,28 @@ path. Nothing about eBay's own systems is touched or automated against --
 eBay decides what to send and when; this only processes mail you already
 receive.
 
+**Validated (2026-08-18)** against 14 real alert emails covering the full
+watchlist: 327 listings extracted, 96 correctly matched to watchlist
+players, zero observed player-name collisions (e.g. Caleb Williams vs.
+Caleb Wilson stayed correctly separated). One minor cosmetic quirk: eBay
+truncates long titles in these emails, which can occasionally cut a grade
+number mid-digit (a "PSA 10" showing as "PSA 1…"). That only affects the
+grade text shown in the report, not which comp bucket a listing lands in
+(raw vs. graded is unaffected), so it's not worth engineering around.
+
 **One real tradeoff worth knowing:** eBay's saved-search alerts only cover
 *newly listed* items, not their full standing inventory, and there's no
 sold-comps feed on this path. So comps are built by accumulating every
 price this script observes in alert emails over time
 (`data/ebay_alert_price_history.json`, pruned after 180 days by default) --
 weaker than real sold data, same "not real sold data" caveat already
-labeled elsewhere in the report, and it starts from nothing: expect zero
-flagged deals for the first several days until enough history accumulates
-per player/card-type (`ebay_alerts.price_history_max_age_days` and the
-existing `ebay.min_comps_required` control this).
+labeled elsewhere in the report. How fast comps become usable depends on
+volume, not calendar time: a bucket needs `ebay.min_comps_required`
+observations (default 3) before it gets a comp at all, and every matched
+listing in a run counts toward that -- so a high-volume player can clear
+that bar on day one if a single alert batch contains enough listings for
+them, while a low-volume player may take longer to accumulate enough
+history.
 
 ### Setup
 
@@ -101,14 +111,9 @@ existing `ebay.min_comps_required` control this).
    python -m scripts.test_ebay_alerts --raw   # also shows listings before player-matching
    ```
    This prints what it can extract from your actual alert emails --
-   nothing is sent or written to disk. **This step matters**: the HTML
-   parsing in `src/ebay_email_alerts.py` was built from eBay's known-
-   stable `/itm/<id>` link format plus a nearby-price heuristic, tested
-   against synthetic fixture emails, but has not been validated against a
-   real eBay alert email (eBay's actual notification template could
-   differ from what's assumed). If matched listings come back empty or
-   obviously wrong, tell me what `--raw` shows and the parsing logic can
-   be adjusted to match eBay's real template.
+   nothing is sent or written to disk. If eBay ever changes their email
+   template and matched listings come back empty or obviously wrong, run
+   this again and share the `--raw` output so the parser can be adjusted.
 4. Once that looks right, `python -m src.main --dry-run` will show the
    full report, comps included.
 

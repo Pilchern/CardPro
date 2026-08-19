@@ -10,12 +10,15 @@ daily, only when new matching listings appeared in the last 24h) -- this
 just reads mail you already receive, using the same Gmail App Password
 already used for SMTP (App Passwords work for IMAP too, no new credential).
 
-PROVISIONAL: extract_listings_from_html() is built from eBay's long-stable
-/itm/<id> item-link URL format plus a nearby-price heuristic, but it has
-NOT been validated against a real alert email -- eBay's notification
-template could differ from what's assumed here. Run
-`python -m scripts.test_ebay_alerts` after you have at least one real
-alert email in your inbox, and adjust this file if the results look wrong.
+VALIDATED (2026-08-18): extract_listings_from_html() was confirmed working
+against 14 real alert emails / 327 real extracted listings / 96 correctly
+matched watchlist listings, with no observed player-name collisions. One
+known minor quirk: eBay truncates long titles in these emails, which can
+occasionally cut a grade number mid-digit (e.g. "PSA 1…" that's really a
+truncated "PSA 10"). That only affects the grade text shown in reports,
+not comp bucketing (raw vs. graded is unaffected), so it's cosmetic. If
+eBay changes their email template later, re-run
+`python -m scripts.test_ebay_alerts --raw` to re-validate.
 """
 from __future__ import annotations
 
