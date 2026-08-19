@@ -461,6 +461,85 @@ class TestFlagDeals:
         assert listing.comp_median is None  # never matched, so never filled in
 
 
+class TestFlagDealsHierarchical:
+    """Unit tests for main.flag_deals_hierarchical -- same two-gate logic
+    as flag_deals, but comps come from comps.lookup_hierarchical_comp
+    (identity-aware) instead of a flat price-tier dict."""
+
+    def _listing(self, **overrides):
+        from src.card_identity import CardIdentity, Field
+        from src.models import Listing
+
+        defaults = dict(
+            id="1",
+            source="ebay-alert",
+            title="2024 Panini Prizm Silver Caleb Williams #123 PSA 10",
+            price=100.0,
+            url="http://example.com/1",
+            player="Caleb Williams",
+            card_type="graded",
+            grader="PSA",
+            grade="10",
+            card_identity=CardIdentity(
+                year=Field(2024, "high"), set_name=Field("Prizm", "high"),
+                parallel=Field("Silver", "high"), card_number=Field("123", "high"),
+            ),
+        )
+        defaults.update(overrides)
+        return Listing(**defaults)
+
+    def test_flags_and_sets_confidence_on_exact_match(self):
+        from src import comps, main
+
+        listing = self._listing(price=100.0)
+        hier_table = {
+            "exact": {("Caleb Williams", 2024, "Prizm", "Silver", "123", "PSA", "10"): comps.CompStats(200.0, 5, True)},
+            "near_exact": {}, "family": {}, "price_tier": {},
+        }
+        flagged = main.flag_deals_hierarchical([listing], hier_table, threshold_pct=30, min_savings_dollars=10)
+
+        assert flagged == [listing]
+        assert listing.comp_level_matched == "exact"
+        assert listing.comp_confidence == "high"
+        assert listing.dollar_savings == 100.0
+
+    def test_falls_back_to_price_tier_and_marks_low_confidence(self):
+        from src import comps, main
+
+        listing = self._listing(price=100.0, card_identity=None)
+        hier_table = {
+            "exact": {}, "near_exact": {}, "family": {},
+            "price_tier": {("Caleb Williams", "graded", "100_plus"): comps.CompStats(150.0, 5, True)},
+        }
+        flagged = main.flag_deals_hierarchical([listing], hier_table, threshold_pct=30, min_savings_dollars=10)
+
+        assert flagged == [listing]
+        assert listing.comp_level_matched == "price_tier"
+        assert listing.comp_confidence == "low"
+
+    def test_not_flagged_when_no_level_matches(self):
+        from src import main
+
+        listing = self._listing(price=100.0)
+        hier_table = {"exact": {}, "near_exact": {}, "family": {}, "price_tier": {}}
+        flagged = main.flag_deals_hierarchical([listing], hier_table, threshold_pct=30, min_savings_dollars=10)
+
+        assert flagged == []
+        assert listing.comp_median is None
+
+    def test_still_respects_dollar_and_percent_gates(self):
+        from src import comps, main
+
+        listing = self._listing(price=195.0)  # comp 200 -> 2.5% off, $5 saved -- below both gates
+        hier_table = {
+            "exact": {("Caleb Williams", 2024, "Prizm", "Silver", "123", "PSA", "10"): comps.CompStats(200.0, 5, True)},
+            "near_exact": {}, "family": {}, "price_tier": {},
+        }
+        flagged = main.flag_deals_hierarchical([listing], hier_table, threshold_pct=30, min_savings_dollars=10)
+
+        assert flagged == []
+
+
 class TestCardIdentityWiring:
     """A lot's price isn't comparable to a single card's -- lots must be
     excluded from matching entirely (not recorded into comps, not flagged),

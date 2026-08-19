@@ -83,3 +83,102 @@ def test_price_tiering_separates_cheap_and_expensive_comps():
     )
     assert table[("MJ", "raw", "under_5")].median == 1.5
     assert table[("MJ", "raw", "100_plus")].median == 150.0
+
+
+def _obs(player="Caleb Williams", card_type="graded", price=200.0, **identity):
+    base = {"player": player, "card_type": card_type, "price": price}
+    base.update(identity)
+    return base
+
+
+class TestHierarchicalComps:
+    """build_hierarchical_comp_table / lookup_hierarchical_comp: identity-
+    aware comps that try exact -> near_exact -> family -> price_tier, first
+    level with enough samples wins. See comps.py module docstring."""
+
+    def test_exact_level_used_when_full_identity_matches(self):
+        observations = [
+            _obs(price=p, year=2024, set_name="Prizm", parallel="Silver", card_number="123", grader="PSA", grade="10")
+            for p in (190.0, 200.0, 210.0)
+        ]
+        table = comps.build_hierarchical_comp_table(observations, min_comps_required=3)
+
+        result = comps.lookup_hierarchical_comp(
+            table, player="Caleb Williams", card_type="graded", price=100.0,
+            grader="PSA", grade="10", year=2024, set_name="Prizm", parallel="Silver", card_number="123",
+        )
+
+        assert result is not None
+        stats, level = result
+        assert level == "exact"
+        assert stats.median == 200.0
+
+    def test_falls_back_to_near_exact_when_exact_has_no_samples(self):
+        # Same year/set/parallel/card_type, but no observation shares this
+        # exact card_number/grader/grade combo -- exact must miss.
+        observations = [
+            _obs(price=p, year=2024, set_name="Prizm", parallel="Silver", card_number="999", grader="BGS", grade="9.5")
+            for p in (90.0, 100.0, 110.0)
+        ]
+        table = comps.build_hierarchical_comp_table(observations, min_comps_required=3)
+
+        result = comps.lookup_hierarchical_comp(
+            table, player="Caleb Williams", card_type="graded", price=50.0,
+            grader="PSA", grade="10", year=2024, set_name="Prizm", parallel="Silver", card_number="123",
+        )
+
+        assert result is not None
+        stats, level = result
+        assert level == "near_exact"
+        assert stats.median == 100.0
+
+    def test_falls_back_to_family_when_parallel_unknown(self):
+        observations = [
+            _obs(price=p, year=2024, set_name="Prizm", parallel="Gold")
+            for p in (50.0, 60.0, 70.0)
+        ]
+        table = comps.build_hierarchical_comp_table(observations, min_comps_required=3)
+
+        # Listing's own parallel is unknown -- near_exact needs a parallel
+        # value (even if it's a different one), family only needs year+set.
+        result = comps.lookup_hierarchical_comp(
+            table, player="Caleb Williams", card_type="graded", price=30.0,
+            year=2024, set_name="Prizm",
+        )
+
+        assert result is not None
+        stats, level = result
+        assert level == "family"
+        assert stats.median == 60.0
+
+    def test_falls_back_to_price_tier_when_no_identity_known(self):
+        observations = [_obs(price=p) for p in (40.0, 50.0, 60.0)]  # all "25_to_100" tier, same as the $50 listing
+        table = comps.build_hierarchical_comp_table(observations, min_comps_required=3)
+
+        result = comps.lookup_hierarchical_comp(table, player="Caleb Williams", card_type="graded", price=50.0)
+
+        assert result is not None
+        stats, level = result
+        assert level == "price_tier"
+        assert stats.median == 50.0
+
+    def test_none_when_no_level_has_enough_samples(self):
+        observations = [_obs(price=100.0)]  # only 1 observation
+        table = comps.build_hierarchical_comp_table(observations, min_comps_required=3)
+
+        result = comps.lookup_hierarchical_comp(table, player="Caleb Williams", card_type="graded", price=50.0)
+
+        assert result is None
+
+    def test_confidence_by_level_mapping(self):
+        assert comps.CONFIDENCE_BY_LEVEL["exact"] == "high"
+        assert comps.CONFIDENCE_BY_LEVEL["near_exact"] == "medium"
+        assert comps.CONFIDENCE_BY_LEVEL["family"] == "low"
+        assert comps.CONFIDENCE_BY_LEVEL["price_tier"] == "low"
+
+    def test_hierarchical_comps_are_always_marked_as_fallback(self):
+        """There's no "real sold data" version of the self-built alert
+        history -- every hierarchical comp is asking-price-based."""
+        observations = [_obs(price=p, year=2024, set_name="Prizm") for p in (90.0, 100.0, 110.0)]
+        table = comps.build_hierarchical_comp_table(observations, min_comps_required=3)
+        assert table["family"][("Caleb Williams", 2024, "Prizm")].is_fallback is True

@@ -17,6 +17,13 @@ from src.models import Listing
 
 SOURCE_LABELS = {"ebay": "eBay", "ebay-alert": "eBay (saved-search alert)"}
 
+COMP_LEVEL_LABELS = {
+    "exact": "exact card match",
+    "near_exact": "near-exact match",
+    "family": "same year/set",
+    "price_tier": "price-tier estimate",
+}
+
 
 def rank_deals(deals: list[Listing]) -> list[Listing]:
     return sorted(deals, key=lambda d: d.dollar_savings or 0, reverse=True)
@@ -78,13 +85,17 @@ def build_report(
             tag_parts.append("MEM")
         tags = f"  [{' + '.join(tag_parts)}]" if tag_parts else ""
         fallback_note = " [comp = active-listing proxy, not real sold data]" if deal.comp_is_fallback else ""
+        confidence_note = ""
+        if deal.comp_confidence and deal.comp_level_matched:
+            level_label = COMP_LEVEL_LABELS.get(deal.comp_level_matched, deal.comp_level_matched)
+            confidence_note = f", {deal.comp_confidence.upper()} confidence -- {level_label}"
         card_line = _build_card_identity_line(deal.card_identity)
         lines.append(
             f"{i}. {deal.player} -- {grading}{tags}\n"
             f"   ${deal.dollar_savings:,.2f} saved ({deal.pct_under_market:.0f}% under market)   |   "
             f"{SOURCE_LABELS.get(deal.source, deal.source)}\n"
             f"   Price: ${deal.price:,.2f}   Comp median: ${deal.comp_median:,.2f} "
-            f"(n={deal.comp_sample_size}){fallback_note}\n"
+            f"(n={deal.comp_sample_size}{confidence_note}){fallback_note}\n"
             f"{card_line}"
             f"   {deal.title}\n"
             f"   {deal.url}\n"

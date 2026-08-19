@@ -191,3 +191,18 @@ def test_mem_tag_shown_when_identity_flags_memorabilia():
     listing = make_listing(card_identity=identity)
     _, body = report.build_report([listing], 30, date(2026, 8, 10))
     assert "[MEM]" in body
+
+
+def test_comp_confidence_shown_when_set():
+    listing = make_listing(comp_level_matched="exact", comp_confidence="high")
+    _, body = report.build_report([listing], 30, date(2026, 8, 10))
+    assert "HIGH confidence -- exact card match" in body
+
+
+def test_comp_confidence_omitted_when_not_set():
+    """The eBay-API path's flag_deals doesn't set these fields -- the
+    comp line must look exactly like it did before this feature existed."""
+    listing = make_listing(comp_level_matched=None, comp_confidence=None)
+    _, body = report.build_report([listing], 30, date(2026, 8, 10))
+    assert "confidence" not in body
+    assert "(n=5)" in body

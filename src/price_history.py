@@ -24,6 +24,14 @@ rather than a real distribution of distinct cards. Observations from
 before this field existed have no "id" and are kept as-is (can't be
 deduped retroactively); they age out naturally via prune_old.
 
+Each observation also carries whatever card_identity fields were known for
+it (year/set_name/parallel/card_number/grader/grade -- see card_identity.py),
+so comps.build_hierarchical_comp_table() can group observations by actual
+card identity instead of only price tier. Fields that weren't extracted are
+stored as None/absent, same "unknown, not guessed" rule as card_identity.py
+itself; older observations recorded before these fields existed simply
+don't have them, and fall back to matching only at the price_tier level.
+
 Plain JSON on disk, same pattern as dedupe.py -- easy to open and inspect.
 """
 from __future__ import annotations
@@ -32,6 +40,7 @@ import json
 import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Optional
 
 from src import comps
 
@@ -57,9 +66,34 @@ def save(path: Path, history: dict) -> None:
     tmp_path.replace(path)
 
 
-def record(history: dict, player: str, card_type: str, price: float, today: str, listing_id: str = "") -> None:
+def record(
+    history: dict,
+    player: str,
+    card_type: str,
+    price: float,
+    today: str,
+    listing_id: str = "",
+    year: Optional[int] = None,
+    set_name: Optional[str] = None,
+    parallel: Optional[str] = None,
+    card_number: Optional[str] = None,
+    grader: Optional[str] = None,
+    grade: Optional[str] = None,
+) -> None:
     key = f"{player}|{card_type}"
-    history.setdefault(key, []).append({"price": price, "date": today, "id": listing_id})
+    history.setdefault(key, []).append(
+        {
+            "price": price,
+            "date": today,
+            "id": listing_id,
+            "year": year,
+            "set_name": set_name,
+            "parallel": parallel,
+            "card_number": card_number,
+            "grader": grader,
+            "grade": grade,
+        }
+    )
 
 
 def prune_old(history: dict, max_age_days: int, today: datetime) -> dict:
@@ -79,26 +113,25 @@ def prune_old(history: dict, max_age_days: int, today: datetime) -> dict:
     return pruned
 
 
-def as_buckets(history: dict) -> dict[tuple[str, str, str], list[float]]:
-    """Converts the {"Player|card_type": [{"price":.., "date":.., "id":..}]}
-    storage format into the {(player, card_type, price_tier): [prices]}
-    shape comps.py expects. Tiering happens here (at read time) rather than
-    at storage time, so the on-disk history stays a simple chronological log
-    -- each price is tiered by its own value when the comp table is built.
+def deduped_observations(history: dict) -> list[dict]:
+    """One observation per unique listing id (the latest by date), each
+    tagged with its "player" and "card_type" (parsed out of the storage
+    key) -- the shared corpus used both by as_buckets() (price-tier only)
+    and comps.build_hierarchical_comp_table() (identity-aware levels).
 
     Observations sharing the same listing "id" are collapsed to just the
-    most recent one before bucketing, so one listing seen on multiple days
-    (overlapping lookback windows, more than one matching saved search,
-    etc.) contributes a single price to the median instead of one per
-    sighting -- see module docstring. Observations with no "id" (pre-dating
-    this field) can't be deduped and are kept as-is.
+    most recent one, so one listing seen on multiple days (overlapping
+    lookback windows, more than one matching saved search, etc.)
+    contributes a single price to the median instead of one per sighting --
+    see module docstring. Observations with no "id" (pre-dating that field)
+    can't be deduped and are kept as-is.
     """
-    buckets: dict[tuple[str, str, str], list[float]] = {}
-    for key, observations in history.items():
+    observations: list[dict] = []
+    for key, entries in history.items():
         player, _, card_type = key.partition("|")
         latest_by_id: dict[str, dict] = {}
         unidentified: list[dict] = []
-        for obs in observations:
+        for obs in entries:
             listing_id = obs.get("id")
             if not listing_id:
                 unidentified.append(obs)
@@ -107,7 +140,22 @@ def as_buckets(history: dict) -> dict[tuple[str, str, str], list[float]]:
             if prior is None or obs.get("date", "") >= prior.get("date", ""):
                 latest_by_id[listing_id] = obs
         for obs in list(latest_by_id.values()) + unidentified:
-            price = obs["price"]
-            tier_key = (player, card_type, comps.price_tier(price))
-            buckets.setdefault(tier_key, []).append(price)
+            merged = dict(obs)
+            merged["player"] = player
+            merged["card_type"] = card_type
+            observations.append(merged)
+    return observations
+
+
+def as_buckets(history: dict) -> dict[tuple[str, str, str], list[float]]:
+    """Converts the stored history into the {(player, card_type,
+    price_tier): [prices]} shape comps.py's price-tier-only fallback
+    expects. Tiering happens here (at read time) rather than at storage
+    time, so the on-disk history stays a simple chronological log -- each
+    price is tiered by its own value when the comp table is built.
+    """
+    buckets: dict[tuple[str, str, str], list[float]] = {}
+    for obs in deduped_observations(history):
+        tier_key = (obs["player"], obs["card_type"], comps.price_tier(obs["price"]))
+        buckets.setdefault(tier_key, []).append(obs["price"])
     return buckets

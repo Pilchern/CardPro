@@ -229,6 +229,54 @@ def flag_deals(
     return flagged
 
 
+def flag_deals_hierarchical(
+    active_listings: list[Listing],
+    hier_table: dict[str, dict[tuple, comps.CompStats]],
+    threshold_pct: float,
+    min_savings_dollars: float = 0,
+) -> list[Listing]:
+    """Same two-gate deal logic as flag_deals (percent AND dollar), but
+    looks the comp up through comps.lookup_hierarchical_comp's
+    exact -> near_exact -> family -> price_tier levels instead of a single
+    price-tier bucket -- see comps.py module docstring. Used on the
+    eBay-alerts path, where every listing already has card_identity set
+    (see fetch_ebay_alert_active). Sets comp_level_matched/comp_confidence
+    on the listing so the report can show how strong the match actually was.
+    """
+    flagged = []
+    for listing in active_listings:
+        if listing.price is None:
+            continue
+        identity = listing.card_identity
+        result = comps.lookup_hierarchical_comp(
+            hier_table,
+            player=listing.player,
+            card_type=listing.card_type,
+            price=listing.price,
+            grader=listing.grader,
+            grade=listing.grade,
+            year=identity.year.value if identity else None,
+            set_name=identity.set_name.value if identity else None,
+            parallel=identity.parallel.value if identity else None,
+            card_number=identity.card_number.value if identity else None,
+        )
+        if result is None:
+            continue
+        stats, level = result
+        listing.comp_median = stats.median
+        listing.comp_sample_size = stats.sample_size
+        listing.comp_is_fallback = stats.is_fallback
+        listing.comp_level_matched = level
+        listing.comp_confidence = comps.CONFIDENCE_BY_LEVEL[level]
+        dollar_savings = stats.median - listing.price
+        pct_under = dollar_savings / stats.median * 100
+        listing.pct_under_market = pct_under
+        listing.dollar_savings = dollar_savings
+        if pct_under >= threshold_pct and dollar_savings >= min_savings_dollars:
+            flagged.append(listing)
+    return flagged
+
+
 def run(args: argparse.Namespace) -> None:
     logger = logging.getLogger("main")
     logger.info("Starting daily card deal scan (dry_run=%s)", args.dry_run)
@@ -264,17 +312,31 @@ def run(args: argparse.Namespace) -> None:
 
         history = price_history.load(cfg.ebay_alert_price_history_path)
         for listing in ebay_active:
-            price_history.record(history, listing.player, listing.card_type, listing.price, today_str, listing.id)
+            identity = listing.card_identity
+            price_history.record(
+                history,
+                listing.player,
+                listing.card_type,
+                listing.price,
+                today_str,
+                listing.id,
+                year=identity.year.value if identity else None,
+                set_name=identity.set_name.value if identity else None,
+                parallel=identity.parallel.value if identity else None,
+                card_number=identity.card_number.value if identity else None,
+                grader=listing.grader,
+                grade=listing.grade,
+            )
         history = price_history.prune_old(history, cfg.ebay_alert_price_history_max_age_days, today)
 
-        comp_table = comps.build_comp_table(
-            sold_by_bucket={},
-            min_comps_required=cfg.ebay_min_comps_required,
-            fallback_by_bucket=price_history.as_buckets(history),
+        observations = price_history.deduped_observations(history)
+        hier_table = comps.build_hierarchical_comp_table(observations, cfg.ebay_min_comps_required)
+        logger.info(
+            "Built hierarchical comps from accumulated alert history: %d exact, %d near-exact, %d family, %d price-tier bucket(s)",
+            len(hier_table["exact"]), len(hier_table["near_exact"]), len(hier_table["family"]), len(hier_table["price_tier"]),
         )
-        logger.info("Built comps for %d (player, card_type) buckets from accumulated alert history", len(comp_table))
 
-        candidate_deals = flag_deals(ebay_active, comp_table, cfg.discount_threshold_pct, cfg.min_savings_dollars)
+        candidate_deals = flag_deals_hierarchical(ebay_active, hier_table, cfg.discount_threshold_pct, cfg.min_savings_dollars)
         logger.info("%d listing(s) clear the %.0f%% discount threshold", len(candidate_deals), cfg.discount_threshold_pct)
 
         enrich_truncated_grades(candidate_deals)

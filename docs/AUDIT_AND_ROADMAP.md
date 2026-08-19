@@ -254,8 +254,8 @@ Sectioned Report  (NEW structure: Top Opportunities / Long-Term Targets / Target
 - [ ] Add regression tests for known-tricky titles still uncovered: reprints, facsimile autographs, same-last-name different-player collisions.
 
 **P1 — major deal-quality improvements**
-- [x] Card Identity Engine (year/manufacturer/set/parallel/card#/serial/auto/memorabilia extraction with confidence + source) — **shipped** (`src/card_identity.py`), wired into both fetch paths, surfaced in the report as a "Card: ..." line and `[AUTO]`/`[MEM]` tags. Comps themselves still use price-tier bucketing only — the next item below is what actually uses this data for matching.
-- [ ] Hierarchical comp matching + `comp_confidence` field, replacing the single price-tier bucket as the *only* level. This is the highest-leverage remaining item: identity fields now exist but comps don't use them yet.
+- [x] Card Identity Engine (year/manufacturer/set/parallel/card#/serial/auto/memorabilia extraction with confidence + source) — **shipped** (`src/card_identity.py`), wired into both fetch paths, surfaced in the report as a "Card: ..." line and `[AUTO]`/`[MEM]` tags.
+- [x] Hierarchical comp matching + `comp_confidence`/`comp_level_matched` fields, replacing the single price-tier bucket as the *only* level — **shipped** (`comps.build_hierarchical_comp_table` / `comps.lookup_hierarchical_comp`, `main.flag_deals_hierarchical`, wired into the eBay-alerts path). Tries exact → near_exact → family → price_tier in order; the report now shows e.g. "HIGH confidence -- exact card match" next to the comp median. `price_history` now stores year/set/parallel/card_number/grader/grade per observation so the corpus itself is identity-aware, not just the current listing being evaluated.
 - [ ] Total acquisition cost (shipping) — extract when present, show "shipping unknown" honestly when not, gate/rank on total cost.
 - [ ] Target Card Watchlist (specific year/set/card#/grade targets, coexisting with the player-level watchlist, `[TARGET CARD]` tag).
 - [ ] Comp sample recency + count shown plainly in the report (not just `n=X`).
@@ -295,9 +295,18 @@ in the report; and lot-listing exclusion (a lot's price was being treated
 as a single card's price, a real comp-contamination/false-positive risk
 that the identity engine made fixable).
 
-**Still open, in priority order per §9:** hierarchical comp matching that
-actually uses the new identity fields (the highest-leverage remaining
-item — identity data exists now but comps don't consume it yet), total
-acquisition cost (shipping), target-card watchlist, comp sample recency/
-count shown in the report, then the P2 desirability/auction/report-
-redesign items.
+**Pass 3:** hierarchical comp matching (`comps.build_hierarchical_comp_table`
+/ `lookup_hierarchical_comp`, `main.flag_deals_hierarchical`) — comps on
+the alerts path now try exact → near_exact → family → price_tier, in
+that order, and the report shows which level matched and how confident it
+is. `price_history` observations now carry identity fields so the
+self-built corpus can actually be matched at those levels as it grows.
+Early on, most matches will still resolve at `family` or `price_tier`
+(there simply isn't years of per-parallel history yet) — that's expected
+and the whole reason the hierarchy degrades gracefully instead of
+requiring an exact match to flag anything at all.
+
+**Still open, in priority order per §9:** total acquisition cost
+(shipping), target-card watchlist, comp sample recency shown in the
+report (age of the observations backing a comp, not just the count),
+then the P2 desirability/auction/report-redesign items.

@@ -31,3 +31,5 @@ class Listing:
     comp_is_fallback: bool = False  # True if comp came from active-listing proxy, not real sold data
     pct_under_market: Optional[float] = None
     dollar_savings: Optional[float] = None  # comp_median - price; primary ranking key, see report.rank_deals
+    comp_level_matched: Optional[str] = None  # "exact" | "near_exact" | "family" | "price_tier" -- see comps.py
+    comp_confidence: Optional[str] = None  # "high" | "medium" | "low" -- derived from comp_level_matched

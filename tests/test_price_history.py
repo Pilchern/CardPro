@@ -3,20 +3,59 @@ from datetime import datetime, timezone
 from src import price_history
 
 
+def _obs(price, date, listing_id="", **identity_overrides):
+    """Matches the shape price_history.record() now stores: price/date/id
+    plus whatever identity fields were passed (None if not given)."""
+    obs = {
+        "price": price,
+        "date": date,
+        "id": listing_id,
+        "year": None,
+        "set_name": None,
+        "parallel": None,
+        "card_number": None,
+        "grader": None,
+        "grade": None,
+    }
+    obs.update(identity_overrides)
+    return obs
+
+
 def test_record_appends_to_bucket():
     history = {}
     price_history.record(history, "Michael Jordan", "graded", 100.0, "2026-08-10", "id-1")
     price_history.record(history, "Michael Jordan", "graded", 120.0, "2026-08-11", "id-2")
     assert history["Michael Jordan|graded"] == [
-        {"price": 100.0, "date": "2026-08-10", "id": "id-1"},
-        {"price": 120.0, "date": "2026-08-11", "id": "id-2"},
+        _obs(100.0, "2026-08-10", "id-1"),
+        _obs(120.0, "2026-08-11", "id-2"),
     ]
 
 
 def test_record_defaults_listing_id_to_empty_string():
     history = {}
     price_history.record(history, "Michael Jordan", "graded", 100.0, "2026-08-10")
-    assert history["Michael Jordan|graded"] == [{"price": 100.0, "date": "2026-08-10", "id": ""}]
+    assert history["Michael Jordan|graded"] == [_obs(100.0, "2026-08-10", "")]
+
+
+def test_record_stores_card_identity_fields():
+    history = {}
+    price_history.record(
+        history,
+        "Caleb Williams",
+        "graded",
+        200.0,
+        "2026-08-10",
+        "id-1",
+        year=2024,
+        set_name="Prizm",
+        parallel="Silver",
+        card_number="123",
+        grader="PSA",
+        grade="10",
+    )
+    assert history["Caleb Williams|graded"] == [
+        _obs(200.0, "2026-08-10", "id-1", year=2024, set_name="Prizm", parallel="Silver", card_number="123", grader="PSA", grade="10")
+    ]
 
 
 def test_as_buckets_converts_to_comps_shape():
