@@ -1,6 +1,12 @@
 """Builds the plain-text email body from a ranked list of flagged eBay
 deals, plus a Craigslist quick-check section (see craigslist_links.py --
-Craigslist isn't scraped, just linked)."""
+Craigslist isn't scraped, just linked).
+
+Ranking is by dollar amount saved, not percent under market -- percent
+alone lets trivial deals through (50% off a $5 common is still just
+$2.50), so it's a worse "is this worth your time" signal than the actual
+dollar figure. Percent is still shown for context.
+"""
 from __future__ import annotations
 
 from datetime import date
@@ -12,7 +18,7 @@ SOURCE_LABELS = {"ebay": "eBay", "ebay-alert": "eBay (saved-search alert)"}
 
 
 def rank_deals(deals: list[Listing]) -> list[Listing]:
-    return sorted(deals, key=lambda d: d.pct_under_market or 0, reverse=True)
+    return sorted(deals, key=lambda d: d.dollar_savings or 0, reverse=True)
 
 
 def build_report(
@@ -21,6 +27,7 @@ def build_report(
     run_date: date,
     craigslist_links: Optional[dict[str, str]] = None,
     ebay_enabled: bool = True,
+    min_savings_dollars: float = 0,
 ) -> tuple[str, str]:
     """Returns (subject, body)."""
     ranked = rank_deals(deals)
@@ -42,14 +49,15 @@ def build_report(
         subject = f"No deals today ({date_str})"
         body = (
             f"Card deal scan for {date_str}: nothing cleared the "
-            f"{threshold_pct:.0f}% under comp median threshold today.\n\n"
+            f"{threshold_pct:.0f}% under comp median AND ${min_savings_dollars:,.2f} "
+            f"saved thresholds today.\n\n"
             f"This is an automated 'still running' confirmation, not an error."
         )
         return subject, body + cl_section
 
     subject = f"{len(ranked)} card deal{'s' if len(ranked) != 1 else ''} found ({date_str})"
 
-    lines = [f"Card deal scan for {date_str} -- {len(ranked)} listing(s) below market:\n"]
+    lines = [f"Card deal scan for {date_str} -- {len(ranked)} listing(s) below market, ranked by $ saved:\n"]
     for i, deal in enumerate(ranked, start=1):
         grading = f"{deal.grader} {deal.grade}" if deal.card_type == "graded" else "raw/ungraded"
         if deal.title_truncated:
@@ -57,13 +65,17 @@ def build_report(
         fallback_note = " [comp = active-listing proxy, not real sold data]" if deal.comp_is_fallback else ""
         lines.append(
             f"{i}. {deal.player} -- {grading}\n"
+            f"   ${deal.dollar_savings:,.2f} saved ({deal.pct_under_market:.0f}% under market)   |   "
+            f"{SOURCE_LABELS.get(deal.source, deal.source)}\n"
             f"   Price: ${deal.price:,.2f}   Comp median: ${deal.comp_median:,.2f} "
             f"(n={deal.comp_sample_size}){fallback_note}\n"
-            f"   {deal.pct_under_market:.0f}% under market   |   {SOURCE_LABELS.get(deal.source, deal.source)}\n"
             f"   {deal.title}\n"
             f"   {deal.url}\n"
         )
-    lines.append(f"\nThreshold: flagging listings {threshold_pct:.0f}%+ under their comp median.")
+    lines.append(
+        f"\nThreshold: flagging listings {threshold_pct:.0f}%+ under their comp median AND "
+        f"at least ${min_savings_dollars:,.2f} saved."
+    )
     return subject, "\n".join(lines) + cl_section
 
 

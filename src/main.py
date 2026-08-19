@@ -177,7 +177,15 @@ def flag_deals(
     active_listings: list[Listing],
     comp_table: dict[tuple[str, str], comps.CompStats],
     threshold_pct: float,
+    min_savings_dollars: float = 0,
 ) -> list[Listing]:
+    """A listing is flagged only if it clears BOTH gates: threshold_pct
+    (relative -- % under market) AND min_savings_dollars (absolute -- real
+    dollars saved). Percent alone lets trivial deals through (50% off a $5
+    common is still just $2.50); dollars alone would flag a $10 discount on
+    a $10,000 card that's barely below market. Both together is what
+    "worth your time" actually means.
+    """
     flagged = []
     for listing in active_listings:
         stats = comp_table.get((listing.player, listing.card_type))
@@ -186,9 +194,11 @@ def flag_deals(
         listing.comp_median = stats.median
         listing.comp_sample_size = stats.sample_size
         listing.comp_is_fallback = stats.is_fallback
-        pct_under = (stats.median - listing.price) / stats.median * 100
+        dollar_savings = stats.median - listing.price
+        pct_under = dollar_savings / stats.median * 100
         listing.pct_under_market = pct_under
-        if pct_under >= threshold_pct:
+        listing.dollar_savings = dollar_savings
+        if pct_under >= threshold_pct and dollar_savings >= min_savings_dollars:
             flagged.append(listing)
     return flagged
 
@@ -218,7 +228,7 @@ def run(args: argparse.Namespace) -> None:
         comp_table = comps.build_comp_table(sold_buckets, cfg.ebay_min_comps_required, fallback_buckets)
         logger.info("Built comps for %d (player, card_type) buckets", len(comp_table))
 
-        candidate_deals = flag_deals(ebay_active, comp_table, cfg.discount_threshold_pct)
+        candidate_deals = flag_deals(ebay_active, comp_table, cfg.discount_threshold_pct, cfg.min_savings_dollars)
         logger.info("%d listing(s) clear the %.0f%% discount threshold", len(candidate_deals), cfg.discount_threshold_pct)
 
     elif cfg.ebay_alerts_enabled:
@@ -238,7 +248,7 @@ def run(args: argparse.Namespace) -> None:
         )
         logger.info("Built comps for %d (player, card_type) buckets from accumulated alert history", len(comp_table))
 
-        candidate_deals = flag_deals(ebay_active, comp_table, cfg.discount_threshold_pct)
+        candidate_deals = flag_deals(ebay_active, comp_table, cfg.discount_threshold_pct, cfg.min_savings_dollars)
         logger.info("%d listing(s) clear the %.0f%% discount threshold", len(candidate_deals), cfg.discount_threshold_pct)
 
         enrich_truncated_grades(candidate_deals)
@@ -262,7 +272,9 @@ def run(args: argparse.Namespace) -> None:
             dedupe.record_flagged(deal.id, deal.price, seen, today_str)
     logger.info("%d deal(s) are new or price-dropped since last run", len(new_deals))
 
-    subject, body = report.build_report(new_deals, cfg.discount_threshold_pct, date.today(), cl_links, ebay_data_available)
+    subject, body = report.build_report(
+        new_deals, cfg.discount_threshold_pct, date.today(), cl_links, ebay_data_available, cfg.min_savings_dollars
+    )
     subject = f"{cfg.email_subject_prefix} {subject}"
 
     if args.dry_run:

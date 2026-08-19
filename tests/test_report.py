@@ -18,6 +18,7 @@ def make_listing(**overrides) -> Listing:
         comp_median=200.0,
         comp_sample_size=5,
         pct_under_market=50.0,
+        dollar_savings=100.0,
     )
     defaults.update(overrides)
     return Listing(**defaults)
@@ -29,9 +30,11 @@ def test_empty_deals_gives_nothing_today_email():
     assert "August 10, 2026" in body
 
 
-def test_report_ranks_by_pct_under_descending():
-    low = make_listing(id="low", pct_under_market=35.0)
-    high = make_listing(id="high", pct_under_market=60.0)
+def test_report_ranks_by_dollar_savings_descending():
+    # "low" has the higher percent-off but the smaller dollar amount --
+    # ranking must go by $ saved, not percent, per the "worth your time" ask.
+    low = make_listing(id="low", pct_under_market=90.0, dollar_savings=9.0)
+    high = make_listing(id="high", pct_under_market=25.0, dollar_savings=250.0)
     ranked = report.rank_deals([low, high])
     assert [d.id for d in ranked] == ["high", "low"]
 
@@ -43,6 +46,7 @@ def test_report_includes_key_fields():
     assert "$100.00" in body
     assert "$200.00" in body
     assert "50% under market" in body
+    assert "$100.00 saved" in body
     assert "eBay" in body
     assert listing.url in body
 
@@ -100,3 +104,14 @@ def test_non_truncated_title_has_no_caveat():
     listing = make_listing(title_truncated=False)
     _, body = report.build_report([listing], 30, date(2026, 8, 10))
     assert "grade uncertain" not in body
+
+
+def test_min_savings_dollars_shown_in_threshold_footer():
+    listing = make_listing()
+    _, body = report.build_report([listing], 30, date(2026, 8, 10), min_savings_dollars=15)
+    assert "$15.00 saved" in body
+
+
+def test_min_savings_dollars_shown_in_nothing_today_email():
+    _, body = report.build_report([], 30, date(2026, 8, 10), min_savings_dollars=15)
+    assert "$15.00" in body

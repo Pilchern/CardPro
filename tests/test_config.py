@@ -10,6 +10,7 @@ def _write_config_files(tmp_path):
         json.dumps(
             {
                 "discount_threshold_pct": 30,
+                "min_savings_dollars": 0,
                 "ebay": {
                     "category_id": "212",
                     "marketplace_id": "EBAY_US",
@@ -93,6 +94,17 @@ def test_ebay_alerts_config_loads(tmp_path, monkeypatch):
     assert cfg.ebay_alerts_lookback_days == 2
     assert cfg.ebay_alert_price_history_path == tmp_path / "data" / "ebay_alert_price_history.json"
     assert cfg.ebay_alert_price_history_max_age_days == 180
+
+
+def test_min_savings_dollars_loads(tmp_path, monkeypatch):
+    _write_config_files(tmp_path)
+    _base_env(monkeypatch)
+    monkeypatch.setattr(config_module, "ROOT_DIR", tmp_path)
+    monkeypatch.setattr(config_module, "CONFIG_DIR", tmp_path / "config")
+
+    cfg = config_module.load_config()
+
+    assert cfg.min_savings_dollars == 0
 
 
 def test_missing_gmail_still_raises(tmp_path, monkeypatch):

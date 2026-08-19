@@ -28,6 +28,7 @@ class Config:
     players: list[str]
 
     discount_threshold_pct: float
+    min_savings_dollars: float
     ebay_category_id: str
     ebay_marketplace_id: str
     ebay_active_listing_limit: int
@@ -83,6 +84,7 @@ def load_config() -> Config:
         email_to=os.environ.get("EMAIL_TO") or os.environ["GMAIL_ADDRESS"],
         players=watchlist["players"],
         discount_threshold_pct=float(settings["discount_threshold_pct"]),
+        min_savings_dollars=float(settings["min_savings_dollars"]),
         ebay_category_id=settings["ebay"]["category_id"],
         ebay_marketplace_id=settings["ebay"]["marketplace_id"],
         ebay_active_listing_limit=int(settings["ebay"]["active_listing_limit_per_player"]),

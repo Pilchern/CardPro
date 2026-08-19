@@ -24,6 +24,7 @@ def project(tmp_path, monkeypatch):
         json.dumps(
             {
                 "discount_threshold_pct": 30,
+                "min_savings_dollars": 0,
                 "ebay": {
                     "category_id": "212",
                     "marketplace_id": "EBAY_US",
@@ -72,6 +73,7 @@ def project_with_alerts_enabled(tmp_path, monkeypatch):
         json.dumps(
             {
                 "discount_threshold_pct": 30,
+                "min_savings_dollars": 0,
                 "ebay": {
                     "category_id": "212",
                     "marketplace_id": "EBAY_US",
@@ -381,3 +383,63 @@ class TestEnrichTruncatedGrades:
 
         assert deal.title_truncated is False
         fetch.assert_not_called()
+
+
+class TestFlagDeals:
+    """Unit tests for main.flag_deals -- pure function, no fixture needed."""
+
+    def _listing(self, **overrides):
+        from src.models import Listing
+
+        defaults = dict(
+            id="1",
+            source="ebay",
+            title="Michael Jordan card",
+            price=100.0,
+            url="http://example.com/1",
+            player="Michael Jordan",
+            card_type="raw",
+        )
+        defaults.update(overrides)
+        return Listing(**defaults)
+
+    def _comp_table(self, median, n=5):
+        from src import comps
+
+        return {("Michael Jordan", "raw"): comps.CompStats(median=median, sample_size=n, is_fallback=False)}
+
+    def test_flags_when_both_percent_and_dollar_gates_clear(self):
+        from src import main
+
+        listing = self._listing(price=100.0)  # comp 200 -> 50% off, $100 saved
+        flagged = main.flag_deals([listing], self._comp_table(200.0), threshold_pct=30, min_savings_dollars=10)
+        assert flagged == [listing]
+        assert listing.dollar_savings == 100.0
+        assert listing.pct_under_market == 50.0
+
+    def test_blocked_by_dollar_gate_despite_clearing_percent(self):
+        """50% off is well past the percent threshold, but $1 saved isn't
+        worth a click -- the dollar gate must still block it."""
+        from src import main
+
+        listing = self._listing(price=1.0)  # comp 2.00 -> 50% off, $1 saved
+        flagged = main.flag_deals([listing], self._comp_table(2.0), threshold_pct=30, min_savings_dollars=10)
+        assert flagged == []
+
+    def test_blocked_by_percent_gate_despite_clearing_dollar_amount(self):
+        """$50 off a $10,000 card is real money but barely under market --
+        the percent gate must still block it."""
+        from src import main
+
+        listing = self._listing(price=9950.0)  # comp 10000 -> 0.5% off, $50 saved
+        flagged = main.flag_deals([listing], self._comp_table(10000.0), threshold_pct=30, min_savings_dollars=10)
+        assert flagged == []
+
+    def test_min_savings_dollars_defaults_to_zero(self):
+        """Backwards-compatible default: omitting min_savings_dollars
+        shouldn't block anything that clears the percent threshold."""
+        from src import main
+
+        listing = self._listing(price=1.0)
+        flagged = main.flag_deals([listing], self._comp_table(2.0), threshold_pct=30)
+        assert flagged == [listing]

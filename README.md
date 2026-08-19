@@ -23,15 +23,19 @@ checked first.
    sold data when the API + Marketplace Insights are available, otherwise
    a self-building history of observed prices (from the API's active
    listings, or from alert emails) that gets more reliable over time.
-3. Flags any active eBay listing priced 30%+ (configurable) below its
-   matched comp median.
+3. Flags an active eBay listing only if it clears **both** gates: 30%+
+   (configurable) below its matched comp median, AND at least $10
+   (configurable) in real dollar savings -- percent alone lets trivial
+   deals through (50% off a $5 common is still just $2.50), so both
+   together is what "worth your time" actually means.
 4. Drops anything already emailed in a prior run, unless its price has
    dropped further.
-5. Emails you a ranked report -- biggest discount first -- plus a
-   Craigslist quick-check link per watchlist player so you can eyeball
-   that source yourself in a few seconds. If no eBay deals qualify, you
-   still get a short "nothing today" email (with the Craigslist links
-   still attached), not silence. If the run crashes outright (network
+5. Emails you a ranked report -- **ranked by dollar amount saved**, not
+   percent (a $250-off $999 card matters more than a 90%-off $10 one) --
+   plus a Craigslist quick-check link per watchlist player so you can
+   eyeball that source yourself in a few seconds. If no eBay deals
+   qualify, you still get a short "nothing today" email (with the
+   Craigslist links still attached), not silence. If the run crashes outright (network
    blip, eBay API issue, etc.), you get a short "Scan FAILED" email
    instead of nothing at all -- same "not silence" principle applied to
    errors, not just the zero-deals case.
@@ -332,14 +336,21 @@ listing title (e.g. "Walter Payton" requires both "walter" and "payton"
 somewhere in the title) -- no code changes needed. The same list drives
 both the eBay searches and the Craigslist quick-check links.
 
-### Discount threshold -- `config/settings.json`
+### Discount threshold + minimum savings -- `config/settings.json`
 
 ```json
-"discount_threshold_pct": 30
+"discount_threshold_pct": 30,
+"min_savings_dollars": 10
 ```
 
-Change `30` to whatever percent-under-comp-median you want to flag as a
-deal. Lower = more (weaker) deals reported; higher = fewer, stronger ones.
+A listing must clear **both** to get flagged. `discount_threshold_pct`
+is the percent-under-comp-median (lower = more, weaker deals; higher =
+fewer, stronger ones). `min_savings_dollars` is the real dollar amount
+that must be saved, regardless of percent -- this is the knob that keeps
+trivial deals (a 50%-off $5 common) out of the report even when the
+percent alone would qualify. Raise it if the report still feels
+cluttered with low-value listings; lower it (or set to `0`) if you want
+to see everything that clears the percent threshold, no matter how small.
 
 ### Other tunables in `config/settings.json`
 
