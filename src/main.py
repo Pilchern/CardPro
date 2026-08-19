@@ -248,7 +248,7 @@ def run(args: argparse.Namespace) -> None:
 
         history = price_history.load(cfg.ebay_alert_price_history_path)
         for listing in ebay_active:
-            price_history.record(history, listing.player, listing.card_type, listing.price, today_str)
+            price_history.record(history, listing.player, listing.card_type, listing.price, today_str, listing.id)
         history = price_history.prune_old(history, cfg.ebay_alert_price_history_max_age_days, today)
 
         comp_table = comps.build_comp_table(
