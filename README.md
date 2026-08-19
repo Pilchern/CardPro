@@ -19,10 +19,14 @@ checked first.
 1. For each player on your watchlist, pulls **active** eBay listings --
    either via the Browse API, or via eBay's own saved-search email alerts
    if the API isn't available (see below for both).
-2. Builds comps (market-value medians) per player/card-type: real eBay
-   sold data when the API + Marketplace Insights are available, otherwise
-   a self-building history of observed prices (from the API's active
-   listings, or from alert emails) that gets more reliable over time.
+2. Builds comps (market-value medians) per (player, raw-vs-graded, price
+   tier): real eBay sold data when the API + Marketplace Insights are
+   available, otherwise a self-building history of observed prices (from
+   the API's active listings, or from alert emails) that gets more
+   reliable over time. The price-tier split (under $5 / $5-25 / $25-100 /
+   $100+) exists so a $1 base common never gets measured against a median
+   pulled from $90 numbered parallels of the same player -- see "Comps:
+   why price tiers" below.
 3. Flags an active eBay listing only if it clears **both** gates: 30%+
    (configurable) below its matched comp median, AND at least $10
    (configurable) in real dollar savings -- percent alone lets trivial
@@ -32,6 +36,9 @@ checked first.
    dropped further.
 5. Emails you a ranked report -- **ranked by dollar amount saved**, not
    percent (a $250-off $999 card matters more than a 90%-off $10 one) --
+   with each entry tagged `[YOUNG CORE]` and/or `[ROOKIE CARD]` where they
+   apply, so you can weigh "good value today" against "betting on this
+   player long-term" yourself (see "Value vs. potential tags" below) --
    plus a Craigslist quick-check link per watchlist player so you can
    eyeball that source yourself in a few seconds. If no eBay deals
    qualify, you still get a short "nothing today" email (with the
@@ -39,6 +46,45 @@ checked first.
    blip, eBay API issue, etc.), you get a short "Scan FAILED" email
    instead of nothing at all -- same "not silence" principle applied to
    errors, not just the zero-deals case.
+
+## Comps: why price tiers
+
+Splitting "raw" into one bucket per player was too coarse: a $1 base
+common and a $90 numbered parallel of the same player are both "raw", and
+averaging their prices together produces a median that doesn't represent
+either one -- in practice this made ordinary $1 commons look like 97%-off
+steals against a comp median that was really describing rare parallels.
+Comps are now bucketed by `(player, card_type, price_tier)`, where a
+listing's own price picks which tier it's compared against (tiers: under
+$5, $5-25, $25-100, $100+ -- see `comps.PRICE_TIERS`).
+
+**Accepted tradeoff:** a genuinely rare card that got mistakenly listed
+cheap is now compared only against other cheap-tier items, so it's less
+likely to stand out as an outlier deal than it would have under the old
+(contaminated) bucketing. That's intentional -- it trades a small chance
+of missing a rare fluke for a large reduction in false-positive noise from
+ordinary commons, which is what was actually happening.
+
+## Value vs. potential tags
+
+Flagged deals aren't just "underpriced today" -- they're evaluated on two
+separate, visible dimensions rather than one hidden blended score (this
+project has always avoided black-box ranking, see "Explicitly out of
+scope" below):
+
+- **`[YOUNG CORE]`** -- the player is tagged `young_core` in
+  `config/watchlist.json`'s `player_tiers`, meaning you're betting on
+  their long-term growth, not just today's price. Untagged players
+  default to `legend` (established value, no tag shown).
+- **`[ROOKIE CARD]`** -- the title matched "RC" or "Rookie"
+  (`matcher.detect_rookie_card`), the same simple keyword-match style as
+  grading detection.
+
+Both tags are shown, not blended into the ranking math -- the report
+still ranks by dollar saved, and you apply your own judgment about how
+much a `[YOUNG CORE] [ROOKIE CARD]` tag on a deal should move it up your
+list. Edit `player_tiers` in `config/watchlist.json` any time your read on
+a player changes.
 
 ## eBay account declined
 
@@ -335,6 +381,17 @@ is case-insensitive and requires every word of the name to appear in the
 listing title (e.g. "Walter Payton" requires both "walter" and "payton"
 somewhere in the title) -- no code changes needed. The same list drives
 both the eBay searches and the Craigslist quick-check links.
+
+Optionally tag any player as `young_core` in the same file's
+`player_tiers` object to get the `[YOUNG CORE]` report tag (see "Value vs.
+potential tags" above) -- players left out of `player_tiers` default to
+`legend`:
+
+```json
+"player_tiers": {
+  "Caleb Wilson": "young_core"
+}
+```
 
 ### Discount threshold + minimum savings -- `config/settings.json`
 

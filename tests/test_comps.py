@@ -41,3 +41,45 @@ def test_build_comp_table_prefers_real_sold_over_fallback():
     )
     assert table[("MJ", "raw")].median == 110
     assert table[("MJ", "raw")].is_fallback is False
+
+
+def test_price_tier_under_5():
+    assert comps.price_tier(1.0) == "under_5"
+    assert comps.price_tier(4.99) == "under_5"
+
+
+def test_price_tier_boundaries_are_lower_inclusive():
+    assert comps.price_tier(5.0) == "5_to_25"
+    assert comps.price_tier(25.0) == "25_to_100"
+    assert comps.price_tier(100.0) == "100_plus"
+
+
+def test_price_tier_5_to_25():
+    assert comps.price_tier(10.0) == "5_to_25"
+    assert comps.price_tier(24.99) == "5_to_25"
+
+
+def test_price_tier_25_to_100():
+    assert comps.price_tier(50.0) == "25_to_100"
+    assert comps.price_tier(99.99) == "25_to_100"
+
+
+def test_price_tier_100_plus_unbounded():
+    assert comps.price_tier(100.0) == "100_plus"
+    assert comps.price_tier(50000.0) == "100_plus"
+
+
+def test_price_tiering_separates_cheap_and_expensive_comps():
+    """The scenario that motivated tiering: a $1 common and a $150
+    numbered parallel of the same player/card_type must land in
+    different buckets so their prices don't get averaged together."""
+    table = comps.build_comp_table(
+        sold_by_bucket={},
+        min_comps_required=1,
+        fallback_by_bucket={
+            ("MJ", "raw", comps.price_tier(1.0)): [1.0, 1.5, 2.0],
+            ("MJ", "raw", comps.price_tier(150.0)): [140.0, 150.0, 160.0],
+        },
+    )
+    assert table[("MJ", "raw", "under_5")].median == 1.5
+    assert table[("MJ", "raw", "100_plus")].median == 150.0

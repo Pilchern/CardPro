@@ -1,6 +1,6 @@
 {
   "_comment": "Edit this list any time -- one player/name per entry. Names are matched case-insensitively against listing titles (first AND last name must both appear). Re-run is all that's needed, no code changes.",
-  "_current_era_note": "Bears (Williams/Odunze/Burden) are stable, ascending, and safe long-term watchlist bets as of Aug 2026. Bulls are mid-rebuild after a full roster purge at the Feb 2026 trade deadline -- Giddey and Buzelis are the two players reporting says the team is building around, and Wilson is their fresh #4-overall 2026 rookie. Revisit this trio periodically since a rebuilding team's roster moves fastest.",
+  "_current_era_note": "Bears (Williams/Odunze/Burden/Loveland) are stable, ascending, and safe long-term watchlist bets as of Aug 2026. Bulls are mid-rebuild after a full roster purge at the Feb 2026 trade deadline -- Giddey and Buzelis are the two players reporting says the team is building around, and Wilson is their fresh #4-overall 2026 rookie. Revisit this trio periodically since a rebuilding team's roster moves fastest.",
   "players": [
     "Michael Jordan",
     "Walter Payton",
@@ -17,5 +17,15 @@
     "Josh Giddey",
     "Matas Buzelis",
     "Caleb Wilson"
-  ]
+  ],
+  "_player_tiers_comment": "Purely a display tag shown on flagged deals in the report -- doesn't affect matching, comps, or flagging math at all. 'legend' = established/retired, value is about the deal itself. 'young_core' = active young player being bet on for long-term growth, not just today's price. Players not listed here default to 'legend'. Edit freely as your read on a player changes.",
+  "player_tiers": {
+    "Caleb Williams": "young_core",
+    "Rome Odunze": "young_core",
+    "Luther Burden": "young_core",
+    "Colston Loveland": "young_core",
+    "Josh Giddey": "young_core",
+    "Matas Buzelis": "young_core",
+    "Caleb Wilson": "young_core"
+  }
 }

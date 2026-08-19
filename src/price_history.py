@@ -22,6 +22,8 @@ import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from src import comps
+
 logger = logging.getLogger(__name__)
 
 
@@ -66,12 +68,18 @@ def prune_old(history: dict, max_age_days: int, today: datetime) -> dict:
     return pruned
 
 
-def as_buckets(history: dict) -> dict[tuple[str, str], list[float]]:
+def as_buckets(history: dict) -> dict[tuple[str, str, str], list[float]]:
     """Converts the {"Player|card_type": [{"price":.., "date":..}]} storage
-    format into the {(player, card_type): [prices]} shape comps.py expects.
+    format into the {(player, card_type, price_tier): [prices]} shape
+    comps.py expects. Tiering happens here (at read time) rather than at
+    storage time, so the on-disk history stays a simple chronological log
+    -- each price is tiered by its own value when the comp table is built.
     """
-    buckets: dict[tuple[str, str], list[float]] = {}
+    buckets: dict[tuple[str, str, str], list[float]] = {}
     for key, observations in history.items():
         player, _, card_type = key.partition("|")
-        buckets[(player, card_type)] = [obs["price"] for obs in observations]
+        for obs in observations:
+            price = obs["price"]
+            tier_key = (player, card_type, comps.price_tier(price))
+            buckets.setdefault(tier_key, []).append(price)
     return buckets

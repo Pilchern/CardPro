@@ -19,6 +19,8 @@ class Listing:
     grader: Optional[str] = None  # PSA / BGS / SGC / CSG
     grade: Optional[str] = None  # e.g. "9", "9.5"
     title_truncated: bool = False  # True if the grade might be wrong -- see ebay_email_alerts.looks_truncated
+    player_tier: str = "legend"  # "legend" | "young_core" -- display tag only, see config/watchlist.json
+    is_rookie_card: bool = False  # keyword match on "RC"/"Rookie" -- see matcher.detect_rookie_card
 
     # filled in once comps + dedupe run
     comp_median: Optional[float] = None

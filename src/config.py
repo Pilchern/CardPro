@@ -26,6 +26,7 @@ class Config:
     email_to: str
 
     players: list[str]
+    player_tiers: dict[str, str]  # player name -> "legend" | "young_core"; unlisted defaults to "legend"
 
     discount_threshold_pct: float
     min_savings_dollars: float
@@ -83,6 +84,7 @@ def load_config() -> Config:
         gmail_app_password=os.environ["GMAIL_APP_PASSWORD"],
         email_to=os.environ.get("EMAIL_TO") or os.environ["GMAIL_ADDRESS"],
         players=watchlist["players"],
+        player_tiers=watchlist.get("player_tiers", {}),
         discount_threshold_pct=float(settings["discount_threshold_pct"]),
         min_savings_dollars=float(settings["min_savings_dollars"]),
         ebay_category_id=settings["ebay"]["category_id"],

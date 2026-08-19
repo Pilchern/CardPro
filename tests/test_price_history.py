@@ -19,8 +19,24 @@ def test_as_buckets_converts_to_comps_shape():
         "Walter Payton|raw": [{"price": 50.0, "date": "2026-08-10"}],
     }
     buckets = price_history.as_buckets(history)
-    assert buckets[("Michael Jordan", "graded")] == [100.0, 120.0]
-    assert buckets[("Walter Payton", "raw")] == [50.0]
+    assert buckets[("Michael Jordan", "graded", "100_plus")] == [100.0, 120.0]
+    assert buckets[("Walter Payton", "raw", "25_to_100")] == [50.0]
+
+
+def test_as_buckets_separates_observations_by_price_tier():
+    """A $1 common and a $150 parallel observed for the same
+    player/card_type must land in different buckets, not get averaged
+    together -- this is the whole reason as_buckets tiers at read time."""
+    history = {
+        "Michael Jordan|raw": [
+            {"price": 1.0, "date": "2026-08-10"},
+            {"price": 1.5, "date": "2026-08-10"},
+            {"price": 150.0, "date": "2026-08-10"},
+        ],
+    }
+    buckets = price_history.as_buckets(history)
+    assert buckets[("Michael Jordan", "raw", "under_5")] == [1.0, 1.5]
+    assert buckets[("Michael Jordan", "raw", "100_plus")] == [150.0]
 
 
 def test_prune_old_removes_stale_observations_but_keeps_bucket_if_any_remain():

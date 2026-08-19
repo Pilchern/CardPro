@@ -33,3 +33,24 @@ def test_detect_grading_raw():
 
 def test_detect_grading_sgc():
     assert matcher.detect_grading("Walter Payton SGC 10 rookie") == ("graded", "SGC", "10")
+
+
+def test_detect_rookie_card_rc_abbreviation():
+    assert matcher.detect_rookie_card("JOSH GIDDEY RC 2021-22 PANINI PRIZM") is True
+
+
+def test_detect_rookie_card_full_word():
+    assert matcher.detect_rookie_card("2024 Panini Donruss-Rookie Card Caleb Williams") is True
+
+
+def test_detect_rookie_card_false_when_absent():
+    assert matcher.detect_rookie_card("1996-97 Topps Michael Jordan #23") is False
+
+
+def test_detect_rookie_card_case_insensitive():
+    assert matcher.detect_rookie_card("2025 bowman chrome rc colston loveland") is True
+
+
+def test_detect_rookie_card_does_not_match_substring():
+    # "RC" inside another word (e.g. a set name) shouldn't false-positive
+    assert matcher.detect_rookie_card("1996-97 Topps Chrome ARCHIVE Michael Jordan") is False

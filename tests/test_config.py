@@ -107,6 +107,31 @@ def test_min_savings_dollars_loads(tmp_path, monkeypatch):
     assert cfg.min_savings_dollars == 0
 
 
+def test_player_tiers_defaults_to_empty_dict_when_absent(tmp_path, monkeypatch):
+    _write_config_files(tmp_path)  # watchlist.json here has no player_tiers key at all
+    _base_env(monkeypatch)
+    monkeypatch.setattr(config_module, "ROOT_DIR", tmp_path)
+    monkeypatch.setattr(config_module, "CONFIG_DIR", tmp_path / "config")
+
+    cfg = config_module.load_config()
+
+    assert cfg.player_tiers == {}
+
+
+def test_player_tiers_loads_when_present(tmp_path, monkeypatch):
+    _write_config_files(tmp_path)
+    (tmp_path / "config" / "watchlist.json").write_text(
+        json.dumps({"players": ["Michael Jordan", "Caleb Wilson"], "player_tiers": {"Caleb Wilson": "young_core"}})
+    )
+    _base_env(monkeypatch)
+    monkeypatch.setattr(config_module, "ROOT_DIR", tmp_path)
+    monkeypatch.setattr(config_module, "CONFIG_DIR", tmp_path / "config")
+
+    cfg = config_module.load_config()
+
+    assert cfg.player_tiers == {"Caleb Wilson": "young_core"}
+
+
 def test_missing_gmail_still_raises(tmp_path, monkeypatch):
     _write_config_files(tmp_path)
     monkeypatch.delenv("GMAIL_ADDRESS", raising=False)

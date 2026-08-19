@@ -1,7 +1,18 @@
 """Market-value ("comp") calculation. Deliberately dumb: group prices by
-(player, raw-vs-graded), take the median, done. No weighting, no outlier
-trimming, no per-grade sub-buckets -- if a number looks wrong you can go
+(player, raw-vs-graded, price tier), take the median, done. No weighting,
+no keyword-based rarity guessing -- if a number looks wrong you can go
 look at the exact price list that produced it.
+
+The price-tier split exists because "raw" alone is too coarse: a $1 base
+common and a $90 numbered parallel of the same player are both "raw", and
+averaging them together makes the $1 card look like a 97%-off steal
+against a median it was never really competing with. Splitting by price
+tier compares a listing only against others in roughly the same price
+class -- accepted tradeoff: a genuinely rare card mistakenly listed cheap
+is now compared against cheap-tier comps too, so it's less likely to get
+caught as an outlier deal. That's intentional: it trades a small chance of
+missing a rare fluke for a large reduction in false-positive noise from
+ordinary commons, which is what was actually happening in practice.
 
 Comps are computed once per run from whatever sold data ebay_client could
 get (real sold comps via Marketplace Insights when available, otherwise a
@@ -12,6 +23,21 @@ from __future__ import annotations
 
 import statistics
 from dataclasses import dataclass
+
+# (label, min_inclusive, max_exclusive). Last tier's max is unbounded.
+PRICE_TIERS = [
+    ("under_5", 0, 5),
+    ("5_to_25", 5, 25),
+    ("25_to_100", 25, 100),
+    ("100_plus", 100, float("inf")),
+]
+
+
+def price_tier(price: float) -> str:
+    for label, lo, hi in PRICE_TIERS:
+        if lo <= price < hi:
+            return label
+    return PRICE_TIERS[-1][0]
 
 
 @dataclass
@@ -29,11 +55,12 @@ def compute_median(prices: list[float], is_fallback: bool = False) -> CompStats 
 
 
 def build_comp_table(
-    sold_by_bucket: dict[tuple[str, str], list[float]],
+    sold_by_bucket: dict[tuple, list[float]],
     min_comps_required: int,
-    fallback_by_bucket: dict[tuple[str, str], list[float]] | None = None,
-) -> dict[tuple[str, str], CompStats]:
-    """sold_by_bucket / fallback_by_bucket keys are (player, card_type).
+    fallback_by_bucket: dict[tuple, list[float]] | None = None,
+) -> dict[tuple, CompStats]:
+    """sold_by_bucket / fallback_by_bucket keys are (player, card_type,
+    price_tier) -- see price_tier() above for why the tier is included.
 
     Real sold comps are used whenever there are at least min_comps_required
     of them. Otherwise, if a fallback price list is available for that same

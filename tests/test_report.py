@@ -115,3 +115,31 @@ def test_min_savings_dollars_shown_in_threshold_footer():
 def test_min_savings_dollars_shown_in_nothing_today_email():
     _, body = report.build_report([], 30, date(2026, 8, 10), min_savings_dollars=15)
     assert "$15.00" in body
+
+
+def test_young_core_tag_shown():
+    listing = make_listing(player_tier="young_core")
+    _, body = report.build_report([listing], 30, date(2026, 8, 10))
+    assert "[YOUNG CORE]" in body
+
+
+def test_rookie_card_tag_shown():
+    listing = make_listing(is_rookie_card=True)
+    _, body = report.build_report([listing], 30, date(2026, 8, 10))
+    assert "[ROOKIE CARD]" in body
+
+
+def test_both_tags_shown_together():
+    listing = make_listing(player_tier="young_core", is_rookie_card=True)
+    _, body = report.build_report([listing], 30, date(2026, 8, 10))
+    assert "[YOUNG CORE + ROOKIE CARD]" in body
+
+
+def test_legend_tier_has_no_tag():
+    listing = make_listing(player_tier="legend", is_rookie_card=False)
+    _, body = report.build_report([listing], 30, date(2026, 8, 10))
+    # the tag legend/header line always mentions these words to explain what
+    # they mean when they DO show up -- what must be absent is the actual
+    # bracketed per-entry tag
+    assert "[YOUNG CORE]" not in body
+    assert "[ROOKIE CARD]" not in body

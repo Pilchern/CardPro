@@ -71,13 +71,15 @@ def fetch_ebay_active(cfg, players: list[str], token: str) -> list[Listing]:
                     card_type=card_type,
                     grader=grader,
                     grade=grade,
+                    player_tier=cfg.player_tiers.get(matched_player, "legend"),
+                    is_rookie_card=matcher.detect_rookie_card(title),
                 )
             )
     return listings
 
 
-def fetch_ebay_sold_buckets(cfg, players: list[str], token: str) -> dict[tuple[str, str], list[float]]:
-    buckets: dict[tuple[str, str], list[float]] = defaultdict(list)
+def fetch_ebay_sold_buckets(cfg, players: list[str], token: str) -> dict[tuple[str, str, str], list[float]]:
+    buckets: dict[tuple[str, str, str], list[float]] = defaultdict(list)
     for player in players:
         items = ebay_client.search_sold_items(
             query=player,
@@ -93,16 +95,16 @@ def fetch_ebay_sold_buckets(cfg, players: list[str], token: str) -> dict[tuple[s
             card_type, _, _ = matcher.detect_grading(title)
             price = ebay_client.extract_price(item)
             if price is not None:
-                buckets[(player, card_type)].append(price)
+                buckets[(player, card_type, comps.price_tier(price))].append(price)
     return buckets
 
 
-def active_price_buckets(active_listings: list[Listing]) -> dict[tuple[str, str], list[float]]:
+def active_price_buckets(active_listings: list[Listing]) -> dict[tuple[str, str, str], list[float]]:
     """Used only as the comps fallback when real sold comps aren't available."""
-    buckets: dict[tuple[str, str], list[float]] = defaultdict(list)
+    buckets: dict[tuple[str, str, str], list[float]] = defaultdict(list)
     for listing in active_listings:
         if listing.price is not None:
-            buckets[(listing.player, listing.card_type)].append(listing.price)
+            buckets[(listing.player, listing.card_type, comps.price_tier(listing.price))].append(listing.price)
     return buckets
 
 
@@ -133,6 +135,8 @@ def fetch_ebay_alert_active(cfg, today_str: str) -> list[Listing]:
                 card_type=card_type,
                 grader=grader,
                 grade=grade,
+                player_tier=cfg.player_tiers.get(matched_player, "legend"),
+                is_rookie_card=matcher.detect_rookie_card(item["title"]),
             )
         )
     return listings
@@ -175,7 +179,7 @@ def build_craigslist_links(cfg, players: list[str]) -> dict[str, str]:
 
 def flag_deals(
     active_listings: list[Listing],
-    comp_table: dict[tuple[str, str], comps.CompStats],
+    comp_table: dict[tuple[str, str, str], comps.CompStats],
     threshold_pct: float,
     min_savings_dollars: float = 0,
 ) -> list[Listing]:
@@ -185,11 +189,17 @@ def flag_deals(
     common is still just $2.50); dollars alone would flag a $10 discount on
     a $10,000 card that's barely below market. Both together is what
     "worth your time" actually means.
+
+    A listing is compared only against comps in its own price tier (see
+    comps.price_tier) -- looked up using the listing's own price -- so a
+    $1 common isn't measured against a median pulled from $90 parallels.
     """
     flagged = []
     for listing in active_listings:
-        stats = comp_table.get((listing.player, listing.card_type))
-        if stats is None or listing.price is None:
+        if listing.price is None:
+            continue
+        stats = comp_table.get((listing.player, listing.card_type, comps.price_tier(listing.price)))
+        if stats is None:
             continue
         listing.comp_median = stats.median
         listing.comp_sample_size = stats.sample_size

@@ -57,14 +57,24 @@ def build_report(
 
     subject = f"{len(ranked)} card deal{'s' if len(ranked) != 1 else ''} found ({date_str})"
 
-    lines = [f"Card deal scan for {date_str} -- {len(ranked)} listing(s) below market, ranked by $ saved:\n"]
+    lines = [
+        f"Card deal scan for {date_str} -- {len(ranked)} listing(s) below market, ranked by $ saved:\n"
+        f"(tags: YOUNG CORE = betting on this player's long-term growth, not just today's price; "
+        f"ROOKIE CARD = title says RC/Rookie)\n"
+    ]
     for i, deal in enumerate(ranked, start=1):
         grading = f"{deal.grader} {deal.grade}" if deal.card_type == "graded" else "raw/ungraded"
         if deal.title_truncated:
             grading += " (grade uncertain -- eBay truncated the title, actual grade may differ)"
+        tag_parts = []
+        if deal.player_tier == "young_core":
+            tag_parts.append("YOUNG CORE")
+        if deal.is_rookie_card:
+            tag_parts.append("ROOKIE CARD")
+        tags = f"  [{' + '.join(tag_parts)}]" if tag_parts else ""
         fallback_note = " [comp = active-listing proxy, not real sold data]" if deal.comp_is_fallback else ""
         lines.append(
-            f"{i}. {deal.player} -- {grading}\n"
+            f"{i}. {deal.player} -- {grading}{tags}\n"
             f"   ${deal.dollar_savings:,.2f} saved ({deal.pct_under_market:.0f}% under market)   |   "
             f"{SOURCE_LABELS.get(deal.source, deal.source)}\n"
             f"   Price: ${deal.price:,.2f}   Comp median: ${deal.comp_median:,.2f} "

@@ -403,16 +403,19 @@ class TestFlagDeals:
         defaults.update(overrides)
         return Listing(**defaults)
 
-    def _comp_table(self, median, n=5):
+    def _comp_table(self, median, tier, n=5):
+        """The comp table key's tier must match the LISTING's own price
+        tier (that's what flag_deals looks up by), not the comp median's
+        tier -- see comps.price_tier."""
         from src import comps
 
-        return {("Michael Jordan", "raw"): comps.CompStats(median=median, sample_size=n, is_fallback=False)}
+        return {("Michael Jordan", "raw", tier): comps.CompStats(median=median, sample_size=n, is_fallback=False)}
 
     def test_flags_when_both_percent_and_dollar_gates_clear(self):
         from src import main
 
-        listing = self._listing(price=100.0)  # comp 200 -> 50% off, $100 saved
-        flagged = main.flag_deals([listing], self._comp_table(200.0), threshold_pct=30, min_savings_dollars=10)
+        listing = self._listing(price=100.0)  # $100 -> "100_plus" tier; comp 200 -> 50% off, $100 saved
+        flagged = main.flag_deals([listing], self._comp_table(200.0, "100_plus"), threshold_pct=30, min_savings_dollars=10)
         assert flagged == [listing]
         assert listing.dollar_savings == 100.0
         assert listing.pct_under_market == 50.0
@@ -422,8 +425,8 @@ class TestFlagDeals:
         worth a click -- the dollar gate must still block it."""
         from src import main
 
-        listing = self._listing(price=1.0)  # comp 2.00 -> 50% off, $1 saved
-        flagged = main.flag_deals([listing], self._comp_table(2.0), threshold_pct=30, min_savings_dollars=10)
+        listing = self._listing(price=1.0)  # $1 -> "under_5" tier; comp 2.00 -> 50% off, $1 saved
+        flagged = main.flag_deals([listing], self._comp_table(2.0, "under_5"), threshold_pct=30, min_savings_dollars=10)
         assert flagged == []
 
     def test_blocked_by_percent_gate_despite_clearing_dollar_amount(self):
@@ -431,8 +434,8 @@ class TestFlagDeals:
         the percent gate must still block it."""
         from src import main
 
-        listing = self._listing(price=9950.0)  # comp 10000 -> 0.5% off, $50 saved
-        flagged = main.flag_deals([listing], self._comp_table(10000.0), threshold_pct=30, min_savings_dollars=10)
+        listing = self._listing(price=9950.0)  # $9950 -> "100_plus" tier; comp 10000 -> 0.5% off, $50 saved
+        flagged = main.flag_deals([listing], self._comp_table(10000.0, "100_plus"), threshold_pct=30, min_savings_dollars=10)
         assert flagged == []
 
     def test_min_savings_dollars_defaults_to_zero(self):
@@ -441,5 +444,18 @@ class TestFlagDeals:
         from src import main
 
         listing = self._listing(price=1.0)
-        flagged = main.flag_deals([listing], self._comp_table(2.0), threshold_pct=30)
+        flagged = main.flag_deals([listing], self._comp_table(2.0, "under_5"), threshold_pct=30)
         assert flagged == [listing]
+
+    def test_comp_lookup_uses_listings_own_price_tier_not_comp_medians(self):
+        """A $1 listing must NOT be compared against a comp bucket built
+        from $90 items -- this is the whole point of tiering. A comp only
+        sitting in the "100_plus" bucket should never match a $1 listing,
+        even if that bucket exists."""
+        from src import main
+
+        listing = self._listing(price=1.0)  # "under_5" tier
+        comp_table = self._comp_table(90.0, "100_plus")  # wrong tier on purpose
+        flagged = main.flag_deals([listing], comp_table, threshold_pct=30, min_savings_dollars=0)
+        assert flagged == []
+        assert listing.comp_median is None  # never matched, so never filled in
