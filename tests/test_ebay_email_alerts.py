@@ -152,6 +152,39 @@ def test_looks_truncated_detects_ellipsis_char():
     assert ebay_email_alerts.looks_truncated("1990 Fleer Frank Thomas PSA 1…") is True
 
 
+def test_fetch_alert_listings_warns_when_emails_found_but_nothing_extracted(caplog):
+    """Emails present + zero listings extracted almost always means eBay
+    changed their template and the HTML parse broke -- not that there was
+    legitimately nothing new. This must be distinguishable from the normal
+    "no alert emails at all" case, which should NOT warn (see next test)."""
+    fake_imap = mock.MagicMock()
+    fake_imap.__enter__.return_value = fake_imap
+    fake_imap.search.return_value = ("OK", [b"1"])
+
+    raw_email = MIMEText("<html><body>no listing links in here at all</body></html>", "html").as_bytes()
+    fake_imap.fetch.return_value = ("OK", [(b"1 (RFC822 {123}", raw_email)])
+
+    with caplog.at_level("WARNING"):
+        with mock.patch.object(ebay_email_alerts.imaplib, "IMAP4_SSL", return_value=fake_imap):
+            listings = ebay_email_alerts.fetch_alert_listings("user@gmail.com", "app-password", "ebay.com", 2)
+
+    assert listings == []
+    assert any("changed their email template" in record.message for record in caplog.records)
+
+
+def test_fetch_alert_listings_no_warning_when_legitimately_no_emails(caplog):
+    fake_imap = mock.MagicMock()
+    fake_imap.__enter__.return_value = fake_imap
+    fake_imap.search.return_value = ("OK", [b""])
+
+    with caplog.at_level("WARNING"):
+        with mock.patch.object(ebay_email_alerts.imaplib, "IMAP4_SSL", return_value=fake_imap):
+            listings = ebay_email_alerts.fetch_alert_listings("user@gmail.com", "app-password", "ebay.com", 2)
+
+    assert listings == []
+    assert not any("changed their email template" in record.message for record in caplog.records)
+
+
 def test_looks_truncated_detects_triple_dot():
     assert ebay_email_alerts.looks_truncated("1990 Fleer Frank Thomas PSA 1...") is True
 

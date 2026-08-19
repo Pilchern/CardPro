@@ -242,7 +242,15 @@ def fetch_alert_listings(
     sender_contains: str,
     lookback_days: int,
 ) -> list[dict]:
-    """Full pipeline: IMAP fetch -> HTML extraction -> [{title, url, price}]."""
+    """Full pipeline: IMAP fetch -> HTML extraction -> [{title, url, price}].
+
+    Logs a warning if alert emails were found but nothing could be
+    extracted from any of them -- that combination almost always means
+    eBay changed their email template (or something else broke the HTML
+    parse), not that eBay legitimately had nothing new to report. Without
+    this, "the parser silently stopped working" and "no new listings
+    today" look identical in the report/logs -- see docs/AUDIT_AND_ROADMAP.md.
+    """
     messages = fetch_alert_messages(gmail_address, gmail_app_password, sender_contains, lookback_days)
     listings = []
     for msg in messages:
@@ -250,4 +258,13 @@ def fetch_alert_listings(
         if not html:
             continue
         listings.extend(extract_listings_from_html(html))
+
+    if messages and not listings:
+        logger.warning(
+            "Found %d eBay alert email(s) but extracted 0 listings from any of them -- "
+            "this usually means eBay changed their email template and extract_listings_from_html "
+            "needs updating, not that there were legitimately no new listings. "
+            "Re-run `python -m scripts.test_ebay_alerts --raw` to check.",
+            len(messages),
+        )
     return listings

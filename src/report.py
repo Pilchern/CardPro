@@ -12,6 +12,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Optional
 
+from src.card_identity import CardIdentity
 from src.models import Listing
 
 SOURCE_LABELS = {"ebay": "eBay", "ebay-alert": "eBay (saved-search alert)"}
@@ -71,14 +72,20 @@ def build_report(
             tag_parts.append("YOUNG CORE")
         if deal.is_rookie_card:
             tag_parts.append("ROOKIE CARD")
+        if deal.card_identity and deal.card_identity.is_autograph.value:
+            tag_parts.append("AUTO")
+        if deal.card_identity and deal.card_identity.is_memorabilia.value:
+            tag_parts.append("MEM")
         tags = f"  [{' + '.join(tag_parts)}]" if tag_parts else ""
         fallback_note = " [comp = active-listing proxy, not real sold data]" if deal.comp_is_fallback else ""
+        card_line = _build_card_identity_line(deal.card_identity)
         lines.append(
             f"{i}. {deal.player} -- {grading}{tags}\n"
             f"   ${deal.dollar_savings:,.2f} saved ({deal.pct_under_market:.0f}% under market)   |   "
             f"{SOURCE_LABELS.get(deal.source, deal.source)}\n"
             f"   Price: ${deal.price:,.2f}   Comp median: ${deal.comp_median:,.2f} "
             f"(n={deal.comp_sample_size}){fallback_note}\n"
+            f"{card_line}"
             f"   {deal.title}\n"
             f"   {deal.url}\n"
         )
@@ -87,6 +94,33 @@ def build_report(
         f"at least ${min_savings_dollars:,.2f} saved."
     )
     return subject, "\n".join(lines) + cl_section
+
+
+def _build_card_identity_line(identity: Optional[CardIdentity]) -> str:
+    """One "Card: ..." line built from whichever identity fields are
+    actually known -- omitted entirely if nothing was extracted, since an
+    empty "Card:" line would be noise, not information. See card_identity.py:
+    every field here is either a confident extraction or unknown, never a
+    guess, so this line only ever shows what we're actually sure of.
+    """
+    if identity is None:
+        return ""
+    parts = []
+    if identity.year.value is not None:
+        parts.append(str(identity.year.value))
+    if identity.manufacturer.value is not None:
+        parts.append(identity.manufacturer.value)
+    if identity.set_name.value is not None:
+        parts.append(identity.set_name.value)
+    if identity.parallel.value is not None:
+        parts.append(identity.parallel.value)
+    if identity.card_number.value is not None:
+        parts.append(f"#{identity.card_number.value}")
+    if identity.serial_number.value is not None:
+        parts.append(f"({identity.serial_number.value})")
+    if not parts:
+        return ""
+    return f"   Card: {' '.join(parts)}\n"
 
 
 def _build_craigslist_section(craigslist_links: Optional[dict[str, str]]) -> str:

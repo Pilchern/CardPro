@@ -4,6 +4,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
+from src.card_identity import CardIdentity
+
 
 @dataclass
 class Listing:
@@ -21,6 +23,7 @@ class Listing:
     title_truncated: bool = False  # True if the grade might be wrong -- see ebay_email_alerts.looks_truncated
     player_tier: str = "legend"  # "legend" | "young_core" -- display tag only, see config/watchlist.json
     is_rookie_card: bool = False  # keyword match on "RC"/"Rookie" -- see matcher.detect_rookie_card
+    card_identity: Optional[CardIdentity] = None  # year/set/parallel/etc -- see card_identity.py
 
     # filled in once comps + dedupe run
     comp_median: Optional[float] = None

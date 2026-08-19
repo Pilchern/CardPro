@@ -143,3 +143,51 @@ def test_legend_tier_has_no_tag():
     # bracketed per-entry tag
     assert "[YOUNG CORE]" not in body
     assert "[ROOKIE CARD]" not in body
+
+
+def test_card_identity_line_shown_when_fields_known():
+    from src.card_identity import CardIdentity, Field
+
+    identity = CardIdentity(
+        year=Field(2024, "high"),
+        manufacturer=Field("Panini", "high"),
+        set_name=Field("Prizm", "high"),
+        parallel=Field("Silver", "high"),
+        card_number=Field("123", "high"),
+        serial_number=Field("23/99", "high"),
+    )
+    listing = make_listing(card_identity=identity)
+    _, body = report.build_report([listing], 30, date(2026, 8, 10))
+    assert "Card: 2024 Panini Prizm Silver #123 (23/99)" in body
+
+
+def test_no_card_identity_line_when_nothing_extracted():
+    from src.card_identity import CardIdentity
+
+    listing = make_listing(card_identity=CardIdentity())
+    _, body = report.build_report([listing], 30, date(2026, 8, 10))
+    assert "Card:" not in body
+
+
+def test_no_card_identity_line_when_identity_absent():
+    listing = make_listing(card_identity=None)
+    _, body = report.build_report([listing], 30, date(2026, 8, 10))
+    assert "Card:" not in body
+
+
+def test_auto_tag_shown_when_identity_flags_autograph():
+    from src.card_identity import CardIdentity, Field
+
+    identity = CardIdentity(is_autograph=Field(True, "high"))
+    listing = make_listing(card_identity=identity)
+    _, body = report.build_report([listing], 30, date(2026, 8, 10))
+    assert "[AUTO]" in body
+
+
+def test_mem_tag_shown_when_identity_flags_memorabilia():
+    from src.card_identity import CardIdentity, Field
+
+    identity = CardIdentity(is_memorabilia=Field(True, "high"))
+    listing = make_listing(card_identity=identity)
+    _, body = report.build_report([listing], 30, date(2026, 8, 10))
+    assert "[MEM]" in body

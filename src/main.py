@@ -18,7 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src import comps, craigslist_links, dedupe, ebay_client, ebay_email_alerts, emailer, matcher, price_history, report
+from src import card_identity, comps, craigslist_links, dedupe, ebay_client, ebay_email_alerts, emailer, matcher, price_history, report
 from src.config import ROOT_DIR, load_config
 from src.models import Listing
 
@@ -56,6 +56,12 @@ def fetch_ebay_active(cfg, players: list[str], token: str) -> list[Listing]:
             matched_player = matcher.match_player(title, [player])
             if not matched_player:
                 continue
+            identity = card_identity.extract_card_identity(title)
+            if identity.is_lot.value:
+                # A lot-of-N price isn't comparable to a single card's price --
+                # excluded from matching entirely, not just flagged, so it can
+                # never contaminate comps or get reported as a "deal".
+                continue
             card_type, grader, grade = matcher.detect_grading(title)
             price = ebay_client.extract_price(item)
             if price is None:
@@ -73,6 +79,7 @@ def fetch_ebay_active(cfg, players: list[str], token: str) -> list[Listing]:
                     grade=grade,
                     player_tier=cfg.player_tiers.get(matched_player, "legend"),
                     is_rookie_card=matcher.detect_rookie_card(title),
+                    card_identity=identity,
                 )
             )
     return listings
@@ -92,6 +99,8 @@ def fetch_ebay_sold_buckets(cfg, players: list[str], token: str) -> dict[tuple[s
             title = item.get("title", "")
             if not matcher.match_player(title, [player]):
                 continue
+            if card_identity.extract_card_identity(title).is_lot.value:
+                continue  # a lot's price isn't a valid single-card comp
             card_type, _, _ = matcher.detect_grading(title)
             price = ebay_client.extract_price(item)
             if price is not None:
@@ -123,6 +132,12 @@ def fetch_ebay_alert_active(cfg, today_str: str) -> list[Listing]:
         matched_player = matcher.match_player(item["title"], cfg.players)
         if not matched_player or item["price"] is None:
             continue
+        identity = card_identity.extract_card_identity(item["title"])
+        if identity.is_lot.value:
+            # See fetch_ebay_active's identical check -- a lot's price isn't
+            # comparable to a single card's, so it's excluded here rather
+            # than being recorded into price_history or flagged as a deal.
+            continue
         card_type, grader, grade = matcher.detect_grading(item["title"])
         listings.append(
             Listing(
@@ -137,6 +152,7 @@ def fetch_ebay_alert_active(cfg, today_str: str) -> list[Listing]:
                 grade=grade,
                 player_tier=cfg.player_tiers.get(matched_player, "legend"),
                 is_rookie_card=matcher.detect_rookie_card(item["title"]),
+                card_identity=identity,
             )
         )
     return listings

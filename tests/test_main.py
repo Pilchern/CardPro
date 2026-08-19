@@ -459,3 +459,89 @@ class TestFlagDeals:
         flagged = main.flag_deals([listing], comp_table, threshold_pct=30, min_savings_dollars=0)
         assert flagged == []
         assert listing.comp_median is None  # never matched, so never filled in
+
+
+class TestCardIdentityWiring:
+    """A lot's price isn't comparable to a single card's -- lots must be
+    excluded from matching entirely (not recorded into comps, not flagged),
+    on both the eBay-API path and the eBay-alerts path."""
+
+    def test_fetch_ebay_active_excludes_lots(self, monkeypatch):
+        from src import ebay_client, main
+
+        def fake_search(query, token, category_id, marketplace_id, limit=50):
+            return [
+                {"itemId": "e1", "title": "Michael Jordan lot of 5 cards", "price": {"value": "20"}, "itemWebUrl": "http://ebay/e1"},
+                {"itemId": "e2", "title": "1986 Fleer Michael Jordan Rookie PSA 9", "price": {"value": "5000"}, "itemWebUrl": "http://ebay/e2"},
+            ]
+
+        monkeypatch.setattr(ebay_client, "search_active_listings", fake_search)
+
+        class FakeCfg:
+            ebay_category_id = "212"
+            ebay_marketplace_id = "EBAY_US"
+            ebay_active_listing_limit = 50
+            player_tiers = {}
+
+        listings = main.fetch_ebay_active(FakeCfg(), ["Michael Jordan"], token="fake-token")
+
+        assert len(listings) == 1
+        assert listings[0].id == "e2"
+        assert listings[0].card_identity is not None
+        assert listings[0].card_identity.is_lot.value is False
+
+    def test_fetch_ebay_alert_active_excludes_lots(self, monkeypatch):
+        from src import ebay_email_alerts, main
+
+        monkeypatch.setattr(
+            ebay_email_alerts,
+            "fetch_alert_listings",
+            lambda *a, **kw: [
+                {"title": "Michael Jordan 10 card lot vintage", "url": "https://www.ebay.com/itm/2001", "price": 40.0},
+                {"title": "Michael Jordan PSA 9 rookie", "url": "https://www.ebay.com/itm/2002", "price": 9000.0},
+            ],
+        )
+
+        class FakeCfg:
+            players = ["Michael Jordan"]
+            player_tiers = {}
+            gmail_address = "fake@gmail.com"
+            gmail_app_password = "fakepassword"
+            ebay_alerts_sender_contains = "ebay.com"
+            ebay_alerts_lookback_days = 2
+
+        listings = main.fetch_ebay_alert_active(FakeCfg(), "2026-08-19")
+
+        assert len(listings) == 1
+        assert listings[0].id == "https://www.ebay.com/itm/2002"
+
+    def test_fetch_ebay_active_populates_card_identity_on_kept_listings(self, monkeypatch):
+        from src import ebay_client, main
+
+        def fake_search(query, token, category_id, marketplace_id, limit=50):
+            return [
+                {
+                    "itemId": "e1",
+                    "title": "2024 Panini Prizm Silver Caleb Williams #123 23/99 PSA 10",
+                    "price": {"value": "200"},
+                    "itemWebUrl": "http://ebay/e1",
+                }
+            ]
+
+        monkeypatch.setattr(ebay_client, "search_active_listings", fake_search)
+
+        class FakeCfg:
+            ebay_category_id = "212"
+            ebay_marketplace_id = "EBAY_US"
+            ebay_active_listing_limit = 50
+            player_tiers = {}
+
+        listings = main.fetch_ebay_active(FakeCfg(), ["Caleb Williams"], token="fake-token")
+
+        assert len(listings) == 1
+        identity = listings[0].card_identity
+        assert identity.year.value == 2024
+        assert identity.manufacturer.value == "Panini"
+        assert identity.set_name.value == "Prizm"
+        assert identity.parallel.value == "Silver"
+        assert identity.serial_number.value == "23/99"
