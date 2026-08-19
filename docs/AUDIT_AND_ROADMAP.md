@@ -248,13 +248,14 @@ Sectioned Report  (NEW structure: Top Opportunities / Long-Term Targets / Target
 ## 9. Prioritized Backlog
 
 **P0 — accuracy bugs, fix before anything else**
-- [x] Duplicate listing observations double-counted in comp medians — **fixed in this pass** (`price_history.py`, listing-id-aware `as_buckets`).
-- [ ] Add a template-change canary: log a clear warning when alert emails were found but zero listings were extracted from them (distinguishes "eBay sent nothing new" from "the parser silently broke").
-- [ ] Add regression tests for known-tricky titles that aren't covered yet: lots ("lot of 5"), reprints, facsimile autographs, same-last-name different-player collisions.
+- [x] Duplicate listing observations double-counted in comp medians — **fixed** (`price_history.py`, listing-id-aware `as_buckets`).
+- [x] Template-change canary: log a clear warning when alert emails were found but zero listings were extracted from them (distinguishes "eBay sent nothing new" from "the parser silently broke") — **fixed** (`ebay_email_alerts.fetch_alert_listings`).
+- [x] Lot listings ("lot of 5", "10 card lot") excluded entirely from matching/comps/flagging — **fixed** (`card_identity.py` + both `main.py` fetch paths). Was a real comp-contamination and false-positive risk.
+- [ ] Add regression tests for known-tricky titles still uncovered: reprints, facsimile autographs, same-last-name different-player collisions.
 
 **P1 — major deal-quality improvements**
-- [ ] Card Identity Engine (year/set/parallel/serial/auto extraction with confidence + source).
-- [ ] Hierarchical comp matching + `comp_confidence` field, replacing the single price-tier bucket as the *only* level.
+- [x] Card Identity Engine (year/manufacturer/set/parallel/card#/serial/auto/memorabilia extraction with confidence + source) — **shipped** (`src/card_identity.py`), wired into both fetch paths, surfaced in the report as a "Card: ..." line and `[AUTO]`/`[MEM]` tags. Comps themselves still use price-tier bucketing only — the next item below is what actually uses this data for matching.
+- [ ] Hierarchical comp matching + `comp_confidence` field, replacing the single price-tier bucket as the *only* level. This is the highest-leverage remaining item: identity fields now exist but comps don't use them yet.
 - [ ] Total acquisition cost (shipping) — extract when present, show "shipping unknown" honestly when not, gate/rank on total cost.
 - [ ] Target Card Watchlist (specific year/set/card#/grade targets, coexisting with the player-level watchlist, `[TARGET CARD]` tag).
 - [ ] Comp sample recency + count shown plainly in the report (not just `n=X`).
@@ -282,11 +283,21 @@ Sectioned Report  (NEW structure: Top Opportunities / Long-Term Targets / Target
 - **Report sectioning:** each new section populates only from listings that actually qualify for it; a listing with no target-card match never appears under Target Card Hits, etc.
 - **Observability canary:** alert emails found + zero listings extracted → warning logged; zero alert emails found (legitimately nothing new) → no warning, this is the normal case.
 
-## 11. What Shipped in This Pass
+## 11. What Shipped
 
-Only the one P0 item marked done above: **listing-id-aware price history**,
-closing the duplicate-observation comp-inflation bug that was live in
-production (specifically caused by the default 2-day alert lookback window
-overlapping consecutive daily runs). Everything else in this document is
-the plan, not yet built — per the brief's own instruction not to write
-large amounts of code before the audit is delivered and reviewed.
+**Pass 1:** listing-id-aware price history, closing the duplicate-
+observation comp-inflation bug that was live in production (caused by the
+default 2-day alert lookback window overlapping consecutive daily runs).
+
+**Pass 2:** the alert-parsing template-change canary; the Card Identity
+Engine (`src/card_identity.py`) wired into both fetch paths and surfaced
+in the report; and lot-listing exclusion (a lot's price was being treated
+as a single card's price, a real comp-contamination/false-positive risk
+that the identity engine made fixable).
+
+**Still open, in priority order per §9:** hierarchical comp matching that
+actually uses the new identity fields (the highest-leverage remaining
+item — identity data exists now but comps don't consume it yet), total
+acquisition cost (shipping), target-card watchlist, comp sample recency/
+count shown in the report, then the P2 desirability/auction/report-
+redesign items.
