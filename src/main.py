@@ -138,6 +138,34 @@ def fetch_ebay_alert_active(cfg, today_str: str) -> list[Listing]:
     return listings
 
 
+def enrich_truncated_grades(candidate_deals: list[Listing]) -> None:
+    """eBay's alert emails truncate long titles, which can cut a grade
+    number mid-digit (a "PSA 10" showing as "PSA 1..."). For the (small)
+    set of listings that already cleared the deal threshold, try fetching
+    the real title from the item page; if that fails for any reason, mark
+    the grade as uncertain instead of showing a possibly-wrong number.
+    Mutates candidate_deals in place. No-op for listings that aren't
+    graded or don't look truncated -- keeps this occasional, not
+    high-volume. See ebay_email_alerts.fetch_full_title's docstring for
+    why this may not work at all (untested against eBay's real site).
+    """
+    logger = logging.getLogger("main")
+    checked = fixed = 0
+    for deal in candidate_deals:
+        if deal.card_type != "graded" or not ebay_email_alerts.looks_truncated(deal.title):
+            continue
+        checked += 1
+        full_title = ebay_email_alerts.fetch_full_title(deal.url)
+        if full_title:
+            deal.title = full_title
+            _, deal.grader, deal.grade = matcher.detect_grading(full_title)
+            fixed += 1
+        else:
+            deal.title_truncated = True
+    if checked:
+        logger.info("Truncated-grade recovery: %d/%d listing(s) fixed via full-title fetch", fixed, checked)
+
+
 def build_craigslist_links(cfg, players: list[str]) -> dict[str, str]:
     return {
         player: craigslist_links.search_url(f"{player} card", cfg.craigslist_site, cfg.craigslist_category)
@@ -212,6 +240,8 @@ def run(args: argparse.Namespace) -> None:
 
         candidate_deals = flag_deals(ebay_active, comp_table, cfg.discount_threshold_pct)
         logger.info("%d listing(s) clear the %.0f%% discount threshold", len(candidate_deals), cfg.discount_threshold_pct)
+
+        enrich_truncated_grades(candidate_deals)
 
         if not args.dry_run:
             price_history.save(cfg.ebay_alert_price_history_path, history)

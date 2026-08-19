@@ -314,3 +314,70 @@ def test_logging_is_rotated_not_unbounded(project, monkeypatch):
     assert len(file_handlers) == 1
     assert file_handlers[0].maxBytes == project.LOG_MAX_BYTES
     assert file_handlers[0].backupCount == project.LOG_BACKUP_COUNT
+
+
+class TestEnrichTruncatedGrades:
+    """Unit tests for main.enrich_truncated_grades -- pure function, no
+    fixture/config needed."""
+
+    def _listing(self, **overrides):
+        from src.models import Listing
+
+        defaults = dict(
+            id="1",
+            source="ebay-alert",
+            title="1990 Fleer Frank Thomas PSA 1…",
+            price=350.0,
+            url="https://www.ebay.com/itm/800530598774",
+            player="Frank Thomas",
+            card_type="graded",
+            grader="PSA",
+            grade="1",
+        )
+        defaults.update(overrides)
+        return Listing(**defaults)
+
+    def test_fixes_grade_when_fetch_succeeds(self, monkeypatch):
+        from src import ebay_email_alerts, main
+
+        monkeypatch.setattr(
+            ebay_email_alerts, "fetch_full_title", lambda url: "1990 Fleer Frank Thomas PSA 10"
+        )
+        deal = self._listing()
+        main.enrich_truncated_grades([deal])
+
+        assert deal.grade == "10"
+        assert deal.title == "1990 Fleer Frank Thomas PSA 10"
+        assert deal.title_truncated is False
+
+    def test_marks_uncertain_when_fetch_fails(self, monkeypatch):
+        from src import ebay_email_alerts, main
+
+        monkeypatch.setattr(ebay_email_alerts, "fetch_full_title", lambda url: None)
+        deal = self._listing()
+        main.enrich_truncated_grades([deal])
+
+        assert deal.grade == "1"  # left as-is, not overwritten with a guess
+        assert deal.title_truncated is True
+
+    def test_skips_non_truncated_titles(self, monkeypatch):
+        from src import ebay_email_alerts, main
+
+        fetch = mock.Mock(side_effect=AssertionError("should not be called"))
+        monkeypatch.setattr(ebay_email_alerts, "fetch_full_title", fetch)
+        deal = self._listing(title="1990 Fleer Frank Thomas PSA 10")
+        main.enrich_truncated_grades([deal])
+
+        assert deal.title_truncated is False
+        fetch.assert_not_called()
+
+    def test_skips_raw_listings_even_if_truncated(self, monkeypatch):
+        from src import ebay_email_alerts, main
+
+        fetch = mock.Mock(side_effect=AssertionError("should not be called"))
+        monkeypatch.setattr(ebay_email_alerts, "fetch_full_title", fetch)
+        deal = self._listing(card_type="raw", grader=None, grade=None, title="1993-94 Fleer Michael Jordan…")
+        main.enrich_truncated_grades([deal])
+
+        assert deal.title_truncated is False
+        fetch.assert_not_called()

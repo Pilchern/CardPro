@@ -18,6 +18,7 @@ class Listing:
     card_type: str  # "graded" | "raw"
     grader: Optional[str] = None  # PSA / BGS / SGC / CSG
     grade: Optional[str] = None  # e.g. "9", "9.5"
+    title_truncated: bool = False  # True if the grade might be wrong -- see ebay_email_alerts.looks_truncated
 
     # filled in once comps + dedupe run
     comp_median: Optional[float] = None

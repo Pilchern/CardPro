@@ -2,6 +2,8 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from unittest import mock
 
+import requests
+
 from src import ebay_email_alerts
 
 SAMPLE_ALERT_HTML = """
@@ -144,3 +146,39 @@ def test_fetch_alert_listings_end_to_end():
         listings = ebay_email_alerts.fetch_alert_listings("user@gmail.com", "app-password", "ebay.com", 2)
 
     assert len(listings) == 3
+
+
+def test_looks_truncated_detects_ellipsis_char():
+    assert ebay_email_alerts.looks_truncated("1990 Fleer Frank Thomas PSA 1…") is True
+
+
+def test_looks_truncated_detects_triple_dot():
+    assert ebay_email_alerts.looks_truncated("1990 Fleer Frank Thomas PSA 1...") is True
+
+
+def test_looks_truncated_false_for_complete_title():
+    assert ebay_email_alerts.looks_truncated("1990 Fleer Frank Thomas PSA 10") is False
+
+
+def test_fetch_full_title_strips_ebay_suffix():
+    fake_resp = mock.Mock(status_code=200, text="<html><head><title>1990 Fleer Frank Thomas PSA 10 | eBay</title></head></html>")
+    with mock.patch.object(ebay_email_alerts.requests, "get", return_value=fake_resp):
+        title = ebay_email_alerts.fetch_full_title("https://www.ebay.com/itm/800530598774")
+    assert title == "1990 Fleer Frank Thomas PSA 10"
+
+
+def test_fetch_full_title_returns_none_on_network_error():
+    with mock.patch.object(ebay_email_alerts.requests, "get", side_effect=requests.RequestException("boom")):
+        assert ebay_email_alerts.fetch_full_title("https://www.ebay.com/itm/1") is None
+
+
+def test_fetch_full_title_returns_none_on_non_200():
+    fake_resp = mock.Mock(status_code=403, text="blocked")
+    with mock.patch.object(ebay_email_alerts.requests, "get", return_value=fake_resp):
+        assert ebay_email_alerts.fetch_full_title("https://www.ebay.com/itm/1") is None
+
+
+def test_fetch_full_title_returns_none_when_no_title_tag():
+    fake_resp = mock.Mock(status_code=200, text="<html><body>no title here</body></html>")
+    with mock.patch.object(ebay_email_alerts.requests, "get", return_value=fake_resp):
+        assert ebay_email_alerts.fetch_full_title("https://www.ebay.com/itm/1") is None

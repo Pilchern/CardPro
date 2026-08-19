@@ -52,6 +52,8 @@ def build_report(
     lines = [f"Card deal scan for {date_str} -- {len(ranked)} listing(s) below market:\n"]
     for i, deal in enumerate(ranked, start=1):
         grading = f"{deal.grader} {deal.grade}" if deal.card_type == "graded" else "raw/ungraded"
+        if deal.title_truncated:
+            grading += " (grade uncertain -- eBay truncated the title, actual grade may differ)"
         fallback_note = " [comp = active-listing proxy, not real sold data]" if deal.comp_is_fallback else ""
         lines.append(
             f"{i}. {deal.player} -- {grading}\n"

@@ -79,11 +79,22 @@ receive.
 **Validated (2026-08-18)** against 14 real alert emails covering the full
 watchlist: 327 listings extracted, 96 correctly matched to watchlist
 players, zero observed player-name collisions (e.g. Caleb Williams vs.
-Caleb Wilson stayed correctly separated). One minor cosmetic quirk: eBay
-truncates long titles in these emails, which can occasionally cut a grade
-number mid-digit (a "PSA 10" showing as "PSA 1…"). That only affects the
-grade text shown in the report, not which comp bucket a listing lands in
-(raw vs. graded is unaffected), so it's not worth engineering around.
+Caleb Wilson stayed correctly separated).
+
+**Truncated-title grades:** eBay truncates long titles in these emails,
+which can occasionally cut a grade number mid-digit (a "PSA 10" showing as
+"PSA 1…"). This never affects which comp bucket a listing lands in (raw
+vs. graded is unaffected either way), only the grade text shown in the
+report. For listings that actually clear the deal threshold (a handful a
+day, not the full batch), the scraper tries fetching the real title from
+eBay's own item page to recover the true grade
+(`ebay_email_alerts.fetch_full_title`). This hasn't been tested against
+eBay's real site (this project's sandbox can't reach ebay.com to check
+during development) -- if it works, the report shows the corrected grade
+automatically; if eBay blocks it, it fails safe: the listing still shows
+up, just with an explicit "(grade uncertain -- eBay truncated the title,
+actual grade may differ)" note instead of asserting a possibly-wrong
+number. No further escalation is attempted either way.
 
 **One real tradeoff worth knowing:** eBay's saved-search alerts only cover
 *newly listed* items, not their full standing inventory, and there's no

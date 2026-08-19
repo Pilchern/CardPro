@@ -87,3 +87,16 @@ def test_ebay_enabled_defaults_to_true_for_backwards_compatibility():
     listing = make_listing()
     subject, _ = report.build_report([listing], 30, date(2026, 8, 10))
     assert "eBay not configured" not in subject
+
+
+def test_truncated_title_shows_grade_uncertain_caveat():
+    listing = make_listing(title_truncated=True)
+    _, body = report.build_report([listing], 30, date(2026, 8, 10))
+    assert "grade uncertain" in body
+    assert "eBay truncated the title" in body
+
+
+def test_non_truncated_title_has_no_caveat():
+    listing = make_listing(title_truncated=False)
+    _, body = report.build_report([listing], 30, date(2026, 8, 10))
+    assert "grade uncertain" not in body
