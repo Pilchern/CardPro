@@ -3,6 +3,13 @@ __pycache__/
 *.pyc
 .venv/
 venv/
-data/seen_listings.json
 logs/*.log
 .DS_Store
+
+# data/seen_listings.json and data/ebay_alert_price_history.json are
+# intentionally NOT ignored: the daily-scan.yml GitHub Actions workflow
+# commits them back to the repo after each run, since the runner is thrown
+# away otherwise and dedupe/comp history would reset to empty every day.
+# If you only ever run this locally (no GitHub Actions), they'll just sit
+# as regular tracked files -- still fine, just commit their changes (or
+# not) like any other file.

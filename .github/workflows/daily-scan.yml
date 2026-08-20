@@ -1,0 +1,67 @@
+name: Daily Card Deal Scan
+
+# Runs the scraper in GitHub's cloud on a schedule, instead of relying on a
+# cron job on a laptop that might be asleep, closed, or off at 8am -- see
+# docs/AUDIT_AND_ROADMAP.md and README "Running on a schedule" for why.
+#
+# One-time setup required before this can send real email -- add these as
+# repository secrets (Settings -> Secrets and variables -> Actions -> New
+# repository secret), same names/values as your local .env:
+#   GMAIL_ADDRESS, GMAIL_APP_PASSWORD, EMAIL_TO
+#   EBAY_CLIENT_ID, EBAY_CLIENT_SECRET (optional -- only if you have eBay API access)
+# Until those secrets exist, scheduled runs will fail at the "Run daily
+# scan" step with a clear "Missing required .env values" error -- nothing
+# silently no-ops.
+
+on:
+  schedule:
+    # 13:00 UTC ~= 8:00am US Central. Fixed UTC time, so it drifts to
+    # ~7:00am Central during standard time (winter) -- GitHub Actions cron
+    # doesn't follow DST. Adjust the hour below twice a year if you want it
+    # exact, or leave it -- a one-hour drift isn't worth the extra
+    # complexity of a second seasonal schedule.
+    - cron: "0 13 * * *"
+  workflow_dispatch: {}  # lets you trigger a run manually from the Actions tab
+
+permissions:
+  contents: write  # needed to commit updated dedupe/comp-history state back to the repo
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r requirements.txt
+
+      - name: Run daily scan
+        env:
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          EBAY_CLIENT_ID: ${{ secrets.EBAY_CLIENT_ID }}
+          EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
+        run: python -m src.main
+
+      - name: Persist dedupe + comp-history state
+        # The runner is thrown away after every run, so data/seen_listings.json
+        # and data/ebay_alert_price_history.json (the self-building comp
+        # corpus -- see src/price_history.py) have to be committed back to
+        # the repo, or dedupe and comps would reset to empty every single
+        # day. Runs even if the scan step failed, so a failure email's own
+        # side effects (if any) aren't lost.
+        if: always()
+        run: |
+          git config user.name "cardpro-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add data/seen_listings.json data/ebay_alert_price_history.json 2>/dev/null || true
+          if ! git diff --cached --quiet; then
+            git commit -m "Update dedupe/comp-history state [skip ci]"
+            git push
+          else
+            echo "No state changes to commit."
+          fi

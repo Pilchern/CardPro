@@ -206,3 +206,25 @@ def test_comp_confidence_omitted_when_not_set():
     _, body = report.build_report([listing], 30, date(2026, 8, 10))
     assert "confidence" not in body
     assert "(n=5)" in body
+
+
+def test_no_top_picks_section_when_few_deals():
+    """With only a handful of deals, the full numbered list below is
+    already short enough to skim -- a separate summary would just repeat it."""
+    deals = [make_listing(id=str(i), dollar_savings=float(i)) for i in range(1, 4)]
+    _, body = report.build_report(deals, 30, date(2026, 8, 10))
+    assert "TOP PICKS" not in body
+
+
+def test_top_picks_section_shown_with_many_deals_and_lists_top_three_by_savings():
+    deals = [make_listing(id=str(i), player=f"Player {i}", dollar_savings=float(i)) for i in range(1, 6)]
+    _, body = report.build_report(deals, 30, date(2026, 8, 10))
+
+    assert "TOP PICKS:" in body
+    top_section = body.split("TOP PICKS:")[1].split("\n\n")[0]
+    assert "Player 5" in top_section
+    assert "Player 4" in top_section
+    assert "Player 3" in top_section
+    assert "Player 2" not in top_section  # 4th-ranked, outside the top 3
+    # still appears in the full numbered list below, just not the summary
+    assert "Player 2" in body

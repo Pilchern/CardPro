@@ -328,7 +328,46 @@ Once a dry run looks right, run it for real:
 python -m src.main
 ```
 
-### 6. Install the daily cron job
+### 6. Running on a schedule
+
+**Recommended: GitHub Actions (`.github/workflows/daily-scan.yml`).**
+A cron job on a laptop only runs if the laptop happens to be on, awake, and
+unlocked at that exact minute -- closing the lid or losing power silently
+skips a day, with nothing to tell you it didn't run. Running the scan in
+GitHub's cloud instead removes that failure mode entirely: it fires on
+schedule regardless of your Mac's state.
+
+One-time setup:
+
+1. On GitHub: repo **Settings -> Secrets and variables -> Actions -> New
+   repository secret**, and add these (same names/values as your local
+   `.env`): `GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD`, `EMAIL_TO`, and
+   `EBAY_CLIENT_ID`/`EBAY_CLIENT_SECRET` if you have eBay API access.
+   Never paste these into a chat with an AI assistant -- only into GitHub's
+   secret form, which is write-only (nobody, including repo admins, can
+   read a secret's value back afterward).
+2. That's it -- the workflow is already in the repo. It runs daily at
+   13:00 UTC (~8am US Central; drifts to ~7am during winter/CST since
+   GitHub Actions cron doesn't follow DST -- not worth a second seasonal
+   schedule to fix a one-hour drift).
+3. To trigger a run immediately instead of waiting for the schedule: repo
+   **Actions tab -> Daily Card Deal Scan -> Run workflow**.
+
+The runner is thrown away after each run, so the workflow commits
+`data/seen_listings.json` and `data/ebay_alert_price_history.json` (dedupe
+state and the self-building comp history) back to the repo as its last
+step -- otherwise both would reset to empty every single day. That means
+this data becomes part of the repo's git history going forward; it's just
+listing prices/dates/ids, nothing sensitive, but worth knowing if this repo
+is or becomes public.
+
+If a scheduled run fails (e.g. secrets not set yet), check the **Actions**
+tab for the red X and the step's log -- same "send something, never fail
+silently" principle as the failure-notification email.
+
+**Alternative: local cron on your Mac**, if you'd rather not put Gmail
+credentials in GitHub secrets and are fine with the "only runs if the Mac
+is awake" tradeoff:
 
 ```bash
 bash scripts/install_cron.sh        # defaults to 8:00am daily
@@ -337,8 +376,9 @@ bash scripts/install_cron.sh 7 30   # or specify HOUR MINUTE, e.g. 7:30am
 
 This adds (or replaces) a single crontab entry that runs the scraper daily
 using this project's virtualenv if present, and appends output to
-`logs/cron.log`. Verify with `crontab -l`. To remove it later, run
-`crontab -e` and delete the line marked `# card-deal-scraper`.
+`logs/cron.log`. Verify with `crontab -l`. Remove it with
+`bash scripts/uninstall_cron.sh` (e.g. once you've switched to GitHub
+Actions, to avoid getting two emails some mornings).
 
 **Note on macOS + cron:** if `logs/cron.log` stays empty and nothing runs,
 your Mac's cron may need Full Disk Access under System Settings > Privacy
@@ -442,32 +482,39 @@ delete or edit `data/seen_listings.json`.
 config/
   watchlist.json      -- editable player list
   settings.json        -- threshold + API/site tuning
+.github/workflows/
+  tests.yml             -- CI: runs pytest on push/PR
+  daily-scan.yml          -- runs the scraper on a schedule in GitHub's cloud (recommended over local cron)
 src/
-  config.py             -- loads .env + config JSON
-  models.py              -- Listing dataclass
-  matcher.py              -- title -> player, graded/raw detection
-  ebay_client.py           -- eBay Browse API: OAuth, active search, sold comps
-  ebay_email_alerts.py      -- eBay-via-IMAP: reads saved-search alert emails
-  price_history.py           -- self-building comp history for the alerts path
-  craigslist_links.py         -- builds quick-check search URLs (no scraping)
-  comps.py                     -- median comp calculation
-  dedupe.py                     -- seen-listings tracking
-  report.py                      -- ranked report text + Craigslist links
-  emailer.py                      -- Gmail SMTP send
-  main.py                          -- orchestrates the daily run
+  card_identity.py         -- title -> year/set/parallel/card#/serial/auto/memorabilia/lot, each with confidence
+  config.py                 -- loads .env + config JSON
+  models.py                  -- Listing dataclass
+  matcher.py                  -- title -> player, graded/raw detection
+  ebay_client.py                -- eBay Browse API: OAuth, active search, sold comps
+  ebay_email_alerts.py           -- eBay-via-IMAP: reads saved-search alert emails
+  price_history.py                -- self-building, identity-tagged comp history for the alerts path
+  craigslist_links.py              -- builds quick-check search URLs (no scraping)
+  comps.py                          -- price-tier median comps + hierarchical (identity-aware) comp matching
+  dedupe.py                          -- seen-listings tracking
+  report.py                           -- ranked report text + Craigslist links
+  emailer.py                           -- Gmail SMTP send
+  main.py                               -- orchestrates the daily run
 data/
-  seen_listings.json (gitignored) -- dedupe state
-  ebay_alert_price_history.json (gitignored) -- self-built comp history (alerts path)
+  seen_listings.json -- dedupe state (tracked in git -- see "Running on a schedule")
+  ebay_alert_price_history.json -- self-built, identity-tagged comp history (alerts path)
 logs/
   scraper.log, cron.log (gitignored) -- run logs
 scripts/
-  install_cron.sh -- crontab installer helper
+  install_cron.sh -- crontab installer helper (local-cron alternative)
+  uninstall_cron.sh -- removes the crontab entry
   lookup_ebay_category.py -- verifies the eBay category ID with real credentials
   test_email.py -- standalone Gmail send check (no eBay needed)
   test_ebay_alerts.py -- standalone check of the email-alerts path against your real inbox
 tests/
-  pytest suite covering matcher/comps/dedupe/report/craigslist_links/
+  pytest suite covering matcher/comps/card_identity/dedupe/report/craigslist_links/
   price_history/ebay_email_alerts + mocked full-run tests for both eBay paths
+docs/
+  AUDIT_AND_ROADMAP.md -- architecture audit + prioritized improvement backlog
 ```
 
 ## Explicitly out of scope (v1)

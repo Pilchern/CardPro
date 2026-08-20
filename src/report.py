@@ -70,6 +70,9 @@ def build_report(
         f"(tags: YOUNG CORE = betting on this player's long-term growth, not just today's price; "
         f"ROOKIE CARD = title says RC/Rookie)\n"
     ]
+    top_picks_section = _build_top_picks_section(ranked)
+    if top_picks_section:
+        lines.append(top_picks_section)
     for i, deal in enumerate(ranked, start=1):
         grading = f"{deal.grader} {deal.grade}" if deal.card_type == "graded" else "raw/ungraded"
         if deal.title_truncated:
@@ -105,6 +108,28 @@ def build_report(
         f"at least ${min_savings_dollars:,.2f} saved."
     )
     return subject, "\n".join(lines) + cl_section
+
+
+TOP_PICKS_MIN_DEALS = 4  # below this, the numbered list below is already short enough to skim directly
+
+
+def _build_top_picks_section(ranked: list[Listing]) -> str:
+    """A compact, at-a-glance summary of the top 3 deals by $ saved, shown
+    above the full numbered list -- only when the list is long enough that
+    skimming actually helps (see TOP_PICKS_MIN_DEALS). Purely a readability
+    aid: it repeats data already in the full list below, never a separate
+    judgment call.
+    """
+    if len(ranked) < TOP_PICKS_MIN_DEALS:
+        return ""
+    lines = ["TOP PICKS:"]
+    for deal in ranked[:3]:
+        grading = f"{deal.grader} {deal.grade}" if deal.card_type == "graded" else "raw/ungraded"
+        lines.append(
+            f"  * {deal.player} -- {grading} -- ${deal.dollar_savings:,.2f} saved "
+            f"({deal.pct_under_market:.0f}% under market)"
+        )
+    return "\n".join(lines) + "\n"
 
 
 def _build_card_identity_line(identity: Optional[CardIdentity]) -> str:
