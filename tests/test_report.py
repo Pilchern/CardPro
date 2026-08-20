@@ -227,6 +227,47 @@ def test_price_line_shows_free_shipping():
     assert "shipping unknown" not in body
 
 
+def test_look_now_action_shown_for_high_confidence():
+    listing = make_listing(comp_confidence="high", comp_level_matched="exact")
+    _, body = report.build_report([listing], 30, date(2026, 8, 10))
+    assert "[LOOK NOW]" in body
+
+
+def test_watch_action_shown_for_medium_confidence():
+    listing = make_listing(comp_confidence="medium", comp_level_matched="near_exact")
+    _, body = report.build_report([listing], 30, date(2026, 8, 10))
+    assert "[WATCH]" in body
+
+
+def test_low_confidence_action_shown_for_low_confidence():
+    listing = make_listing(comp_confidence="low", comp_level_matched="price_tier")
+    _, body = report.build_report([listing], 30, date(2026, 8, 10))
+    assert "[LOW CONFIDENCE]" in body
+
+
+def test_no_action_label_when_confidence_not_set():
+    """The eBay-API path's flag_deals never sets comp_confidence -- no
+    action prefix should appear, same as before this feature existed. The
+    header legend always mentions these words to explain what they mean
+    when they DO show up -- what must be absent is the actual bracketed
+    per-entry label."""
+    listing = make_listing(comp_confidence=None, comp_level_matched=None)
+    _, body = report.build_report([listing], 30, date(2026, 8, 10))
+    assert "[LOOK NOW]" not in body
+    assert "[WATCH]" not in body
+    assert "[LOW CONFIDENCE]" not in body
+
+
+def test_top_picks_section_includes_action_labels():
+    deals = [
+        make_listing(id=str(i), player=f"Player {i}", dollar_savings=float(i), comp_confidence="high", comp_level_matched="exact")
+        for i in range(1, 6)
+    ]
+    _, body = report.build_report(deals, 30, date(2026, 8, 10))
+    top_section = body.split("TOP PICKS:")[1].split("\n\n")[0]
+    assert "LOOK NOW" in top_section
+
+
 def test_no_top_picks_section_when_few_deals():
     """With only a handful of deals, the full numbered list below is
     already short enough to skim -- a separate summary would just repeat it."""

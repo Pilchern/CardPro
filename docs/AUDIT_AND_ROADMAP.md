@@ -316,7 +316,15 @@ extracted from alert-email text when present, `Listing.total_cost` used
 for gating/ranking, "shipping unknown" shown honestly rather than assumed
 $0.
 
+**Pass 5:** action labels (`LOOK NOW` / `WATCH` / `LOW CONFIDENCE`),
+derived deterministically from `comp_confidence` (never a separate
+judgment call, never a buy recommendation) and shown per-entry and in the
+TOP PICKS summary, so a long list surfaces which deals are worth opening
+first without changing the underlying $-saved ranking. This is Phase 19
+from the original brief ("What should I do?"), minus the absolute
+"BUY THIS" language it explicitly said to avoid.
+
 **Still open, in priority order per §9:** target-card watchlist, comp
 sample recency shown in the report (age of the observations backing a
-comp, not just the count), then the P2 desirability/auction/report-
-redesign items.
+comp, not just the count), then the remaining P2 desirability/auction/
+report-redesign items.

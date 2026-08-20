@@ -24,6 +24,16 @@ COMP_LEVEL_LABELS = {
     "price_tier": "price-tier estimate",
 }
 
+# Action labels are derived straight from comp_confidence (comps.py's
+# CONFIDENCE_BY_LEVEL) -- never a separate judgment call, and never an
+# instruction to buy. They exist to help you scan a long list and decide
+# what to open first, not to replace looking at the listing yourself.
+ACTION_LABELS = {"high": "LOOK NOW", "medium": "WATCH", "low": "LOW CONFIDENCE"}
+
+
+def _action_label(deal: Listing) -> Optional[str]:
+    return ACTION_LABELS.get(deal.comp_confidence)
+
 
 def rank_deals(deals: list[Listing]) -> list[Listing]:
     return sorted(deals, key=lambda d: d.dollar_savings or 0, reverse=True)
@@ -69,6 +79,10 @@ def build_report(
         f"Card deal scan for {date_str} -- {len(ranked)} listing(s) below market, ranked by $ saved:\n"
         f"(tags: YOUNG CORE = betting on this player's long-term growth, not just today's price; "
         f"ROOKIE CARD = title says RC/Rookie)\n"
+        f"(actions -- based only on how well-matched the comp is, not a buy recommendation: "
+        f"LOOK NOW = exact card match backing the price; WATCH = near-exact match (grade/grader "
+        f"may differ from the comps); LOW CONFIDENCE = broader match (same year/set only, or just "
+        f"a price-tier estimate) -- double-check manually)\n"
     ]
     top_picks_section = _build_top_picks_section(ranked)
     if top_picks_section:
@@ -94,8 +108,10 @@ def build_report(
             confidence_note = f", {deal.comp_confidence.upper()} confidence -- {level_label}"
         card_line = _build_card_identity_line(deal.card_identity)
         price_line = _build_price_line(deal)
+        action = _action_label(deal)
+        action_prefix = f"[{action}] " if action else ""
         lines.append(
-            f"{i}. {deal.player} -- {grading}{tags}\n"
+            f"{i}. {action_prefix}{deal.player} -- {grading}{tags}\n"
             f"   ${deal.dollar_savings:,.2f} saved ({deal.pct_under_market:.0f}% under market)   |   "
             f"{SOURCE_LABELS.get(deal.source, deal.source)}\n"
             f"   {price_line}   Comp median: ${deal.comp_median:,.2f} "
@@ -142,9 +158,11 @@ def _build_top_picks_section(ranked: list[Listing]) -> str:
     lines = ["TOP PICKS:"]
     for deal in ranked[:3]:
         grading = f"{deal.grader} {deal.grade}" if deal.card_type == "graded" else "raw/ungraded"
+        action = _action_label(deal)
+        action_suffix = f" -- {action}" if action else ""
         lines.append(
             f"  * {deal.player} -- {grading} -- ${deal.dollar_savings:,.2f} saved "
-            f"({deal.pct_under_market:.0f}% under market)"
+            f"({deal.pct_under_market:.0f}% under market){action_suffix}"
         )
     return "\n".join(lines) + "\n"
 
