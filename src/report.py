@@ -93,11 +93,12 @@ def build_report(
             level_label = COMP_LEVEL_LABELS.get(deal.comp_level_matched, deal.comp_level_matched)
             confidence_note = f", {deal.comp_confidence.upper()} confidence -- {level_label}"
         card_line = _build_card_identity_line(deal.card_identity)
+        price_line = _build_price_line(deal)
         lines.append(
             f"{i}. {deal.player} -- {grading}{tags}\n"
             f"   ${deal.dollar_savings:,.2f} saved ({deal.pct_under_market:.0f}% under market)   |   "
             f"{SOURCE_LABELS.get(deal.source, deal.source)}\n"
-            f"   Price: ${deal.price:,.2f}   Comp median: ${deal.comp_median:,.2f} "
+            f"   {price_line}   Comp median: ${deal.comp_median:,.2f} "
             f"(n={deal.comp_sample_size}{confidence_note}){fallback_note}\n"
             f"{card_line}"
             f"   {deal.title}\n"
@@ -108,6 +109,22 @@ def build_report(
         f"at least ${min_savings_dollars:,.2f} saved."
     )
     return subject, "\n".join(lines) + cl_section
+
+
+def _build_price_line(deal: Listing) -> str:
+    """"Price: $X" alone when shipping is unknown (same as before shipping
+    tracking existed -- never silently assumed as $0), or a "price +
+    shipping = total" breakdown when it's known. dollar_savings/
+    pct_under_market are already computed against total_cost (see
+    main.flag_deals/flag_deals_hierarchical), so this just makes that
+    number's basis visible instead of leaving "Price: $X" looking like the
+    full story when it isn't.
+    """
+    if deal.shipping_price is None:
+        return f"Price: ${deal.price:,.2f} (shipping unknown -- actual cost may be higher)"
+    if deal.shipping_price == 0:
+        return f"Price: ${deal.price:,.2f} + free shipping"
+    return f"Price: ${deal.price:,.2f} + ${deal.shipping_price:,.2f} shipping = ${deal.total_cost:,.2f} total"
 
 
 TOP_PICKS_MIN_DEALS = 4  # below this, the numbered list below is already short enough to skim directly

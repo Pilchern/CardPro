@@ -40,6 +40,8 @@ IMAP_HOST = "imap.gmail.com"
 IMAP_PORT = 993
 
 PRICE_RE = re.compile(r"\$([\d,]+(?:\.\d{2})?)")
+SHIPPING_RE = re.compile(r"\+?\s*\$([\d,]+(?:\.\d{2})?)\s*shipping", re.IGNORECASE)
+FREE_SHIPPING_RE = re.compile(r"\bfree\s+shipping\b", re.IGNORECASE)
 ITEM_URL_RE = re.compile(r"(https?://[^\s\"'<>]*?/itm/\d+)|(/itm/\d+)")
 
 TRUNCATION_MARKERS = ("…", "...")  # eBay truncates long titles in these emails with an ellipsis
@@ -104,8 +106,15 @@ def get_html_body(msg: Message) -> Optional[str]:
 
 
 def extract_listings_from_html(html: str) -> list[dict]:
-    """Returns [{title, url, price}] best-effort -- see module docstring
-    on why this is provisional.
+    """Returns [{title, url, price, shipping_price}] best-effort -- see
+    module docstring on why this is provisional. shipping_price is None
+    when it couldn't be determined (no "shipping" text found nearby) --
+    callers must treat that as "unknown", not "$0 shipping". Unlike price
+    (VALIDATED against real alert emails, see module docstring), shipping
+    extraction hasn't been checked against real data yet -- worst case it
+    just stays None for everything and total-cost calculations fall back
+    to price alone, same as before this existed. Re-run
+    `python -m scripts.test_ebay_alerts --raw` to check the real hit rate.
     """
     soup = BeautifulSoup(html, "html.parser")
     results = []
@@ -120,9 +129,10 @@ def extract_listings_from_html(html: str) -> list[dict]:
         if not title:
             continue
 
-        price = _find_nearby_price(a)
+        price = _find_nearby(a, _extract_price)
+        shipping_price = _find_nearby(a, _extract_shipping)
         seen_urls.add(clean_url)
-        results.append({"title": title, "url": clean_url, "price": price})
+        results.append({"title": title, "url": clean_url, "price": price, "shipping_price": shipping_price})
 
     return results
 
@@ -143,17 +153,20 @@ def _find_item_url(href: str) -> Optional[str]:
     return url
 
 
-def _find_nearby_price(anchor_tag) -> Optional[float]:
-    """Looks for a price close to this specific listing's title link --
+def _find_nearby(anchor_tag, extractor) -> Optional[float]:
+    """Looks for a value (price or shipping cost -- whatever `extractor`
+    pulls out of text) close to this specific listing's title link --
     deliberately scoped narrowly so it doesn't pick up a neighboring
-    listing's price when several listings share a flat structure with no
-    per-listing wrapper (title link, then a price element as its sibling,
-    repeated -- a common real-world email-template pattern).
+    listing's value when several listings share a flat structure with no
+    per-listing wrapper (title link, then a price/shipping element as its
+    sibling, repeated -- a common real-world email-template pattern).
+    Shared by _find_nearby_price and _find_nearby_shipping so both use the
+    identical, already-validated scoping logic.
     """
     # 1. the link's own text
-    price = _extract_price(anchor_tag.get_text(" ", strip=True))
-    if price is not None:
-        return price
+    value = extractor(anchor_tag.get_text(" ", strip=True))
+    if value is not None:
+        return value
 
     # 2. next siblings at the same level, stopping at the next item link
     #    (that belongs to the next listing, not this one)
@@ -163,27 +176,41 @@ def _find_nearby_price(anchor_tag) -> Optional[float]:
             or sibling.find("a", href=ITEM_URL_RE)
         ):
             break
-        price = _extract_price(sibling.get_text(" ", strip=True) if hasattr(sibling, "get_text") else str(sibling))
-        if price is not None:
-            return price
+        value = extractor(sibling.get_text(" ", strip=True) if hasattr(sibling, "get_text") else str(sibling))
+        if value is not None:
+            return value
 
     # 3. fall back to the narrowest ancestor that doesn't itself contain
-    #    another listing's item link (too broad = wrong listing's price)
+    #    another listing's item link (too broad = wrong listing's value)
     for ancestor in anchor_tag.parents:
         other_item_links = [
             a for a in ancestor.find_all("a", href=True) if a is not anchor_tag and ITEM_URL_RE.search(a["href"])
         ]
         if other_item_links:
             break
-        price = _extract_price(ancestor.get_text(" ", strip=True))
-        if price is not None:
-            return price
+        value = extractor(ancestor.get_text(" ", strip=True))
+        if value is not None:
+            return value
 
     return None
 
 
 def _extract_price(text: str) -> Optional[float]:
     match = PRICE_RE.search(text)
+    if not match:
+        return None
+    try:
+        return float(match.group(1).replace(",", ""))
+    except ValueError:
+        return None
+
+
+def _extract_shipping(text: str) -> Optional[float]:
+    """None means unknown, not "$0 shipping" -- only an explicit "Free
+    shipping" gets treated as a confirmed $0."""
+    if FREE_SHIPPING_RE.search(text):
+        return 0.0
+    match = SHIPPING_RE.search(text)
     if not match:
         return None
     try:

@@ -79,10 +79,20 @@ def main() -> None:
     print()
     if show_raw:
         print("--- Raw extracted listings (before player-matching) ---")
+        shipping_found = 0
         for listing in all_listings:
             price_str = f"${listing['price']:,.2f}" if listing["price"] is not None else "NO PRICE FOUND"
-            print(f"  {price_str:>15}  {listing['title']}")
+            shipping = listing.get("shipping_price")
+            shipping_str = f"${shipping:,.2f} shipping" if shipping is not None else "shipping unknown"
+            if shipping is not None:
+                shipping_found += 1
+            print(f"  {price_str:>15}  ({shipping_str})  {listing['title']}")
             print(f"                   {listing['url']}")
+        print(
+            f"\nShipping found for {shipping_found}/{len(all_listings)} listing(s) -- "
+            f"shipping extraction is unvalidated against real data (unlike price), "
+            f"so a low hit rate here is expected/fine, not necessarily a bug."
+        )
         print()
 
     matched_count = 0

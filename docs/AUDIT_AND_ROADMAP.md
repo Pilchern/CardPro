@@ -256,7 +256,7 @@ Sectioned Report  (NEW structure: Top Opportunities / Long-Term Targets / Target
 **P1 — major deal-quality improvements**
 - [x] Card Identity Engine (year/manufacturer/set/parallel/card#/serial/auto/memorabilia extraction with confidence + source) — **shipped** (`src/card_identity.py`), wired into both fetch paths, surfaced in the report as a "Card: ..." line and `[AUTO]`/`[MEM]` tags.
 - [x] Hierarchical comp matching + `comp_confidence`/`comp_level_matched` fields, replacing the single price-tier bucket as the *only* level — **shipped** (`comps.build_hierarchical_comp_table` / `comps.lookup_hierarchical_comp`, `main.flag_deals_hierarchical`, wired into the eBay-alerts path). Tries exact → near_exact → family → price_tier in order; the report now shows e.g. "HIGH confidence -- exact card match" next to the comp median. `price_history` now stores year/set/parallel/card_number/grader/grade per observation so the corpus itself is identity-aware, not just the current listing being evaluated.
-- [ ] Total acquisition cost (shipping) — extract when present, show "shipping unknown" honestly when not, gate/rank on total cost.
+- [x] Total acquisition cost (shipping) — **shipped**. `ebay_email_alerts` extracts a nearby "+$X shipping"/"Free shipping" pattern per listing (unvalidated against real data yet, unlike price -- see `scripts/test_ebay_alerts.py --raw`'s new hit-rate line); `Listing.total_cost` is price+shipping when known, else price (never assumes $0); `flag_deals`/`flag_deals_hierarchical` gate and rank on total_cost; the report shows "shipping unknown -- actual cost may be higher" when it wasn't found, or the full price+shipping=total breakdown when it was.
 - [ ] Target Card Watchlist (specific year/set/card#/grade targets, coexisting with the player-level watchlist, `[TARGET CARD]` tag).
 - [ ] Comp sample recency + count shown plainly in the report (not just `n=X`).
 
@@ -306,7 +306,17 @@ Early on, most matches will still resolve at `family` or `price_tier`
 and the whole reason the hierarchy degrades gracefully instead of
 requiring an exact match to flag anything at all.
 
-**Still open, in priority order per §9:** total acquisition cost
-(shipping), target-card watchlist, comp sample recency shown in the
-report (age of the observations backing a comp, not just the count),
-then the P2 desirability/auction/report-redesign items.
+**Pass 4:** delivery reliability -- `.github/workflows/daily-scan.yml` runs
+the scan on a schedule in GitHub's cloud instead of depending on a laptop
+being on/awake at 8am, committing dedupe/comp-history state back to the
+repo each run since the runner itself is thrown away; a compact "TOP
+PICKS" summary in the report for quick skimming once there are enough
+deals to benefit from one; and total acquisition cost (shipping) --
+extracted from alert-email text when present, `Listing.total_cost` used
+for gating/ranking, "shipping unknown" shown honestly rather than assumed
+$0.
+
+**Still open, in priority order per §9:** target-card watchlist, comp
+sample recency shown in the report (age of the observations backing a
+comp, not just the count), then the P2 desirability/auction/report-
+redesign items.

@@ -438,6 +438,26 @@ class TestFlagDeals:
         flagged = main.flag_deals([listing], self._comp_table(10000.0, "100_plus"), threshold_pct=30, min_savings_dollars=10)
         assert flagged == []
 
+    def test_savings_computed_against_total_cost_including_shipping(self):
+        """A $40 card with $15 shipping is a $55 opportunity, not a $40
+        one -- comp median 100, price 40, shipping 15 -> $45 saved, not $60."""
+        from src import main
+
+        listing = self._listing(price=40.0, shipping_price=15.0)  # "25_to_100" tier
+        flagged = main.flag_deals([listing], self._comp_table(100.0, "25_to_100"), threshold_pct=30, min_savings_dollars=10)
+        assert flagged == [listing]
+        assert listing.dollar_savings == 45.0
+
+    def test_shipping_unknown_falls_back_to_price_only_savings(self):
+        """Backwards-compatible: a listing with no shipping data (the
+        default) is scored exactly as it was before shipping tracking existed."""
+        from src import main
+
+        listing = self._listing(price=100.0)  # shipping_price defaults to None
+        flagged = main.flag_deals([listing], self._comp_table(200.0, "100_plus"), threshold_pct=30, min_savings_dollars=10)
+        assert flagged == [listing]
+        assert listing.dollar_savings == 100.0
+
     def test_min_savings_dollars_defaults_to_zero(self):
         """Backwards-compatible default: omitting min_savings_dollars
         shouldn't block anything that clears the percent threshold."""
@@ -526,6 +546,19 @@ class TestFlagDealsHierarchical:
 
         assert flagged == []
         assert listing.comp_median is None
+
+    def test_savings_computed_against_total_cost_including_shipping(self):
+        from src import comps, main
+
+        listing = self._listing(price=100.0, shipping_price=20.0)
+        hier_table = {
+            "exact": {("Caleb Williams", 2024, "Prizm", "Silver", "123", "PSA", "10"): comps.CompStats(200.0, 5, True)},
+            "near_exact": {}, "family": {}, "price_tier": {},
+        }
+        flagged = main.flag_deals_hierarchical([listing], hier_table, threshold_pct=30, min_savings_dollars=10)
+
+        assert flagged == [listing]
+        assert listing.dollar_savings == 80.0  # 200 - (100 + 20), not 200 - 100
 
     def test_still_respects_dollar_and_percent_gates(self):
         from src import comps, main

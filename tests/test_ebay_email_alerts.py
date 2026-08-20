@@ -70,6 +70,46 @@ def test_extract_listings_no_matches_on_empty_html():
     assert ebay_email_alerts.extract_listings_from_html("<html><body>no items here</body></html>") == []
 
 
+SHIPPING_HTML = """
+<html><body>
+<a href="https://www.ebay.com/itm/111111111111">Caleb Williams Prizm Rookie</a>
+<div>$100.00</div>
+<div>+$5.99 shipping</div>
+<a href="https://www.ebay.com/itm/222222222222">Rome Odunze Optic Rookie</a>
+<div>$50.00</div>
+<div>Free shipping</div>
+<a href="https://www.ebay.com/itm/333333333333">Luther Burden Rookie Card</a>
+<div>$30.00</div>
+</body></html>
+"""
+
+
+def test_extract_listings_finds_paid_shipping():
+    results = ebay_email_alerts.extract_listings_from_html(SHIPPING_HTML)
+    williams = next(r for r in results if "Williams" in r["title"])
+    assert williams["shipping_price"] == 5.99
+
+
+def test_extract_listings_finds_free_shipping_as_zero():
+    results = ebay_email_alerts.extract_listings_from_html(SHIPPING_HTML)
+    odunze = next(r for r in results if "Odunze" in r["title"])
+    assert odunze["shipping_price"] == 0.0
+
+
+def test_extract_listings_shipping_is_none_when_not_mentioned():
+    results = ebay_email_alerts.extract_listings_from_html(SHIPPING_HTML)
+    burden = next(r for r in results if "Burden" in r["title"])
+    assert burden["shipping_price"] is None
+
+
+def test_extract_listings_does_not_bleed_shipping_across_listings():
+    results = ebay_email_alerts.extract_listings_from_html(SHIPPING_HTML)
+    williams = next(r for r in results if "Williams" in r["title"])
+    odunze = next(r for r in results if "Odunze" in r["title"])
+    assert williams["shipping_price"] == 5.99
+    assert odunze["shipping_price"] == 0.0
+
+
 FLAT_NO_WRAPPER_HTML = """
 <html><body>
 <a href="https://www.ebay.com/itm/123456789012">1986 Fleer Michael Jordan Rookie PSA 9</a>

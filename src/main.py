@@ -153,6 +153,7 @@ def fetch_ebay_alert_active(cfg, today_str: str) -> list[Listing]:
                 player_tier=cfg.player_tiers.get(matched_player, "legend"),
                 is_rookie_card=matcher.detect_rookie_card(item["title"]),
                 card_identity=identity,
+                shipping_price=item.get("shipping_price"),
             )
         )
     return listings
@@ -209,6 +210,10 @@ def flag_deals(
     A listing is compared only against comps in its own price tier (see
     comps.price_tier) -- looked up using the listing's own price -- so a
     $1 common isn't measured against a median pulled from $90 parallels.
+
+    Savings are computed against total_cost (price + shipping, when
+    shipping is known -- see models.Listing.total_cost), not price alone,
+    so a $40 card with $15 shipping isn't reported as a $40 opportunity.
     """
     flagged = []
     for listing in active_listings:
@@ -220,7 +225,7 @@ def flag_deals(
         listing.comp_median = stats.median
         listing.comp_sample_size = stats.sample_size
         listing.comp_is_fallback = stats.is_fallback
-        dollar_savings = stats.median - listing.price
+        dollar_savings = stats.median - listing.total_cost
         pct_under = dollar_savings / stats.median * 100
         listing.pct_under_market = pct_under
         listing.dollar_savings = dollar_savings
@@ -242,6 +247,8 @@ def flag_deals_hierarchical(
     eBay-alerts path, where every listing already has card_identity set
     (see fetch_ebay_alert_active). Sets comp_level_matched/comp_confidence
     on the listing so the report can show how strong the match actually was.
+    Savings are computed against total_cost (price + shipping when known),
+    same reasoning as flag_deals -- see its docstring.
     """
     flagged = []
     for listing in active_listings:
@@ -268,7 +275,7 @@ def flag_deals_hierarchical(
         listing.comp_is_fallback = stats.is_fallback
         listing.comp_level_matched = level
         listing.comp_confidence = comps.CONFIDENCE_BY_LEVEL[level]
-        dollar_savings = stats.median - listing.price
+        dollar_savings = stats.median - listing.total_cost
         pct_under = dollar_savings / stats.median * 100
         listing.pct_under_market = pct_under
         listing.dollar_savings = dollar_savings

@@ -208,6 +208,25 @@ def test_comp_confidence_omitted_when_not_set():
     assert "(n=5)" in body
 
 
+def test_price_line_shows_shipping_unknown_caveat_by_default():
+    listing = make_listing()  # shipping_price defaults to None
+    _, body = report.build_report([listing], 30, date(2026, 8, 10))
+    assert "shipping unknown" in body
+
+
+def test_price_line_shows_paid_shipping_and_total():
+    listing = make_listing(price=100.0, shipping_price=12.50)
+    _, body = report.build_report([listing], 30, date(2026, 8, 10))
+    assert "Price: $100.00 + $12.50 shipping = $112.50 total" in body
+
+
+def test_price_line_shows_free_shipping():
+    listing = make_listing(shipping_price=0.0)
+    _, body = report.build_report([listing], 30, date(2026, 8, 10))
+    assert "free shipping" in body
+    assert "shipping unknown" not in body
+
+
 def test_no_top_picks_section_when_few_deals():
     """With only a handful of deals, the full numbered list below is
     already short enough to skim -- a separate summary would just repeat it."""
