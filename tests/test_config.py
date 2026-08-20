@@ -96,6 +96,35 @@ def test_ebay_alerts_config_loads(tmp_path, monkeypatch):
     assert cfg.ebay_alert_price_history_max_age_days == 180
 
 
+def test_ebay_alerts_mailbox_defaults_to_all_mail_when_absent(tmp_path, monkeypatch):
+    """The fixture's settings.json has no "mailbox" key -- older configs
+    written before this setting existed must still load, defaulting to
+    All Mail (see ebay_email_alerts.DEFAULT_MAILBOX)."""
+    _write_config_files(tmp_path)
+    _base_env(monkeypatch)
+    monkeypatch.setattr(config_module, "ROOT_DIR", tmp_path)
+    monkeypatch.setattr(config_module, "CONFIG_DIR", tmp_path / "config")
+
+    cfg = config_module.load_config()
+
+    assert cfg.ebay_alerts_mailbox == "[Gmail]/All Mail"
+
+
+def test_ebay_alerts_mailbox_loads_when_present(tmp_path, monkeypatch):
+    _write_config_files(tmp_path)
+    settings_path = tmp_path / "config" / "settings.json"
+    settings = json.loads(settings_path.read_text())
+    settings["ebay_alerts"]["mailbox"] = "INBOX"
+    settings_path.write_text(json.dumps(settings))
+    _base_env(monkeypatch)
+    monkeypatch.setattr(config_module, "ROOT_DIR", tmp_path)
+    monkeypatch.setattr(config_module, "CONFIG_DIR", tmp_path / "config")
+
+    cfg = config_module.load_config()
+
+    assert cfg.ebay_alerts_mailbox == "INBOX"
+
+
 def test_min_savings_dollars_loads(tmp_path, monkeypatch):
     _write_config_files(tmp_path)
     _base_env(monkeypatch)

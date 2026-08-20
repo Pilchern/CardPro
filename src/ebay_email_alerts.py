@@ -10,6 +10,12 @@ daily, only when new matching listings appeared in the last 24h) -- this
 just reads mail you already receive, using the same Gmail App Password
 already used for SMTP (App Passwords work for IMAP too, no new credential).
 
+Searches Gmail's All Mail (not just Inbox) by default -- see
+DEFAULT_MAILBOX below -- so you're free to set up a Gmail filter that
+skips the inbox for these alerts (keeps your normal inbox clean) or
+archive them after the fact, without CardPro losing sight of them. Only
+actually deleting a message (emptying Trash) makes it disappear here.
+
 VALIDATED (2026-08-18): extract_listings_from_html() was confirmed working
 against 14 real alert emails / 327 real extracted listings / 96 correctly
 matched watchlist listings, with no observed player-name collisions. One
@@ -39,6 +45,14 @@ logger = logging.getLogger(__name__)
 IMAP_HOST = "imap.gmail.com"
 IMAP_PORT = 993
 
+# Gmail's IMAP "Archive" action only removes the \Inbox label -- the
+# message still exists under All Mail. Searching All Mail (rather than
+# INBOX) means you can freely archive processed alert emails (or set up a
+# filter that skips the inbox entirely, e.g. to keep them out of your main
+# inbox view) without CardPro ever losing sight of them. Only genuine
+# deletion (emptying Trash) makes a message actually disappear from here.
+DEFAULT_MAILBOX = "[Gmail]/All Mail"
+
 PRICE_RE = re.compile(r"\$([\d,]+(?:\.\d{2})?)")
 SHIPPING_RE = re.compile(r"\+?\s*\$([\d,]+(?:\.\d{2})?)\s*shipping", re.IGNORECASE)
 FREE_SHIPPING_RE = re.compile(r"\bfree\s+shipping\b", re.IGNORECASE)
@@ -60,15 +74,19 @@ def fetch_alert_messages(
     gmail_app_password: str,
     sender_contains: str,
     lookback_days: int,
+    mailbox: str = DEFAULT_MAILBOX,
 ) -> list[Message]:
     """Logs into Gmail read-only over IMAP and returns parsed Message
     objects for recent emails from `sender_contains`. Never deletes,
-    marks read, or modifies anything -- opens INBOX readonly.
+    marks read, or modifies anything -- opens `mailbox` readonly, which
+    defaults to All Mail rather than INBOX specifically so archiving (or a
+    filter that skips the inbox) doesn't make alert emails invisible here
+    -- see DEFAULT_MAILBOX.
     """
     messages: list[Message] = []
     with imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT) as imap:
         imap.login(gmail_address, gmail_app_password)
-        imap.select("INBOX", readonly=True)
+        imap.select(mailbox, readonly=True)
 
         since = _imap_date(lookback_days)
         status, data = imap.search(None, f'(SINCE {since} FROM "{sender_contains}")')
@@ -268,6 +286,7 @@ def fetch_alert_listings(
     gmail_app_password: str,
     sender_contains: str,
     lookback_days: int,
+    mailbox: str = DEFAULT_MAILBOX,
 ) -> list[dict]:
     """Full pipeline: IMAP fetch -> HTML extraction -> [{title, url, price}].
 
@@ -278,7 +297,7 @@ def fetch_alert_listings(
     this, "the parser silently stopped working" and "no new listings
     today" look identical in the report/logs -- see docs/AUDIT_AND_ROADMAP.md.
     """
-    messages = fetch_alert_messages(gmail_address, gmail_app_password, sender_contains, lookback_days)
+    messages = fetch_alert_messages(gmail_address, gmail_app_password, sender_contains, lookback_days, mailbox)
     listings = []
     for msg in messages:
         html = get_html_body(msg)

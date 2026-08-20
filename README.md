@@ -184,9 +184,32 @@ history.
 |---|---|
 | `enabled` | Turns this path on. Only takes effect when `EBAY_CLIENT_ID`/`SECRET` are absent (the Browse API path always wins if both are configured). |
 | `sender_contains` | IMAP filters alert emails to ones whose From address contains this (default `ebay.com`). If real alerts come from an address that doesn't match, alerts won't be found -- `test_ebay_alerts.py` will tell you if that's happening. |
-| `lookback_days` | How many days back to search the inbox each run (default 2 -- eBay sends these roughly daily). |
+| `lookback_days` | How many days back to search each run (default 2 -- eBay sends these roughly daily). |
+| `mailbox` | IMAP folder searched (default `[Gmail]/All Mail`, not `INBOX` -- see "Keeping these emails out of your inbox" below for why). Only change this if your Gmail account's UI language gives this folder a different IMAP name. |
 | `price_history_path` | Where the self-building comp history is stored (default `data/ebay_alert_price_history.json`, gitignored). |
 | `price_history_max_age_days` | How long an observed price stays in the comp history before aging out (default 180). |
+
+### Keeping these emails out of your inbox
+
+Since the scraper searches Gmail's **All Mail**, not just Inbox (see the
+`mailbox` setting above), you can set up a Gmail filter that routes eBay's
+alert emails straight out of your inbox without breaking anything:
+
+1. In Gmail, click the search bar's filter icon (or Settings -> Filters
+   and Blocked Addresses -> Create a new filter).
+2. Set **From** to `ebay.com` (or narrower, matching whatever
+   `sender_contains` is set to), then **Create filter**.
+3. Check **Skip the Inbox (Archive it)**. Optionally also check **Apply
+   the label** and create a label like `CardPro Alerts` so they're still
+   easy to find/browse by hand if you ever want to.
+4. Do **not** check **Delete it** -- that's the one action that actually
+   removes a message from All Mail (via Trash, purged after 30 days) and
+   would make it invisible here too.
+
+With this filter in place, alert emails never touch your inbox at all,
+and the scraper still sees every one of them via All Mail. You can also
+freely archive or label-organize emails by hand after the fact for the
+same reason -- only genuine deletion breaks it.
 
 ## Known limitation: eBay sold comps
 

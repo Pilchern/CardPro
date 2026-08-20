@@ -124,7 +124,11 @@ def fetch_ebay_alert_active(cfg, today_str: str) -> list[Listing]:
     comp signal available on this path.
     """
     items = ebay_email_alerts.fetch_alert_listings(
-        cfg.gmail_address, cfg.gmail_app_password, cfg.ebay_alerts_sender_contains, cfg.ebay_alerts_lookback_days
+        cfg.gmail_address,
+        cfg.gmail_app_password,
+        cfg.ebay_alerts_sender_contains,
+        cfg.ebay_alerts_lookback_days,
+        cfg.ebay_alerts_mailbox,
     )
 
     listings = []

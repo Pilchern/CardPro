@@ -621,6 +621,7 @@ class TestCardIdentityWiring:
             gmail_app_password = "fakepassword"
             ebay_alerts_sender_contains = "ebay.com"
             ebay_alerts_lookback_days = 2
+            ebay_alerts_mailbox = "[Gmail]/All Mail"
 
         listings = main.fetch_ebay_alert_active(FakeCfg(), "2026-08-19")
 

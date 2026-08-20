@@ -9,6 +9,8 @@ from typing import Optional
 
 from dotenv import load_dotenv
 
+from src.ebay_email_alerts import DEFAULT_MAILBOX
+
 ROOT_DIR = Path(__file__).resolve().parent.parent
 CONFIG_DIR = ROOT_DIR / "config"
 
@@ -44,6 +46,7 @@ class Config:
     ebay_alerts_enabled: bool
     ebay_alerts_sender_contains: str
     ebay_alerts_lookback_days: int
+    ebay_alerts_mailbox: str  # IMAP folder searched -- defaults to All Mail, see ebay_email_alerts.DEFAULT_MAILBOX
     ebay_alert_price_history_path: Path
     ebay_alert_price_history_max_age_days: int
 
@@ -97,6 +100,7 @@ def load_config() -> Config:
         ebay_alerts_enabled=bool(settings["ebay_alerts"]["enabled"]),
         ebay_alerts_sender_contains=settings["ebay_alerts"]["sender_contains"],
         ebay_alerts_lookback_days=int(settings["ebay_alerts"]["lookback_days"]),
+        ebay_alerts_mailbox=settings["ebay_alerts"].get("mailbox", DEFAULT_MAILBOX),
         ebay_alert_price_history_path=ROOT_DIR / settings["ebay_alerts"]["price_history_path"],
         ebay_alert_price_history_max_age_days=int(settings["ebay_alerts"]["price_history_max_age_days"]),
         seen_listings_path=ROOT_DIR / settings["dedupe"]["seen_listings_path"],

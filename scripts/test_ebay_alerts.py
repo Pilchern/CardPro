@@ -44,8 +44,9 @@ def main() -> None:
 
     show_raw = "--raw" in sys.argv
 
+    mailbox = alert_settings.get("mailbox", ebay_email_alerts.DEFAULT_MAILBOX)
     print(
-        f"Checking Gmail inbox for eBay alert emails "
+        f"Checking Gmail ({mailbox}) for eBay alert emails "
         f"(from contains {alert_settings['sender_contains']!r}, last {alert_settings['lookback_days']} day(s))...\n"
     )
 
@@ -54,6 +55,7 @@ def main() -> None:
         os.environ["GMAIL_APP_PASSWORD"],
         alert_settings["sender_contains"],
         alert_settings["lookback_days"],
+        mailbox,
     )
     print(f"Found {len(messages)} matching email(s).\n")
 

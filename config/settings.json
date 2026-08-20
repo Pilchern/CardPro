@@ -13,10 +13,12 @@
   },
 
   "ebay_alerts": {
-    "_comment": "Used instead of the eBay API (declined account) if enabled: reads eBay's own saved-search alert emails from your Gmail inbox via IMAP. Requires you to first create a saved search + email alert on eBay's site for each watchlist player -- see README 'eBay via saved-search email alerts'. PROVISIONAL: the HTML parsing hasn't been validated against a real alert email yet.",
-    "enabled": false,
+    "_comment": "Used instead of the eBay API (declined account): reads eBay's own saved-search alert emails from your Gmail account via IMAP. Requires you to first create a saved search + email alert on eBay's site for each watchlist player -- see README 'eBay via saved-search email alerts'. VALIDATED against real alert emails -- see src/ebay_email_alerts.py.",
+    "enabled": true,
     "sender_contains": "ebay.com",
     "lookback_days": 2,
+    "_mailbox_comment": "Searches All Mail, not just Inbox, so you're free to archive alert emails (or filter them straight out of your inbox) without CardPro losing sight of them -- only actually deleting a message (emptying Trash) makes it disappear. Change only if your Gmail account uses a non-English locale where this folder has a different IMAP name.",
+    "mailbox": "[Gmail]/All Mail",
     "price_history_path": "data/ebay_alert_price_history.json",
     "price_history_max_age_days": 180
   },

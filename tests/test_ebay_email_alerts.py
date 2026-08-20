@@ -159,8 +159,19 @@ def test_fetch_alert_messages_uses_imap_search_and_fetch():
         messages = ebay_email_alerts.fetch_alert_messages("user@gmail.com", "app-password", "ebay.com", 2)
 
     fake_imap.login.assert_called_once_with("user@gmail.com", "app-password")
-    fake_imap.select.assert_called_once_with("INBOX", readonly=True)
+    fake_imap.select.assert_called_once_with("[Gmail]/All Mail", readonly=True)
     assert len(messages) == 2  # one per message number returned by search
+
+
+def test_fetch_alert_messages_uses_custom_mailbox_when_given():
+    fake_imap = mock.MagicMock()
+    fake_imap.__enter__.return_value = fake_imap
+    fake_imap.search.return_value = ("OK", [b""])
+
+    with mock.patch.object(ebay_email_alerts.imaplib, "IMAP4_SSL", return_value=fake_imap):
+        ebay_email_alerts.fetch_alert_messages("user@gmail.com", "app-password", "ebay.com", 2, mailbox="INBOX")
+
+    fake_imap.select.assert_called_once_with("INBOX", readonly=True)
 
 
 def test_fetch_alert_messages_returns_empty_on_no_results():
