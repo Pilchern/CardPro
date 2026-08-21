@@ -86,7 +86,12 @@ def fetch_alert_messages(
     messages: list[Message] = []
     with imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT) as imap:
         imap.login(gmail_address, gmail_app_password)
-        imap.select(mailbox, readonly=True)
+        # imaplib doesn't quote the mailbox name itself -- a name containing
+        # a space (like the default "[Gmail]/All Mail") gets sent to the
+        # server unquoted and rejected outright ("BAD Could not parse
+        # command"). Quoting is always valid IMAP syntax, whether or not the
+        # name has special characters, so just always do it.
+        imap.select(f'"{mailbox}"', readonly=True)
 
         since = _imap_date(lookback_days)
         status, data = imap.search(None, f'(SINCE {since} FROM "{sender_contains}")')
