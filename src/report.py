@@ -53,7 +53,7 @@ from collections import OrderedDict
 from datetime import date
 from typing import Optional
 
-from src import reasons
+from src import desirability, reasons
 from src.card_identity import NEGATIVE_SIGNAL_LABELS, CardIdentity
 from src.models import Listing
 
@@ -211,6 +211,12 @@ PER_CARD_ASSUMPTION_PREFIXES = (
 #: bites on a pathological run and keeps the email skimmable.
 MAX_ASSUMPTION_LINES = 10
 
+#: Desirability attributes the tag row does not print. ``graded`` is
+#: already stated in full two fields to the left of the tags ("-- PSA 9"),
+#: and the same fact twice on one line makes the row harder to scan, not
+#: more informative. Everything else desirability establishes gets a tag.
+TAG_ROW_OMITTED_ATTRIBUTES = (desirability.GRADED,)
+
 #: Fixed width for the rule under a section heading.
 SECTION_RULE_WIDTH = 60
 
@@ -365,24 +371,39 @@ def _identity_description(identity: Optional[CardIdentity]) -> Optional[str]:
     return " ".join(parts) if parts else None
 
 
+def _print_run(deal: Listing) -> Optional[int]:
+    identity = deal.card_identity
+    field = getattr(identity, "print_run", None) if identity is not None else None
+    return field.value if field is not None else None
+
+
 def _tags(deal: Listing) -> list:
     """Attribute tags. Deliberately never combined with each other or with
-    a number -- see the module docstring on the forbidden blended score."""
+    a number -- see the module docstring on the forbidden blended score.
+
+    The attributes themselves come from ``desirability`` and are not
+    re-derived here. The report used to read the identity fields directly,
+    which meant "what makes this card interesting" had two definitions --
+    one for the gate that decides a cheap card is worth surfacing, one for
+    the row of tags that is supposed to say why. Two definitions of the
+    same idea drift, and the drift shows up as a card in the report with
+    no tag explaining what it is doing there.
+    """
     tags = []
+    # Not a card attribute: this is about the player, so it comes from the
+    # tier and stays out of desirability (which is deliberately opinion-free).
     if deal.player_tier == "young_core":
         tags.append("YOUNG CORE")
-    if deal.is_rookie_card:
-        tags.append("ROOKIE")
-    identity = deal.card_identity
-    if identity is not None:
-        if identity.is_autograph.value:
-            tags.append("AUTO")
-        if identity.is_memorabilia.value:
-            tags.append("MEM")
-        if getattr(identity, "is_patch", None) is not None and identity.is_patch.value:
-            tags.append("PATCH")
-        if identity.print_run.value is not None:
-            tags.append("#'d /{}".format(identity.print_run.value))
+    print_run = _print_run(deal)
+    for attribute in deal.desirable_attributes or ():
+        if attribute in TAG_ROW_OMITTED_ATTRIBUTES:
+            continue
+        tag = desirability.ATTRIBUTE_TAGS.get(attribute, str(attribute).upper())
+        # "#'d /99" beats "#'d": the print run is the whole point of the
+        # tag, and it is the one number a collector scans the row for.
+        if attribute == desirability.SERIAL_NUMBERED and print_run is not None:
+            tag += " /{}".format(print_run)
+        tags.append(tag)
     return tags
 
 
@@ -468,10 +489,30 @@ def _discount_text(deal: Listing) -> Optional[str]:
     return "{} below market ({})".format(_money(deal.dollar_savings), _pct1(deal.pct_under_market))
 
 
+#: What the Economics line says about a card that cannot be flipped.
+#: Printing "-10% ROI" instead would be arithmetic presented as a warning:
+#: at $4-$8 the postage and fees exceed the entire spread, so the negative
+#: figure says nothing about the card -- it says the card is cheap, which
+#: the Cost line already said. The reader's question at that price is not
+#: "how much would I make", it is "is this worth owning".
+COLLECTOR_BUY_TEXT = (
+    "collector buy -- at this price postage and fees exceed the spread, so there is no "
+    "flip here"
+)
+
+
 def _economics_text(deal: Listing) -> Optional[str]:
     """Omitted entirely when the pipeline computed no economics. Present, it
     always ends in a pointer to the assumptions footer, so the profit figure
-    is never a bare unexplained number."""
+    is never a bare unexplained number.
+
+    A listing the pipeline marked ``resale_uneconomic`` gets the honest
+    one-liner instead of a negative-ROI figure. The *discount* is untouched
+    either way: the card really is below market, and that is exactly why it
+    is being shown.
+    """
+    if deal.resale_uneconomic:
+        return COLLECTOR_BUY_TEXT
     econ = deal.economics
     if econ is None:
         return None
@@ -485,6 +526,43 @@ def _economics_text(deal: Listing) -> Optional[str]:
             _money(econ.expected_profit),
             _pct(econ.roi_pct),
         )
+    )
+
+
+#: Attributes whose label reads as an adjective ("serial numbered"), which
+#: must not take "a" in front of it. Purely an English rule about the labels
+#: desirability publishes -- it adds no attribute and hides none, and a name
+#: that is not listed simply gets the article.
+ADJECTIVAL_ATTRIBUTES = (desirability.SERIAL_NUMBERED, desirability.GRADED)
+
+
+def _article_for(lead_attribute, described: str) -> str:
+    """"a " / "an " / "" for the front of a described attribute list."""
+    if lead_attribute in ADJECTIVAL_ATTRIBUTES:
+        return ""
+    return "an " if described[:1].lower() in "aeiou" else "a "
+
+
+def _cheap_find_text(deal: Listing) -> Optional[str]:
+    """One sentence saying why a $4 line item is not noise.
+
+    Only for listings below the cheap-card ceiling, where the price alone
+    tells the reader nothing: the cheap end of the hobby is mostly commodity,
+    so a card at that price has to name what makes a copy of it wanted.
+    Above the ceiling the line is omitted -- the price is its own argument.
+
+    Omitted too when desirability established nothing, because there is then
+    no honest answer to "why this is worth $4" (and such a listing is
+    rejected upstream as a common card anyway).
+    """
+    if not deal.is_cheap or deal.price is None:
+        return None
+    attributes = deal.desirable_attributes or ()
+    described = desirability.describe(attributes)
+    if not described:
+        return None
+    return "{} card, but it is {}{} -- not a base common".format(
+        _money(deal.price), _article_for(attributes[0], described), described
     )
 
 
@@ -593,6 +671,9 @@ def _thesis_block(index: int, deal: Listing, ending_soon_hours: float = DEFAULT_
     econ = _economics_text(deal)
     if econ:
         lines.append(_field_line("Economics", econ))
+    cheap = _cheap_find_text(deal)
+    if cheap:
+        lines.append(_field_line("Cheap find", cheap))
     lines.append(_field_line("Confidence", _confidence_text(deal)))
     risks = _risks(deal)
     if risks:
@@ -1233,11 +1314,18 @@ def _empty_state_block(threshold_pct: float, min_savings_dollars: float, stats,
 
 
 def _economics_in_report(sections) -> list:
-    """Every DealEconomics actually printed, in render order."""
+    """Every DealEconomics whose figures are actually PRINTED, in render order.
+
+    A card marked ``resale_uneconomic`` shows the collector-buy line instead
+    of its numbers, so its assumptions back nothing the reader can see. On a
+    day of only cheap finds that used to leave a footer announcing "every
+    profit figure above rests on these" above zero profit figures -- an
+    explanation of arithmetic the report deliberately did not do.
+    """
     found = []
     for key in SECTION_ORDER:
         for deal in sections[key]:
-            if deal.economics is not None:
+            if deal.economics is not None and not getattr(deal, "resale_uneconomic", False):
                 found.append(deal.economics)
     return found
 
@@ -1558,6 +1646,16 @@ def build_report(
             immediate_min_discount_pct,
         )
     )
+    # Cheap cards clear a HIGHER percentage bar, so a footer quoting only the
+    # ordinary threshold understates what a cheap find had to do to get here.
+    # Only said when a cheap card is actually on the page -- an unconditional
+    # sentence about rules nothing hit is noise.
+    if any(getattr(deal, "is_cheap", False) for key in SECTION_ORDER for deal in sections[key]):
+        thresholds += (
+            " Cheap cards clear a higher bar, not a lower one: they need a bigger percentage "
+            "discount AND something that makes a copy scarce -- a rookie, auto, patch, serial "
+            "number, parallel or grade."
+        )
     if not_shown > 0:
         thresholds += (
             " {} reviewed and fitted no section -- they had a usable comp and were simply not "

@@ -13,7 +13,7 @@ Two things are being protected here, and they are different:
 """
 from datetime import date
 
-from src import reasons, report
+from src import desirability, reasons, report
 from src.card_identity import CardIdentity, Field
 from src.comps import CompMatch, CompStatsV2
 from src.models import Listing
@@ -82,7 +82,15 @@ def make_listing(**overrides) -> Listing:
         is_opportunity=True,
     )
     defaults.update(overrides)
-    return Listing(**defaults)
+    listing = Listing(**defaults)
+    # The pipeline fills desirable_attributes in for every listing before the
+    # report ever sees one (src/main.py), so the fixture does too -- deriving
+    # it here rather than hand-listing attributes keeps the tag row tested
+    # against the same definition of "interesting" the deal gate uses. Pass
+    # ``desirable_attributes=`` explicitly to test a specific combination.
+    if "desirable_attributes" not in overrides:
+        listing.desirable_attributes = desirability.attributes_of(listing)
+    return listing
 
 
 def make_economics(**overrides):
@@ -604,6 +612,92 @@ def test_assumptions_footer_is_the_same_shape_on_a_one_card_and_a_three_card_day
 
 
 # ---------------------------------------------------------------------------
+# cheap cards: a card that cannot be flipped, and why a $4 card is here
+# ---------------------------------------------------------------------------
+
+
+def test_uneconomic_resale_replaces_the_economics_figures_with_a_collector_buy_line():
+    """At $4-$8 the postage and fees exceed the whole spread. A "-10% ROI"
+    there reads as a warning about the card when it is only arithmetic about
+    cheap cards, so the line says what is actually true instead."""
+    deal = make_listing(
+        price=4.0, market_value=8.0, pct_under_market=50.0, dollar_savings=4.0,
+        is_cheap=True, resale_uneconomic=True, economics=make_economics(price=4.0, market=8.0),
+    )
+    body = flat(body_of([deal]))
+    assert (
+        "Economics collector buy -- at this price postage and fees exceed the spread, "
+        "so there is no flip here"
+    ) in body
+    assert "ROI)" not in body
+    assert "profit" not in body
+
+
+def test_the_discount_survives_on_a_card_that_cannot_be_flipped():
+    """The card genuinely is below market -- that is the entire reason it is
+    being shown. Only the flip figures are suppressed."""
+    deal = make_listing(
+        price=4.0, market_value=8.0, pct_under_market=50.0, dollar_savings=4.0,
+        is_cheap=True, resale_uneconomic=True, economics=make_economics(price=4.0, market=8.0),
+    )
+    body = flat(body_of([deal]))
+    assert "$4.00 below market (50.0%)" in body
+
+
+def test_real_economics_line_is_untouched_when_the_card_is_flippable():
+    body = flat(body_of([make_listing(economics=make_economics(), resale_uneconomic=False)]))
+    assert "collector buy" not in body
+    assert "ROI)" in body
+    assert "profit" in body
+    assert "[assumptions in footer]" in body
+
+
+def test_a_cheap_card_says_in_one_line_why_it_is_not_noise():
+    deal = make_listing(
+        price=4.0, market_value=8.0, pct_under_market=50.0, dollar_savings=4.0, is_cheap=True,
+        desirable_attributes=(desirability.ROOKIE, desirability.SERIAL_NUMBERED),
+    )
+    body = body_of([deal])
+    # The raw line, columns and all -- this one is short enough not to wrap,
+    # so the exact rendered form is worth pinning.
+    assert (
+        "   Cheap find  $4.00 card, but it is a rookie card, serial numbered -- not a base common"
+    ) in body
+
+
+def test_the_cheap_find_line_is_absent_at_or_above_the_price_ceiling():
+    """A $100 card does not need to argue for itself; the price does that."""
+    deal = make_listing(is_cheap=False, desirable_attributes=(desirability.ROOKIE,))
+    assert "Cheap find" not in body_of([deal])
+
+
+def test_no_cheap_find_line_when_desirability_established_nothing():
+    """There is then no honest answer to "why is this worth $4", and half a
+    sentence is worse than none. Such a listing is rejected upstream as a
+    common card anyway."""
+    deal = make_listing(
+        price=4.0, market_value=8.0, pct_under_market=50.0, dollar_savings=4.0,
+        is_cheap=True, desirable_attributes=(),
+    )
+    body = body_of([deal])
+    assert "Cheap find" not in body
+    assert "not a base common" not in body
+
+
+def test_a_cheap_find_keeps_its_own_line_alongside_the_collector_buy_line():
+    """The two answer different questions -- "can I flip this" and "why do I
+    want it" -- so a cheap collector buy shows both."""
+    deal = make_listing(
+        price=4.0, market_value=8.0, pct_under_market=50.0, dollar_savings=4.0,
+        is_cheap=True, resale_uneconomic=True, economics=make_economics(price=4.0, market=8.0),
+        desirable_attributes=(desirability.ROOKIE,),
+    )
+    body = flat(body_of([deal]))
+    assert "collector buy --" in body
+    assert "Cheap find $4.00 card, but it is a rookie card -- not a base common" in body
+
+
+# ---------------------------------------------------------------------------
 # shipping honesty (unknown is never $0)
 # ---------------------------------------------------------------------------
 
@@ -840,7 +934,23 @@ def test_legend_tier_without_a_rookie_flag_has_no_attribute_tags():
     assert "[ROOKIE" not in body
 
 
-def test_auto_and_mem_and_patch_tags_come_from_identity():
+def test_auto_and_mem_and_patch_tags_come_from_desirable_attributes():
+    """The tag row renders whatever desirability established, using
+    desirability's own short tags. It does not re-read the identity fields
+    -- that second definition is what this change removed."""
+    body = body_of([make_listing(desirable_attributes=(
+        desirability.AUTOGRAPH, desirability.MEMORABILIA, desirability.PATCH,
+    ))])
+    assert "AUTO" in body
+    assert "MEM" in body
+    assert "PATCH" in body
+
+
+def test_a_patch_card_is_tagged_patch_and_not_also_mem():
+    """Behaviour inherited from desirability, deliberately: a patch IS
+    memorabilia, and the report shows the more specific of the two rather
+    than both. Previously the report derived its own tags from the identity
+    and printed "MEM + PATCH" -- the exact drift this change removes."""
     identity = CardIdentity(
         is_autograph=Field(True, "high"),
         is_memorabilia=Field(True, "high"),
@@ -848,8 +958,22 @@ def test_auto_and_mem_and_patch_tags_come_from_identity():
     )
     body = body_of([make_listing(card_identity=identity)])
     assert "AUTO" in body
-    assert "MEM" in body
     assert "PATCH" in body
+    assert "MEM +" not in body
+
+
+def test_tag_row_omits_graded_because_the_grade_is_already_in_the_headline():
+    body = body_of([make_listing(card_type="graded", grader="PSA", grade="9")])
+    assert "PSA 9" in body
+    assert "GRADED" not in body
+
+
+def test_unknown_attribute_names_still_get_a_tag_rather_than_vanishing():
+    """desirability owns the vocabulary; a name the report has no tag for is
+    shown raw rather than silently dropped, so a new attribute can never make
+    a card appear in the report with nothing explaining why."""
+    body = body_of([make_listing(desirable_attributes=("one_of_one",))])
+    assert "ONE_OF_ONE" in body
 
 
 def test_print_run_tag_shown_when_known():
@@ -966,6 +1090,24 @@ def test_empty_state_lists_the_top_rejection_reasons_from_run_stats():
     assert "12 x no comparable sales at any level" in body
     assert "3 x discount is below your threshold" in body
     assert "Looked at 40 listings matched to your watchlist; 12 had no comp at any level." in flat(body)
+
+
+def test_empty_state_renders_the_common_card_reason():
+    """Cheap listings with nothing scarce about them are now the biggest
+    rejection bucket on a quiet day, so the empty state has to name them in
+    English. Nothing report-side special-cases it: the reason rendering is
+    generic over stats.rejections, which is why a new reason works the day
+    it is added."""
+    from src import observability
+
+    stats = observability.RunStats(listings_matched_to_watchlist=40, unvalued=2)
+    for _ in range(9):
+        stats.rejections.record(reasons.Reason.COMMON_CARD)
+
+    _, body = report.build_report([], 30, RUN_DATE, stats=stats)
+    assert "Top reasons listings did not qualify:" in body
+    assert "9 x {}".format(reasons.label(reasons.Reason.COMMON_CARD)) in flat(body)
+    assert "Cheap because it is common" in flat(body)
 
 
 def test_empty_state_still_shows_auctions_and_needs_review():
@@ -1199,3 +1341,90 @@ class TestWatchWhy:
             rejection_reason=reasons.Reason.BELOW_DISCOUNT_THRESHOLD,
         )
         assert "or clearing it on percent" not in report._watch_why(deal, 30.0, 10.0)
+
+
+def cheap_deal(**overrides):
+    """A $4 rookie parallel at 67% off a $12.20 comp: below market, real, and
+    not worth flipping once postage and fees are paid."""
+    fields = dict(
+        price=4.0,
+        shipping_price=0.0,
+        comp_match=make_match(),
+        market_value=12.20,
+        pct_under_market=67.2,
+        dollar_savings=8.20,
+        is_opportunity=True,
+        is_cheap=True,
+        resale_uneconomic=True,
+        desirable_attributes=(desirability.ROOKIE, desirability.PARALLEL),
+    )
+    fields.update(overrides)
+    return make_listing(**fields)
+
+
+def test_cheap_find_line_reads_as_english_with_several_attributes():
+    # "it is rookie card, non-base parallel" was the bug: describe() returns
+    # noun phrases, and "it is" cannot be glued straight onto a list of them.
+    text = report._cheap_find_text(cheap_deal())
+    assert "but it is a rookie card, non-base parallel -- not a base common" in text
+    assert "it is rookie card" not in text
+
+
+def test_cheap_find_line_drops_the_article_before_an_adjective():
+    # "it is a serial numbered" is the same bug with the article left in.
+    text = report._cheap_find_text(
+        cheap_deal(desirable_attributes=(desirability.SERIAL_NUMBERED,))
+    )
+    assert "but it is serial numbered -- not a base common" in text
+
+
+def test_cheap_find_line_uses_an_before_a_vowel():
+    text = report._cheap_find_text(cheap_deal(desirable_attributes=(desirability.AUTOGRAPH,)))
+    assert "but it is an autograph -- not a base common" in text
+
+
+def test_thresholds_footer_mentions_the_cheap_rule_when_a_cheap_card_is_shown():
+    """The plain footer quotes the ordinary threshold, which understates what
+    a cheap card had to clear to be here."""
+    _, body = report.build_report([cheap_deal()], 30.0, RUN_DATE, min_savings_dollars=3.0)
+    assert "Cheap cards clear a higher bar" in body
+
+
+def test_thresholds_footer_stays_quiet_when_no_cheap_card_is_shown():
+    deal = make_listing(
+        price=250.0,
+        comp_match=make_match(),
+        market_value=400.0,
+        pct_under_market=37.5,
+        dollar_savings=150.0,
+        is_opportunity=True,
+        is_cheap=False,
+    )
+    _, body = report.build_report([deal], 30.0, RUN_DATE, min_savings_dollars=3.0)
+    assert "Cheap cards clear a higher bar" not in body
+
+
+def test_no_assumptions_footer_when_every_card_is_a_collector_buy():
+    """The footer explains profit figures. On a day of only cheap finds there
+    are none, and "every profit figure above rests on these" above zero of
+    them explains arithmetic the report deliberately did not do."""
+    deal = make_listing(
+        price=4.0, market_value=8.0, pct_under_market=50.0, dollar_savings=4.0,
+        is_cheap=True, resale_uneconomic=True, economics=make_economics(price=4.0, market=8.0),
+    )
+    body = body_of([deal])
+    assert "ECONOMICS ASSUMPTIONS" not in body
+    assert "collector buy" in body
+
+
+def test_assumptions_footer_returns_when_a_flippable_card_is_present():
+    cheap = make_listing(
+        id="cheap", price=4.0, market_value=8.0, pct_under_market=50.0, dollar_savings=4.0,
+        is_cheap=True, resale_uneconomic=True, economics=make_economics(price=4.0, market=8.0),
+    )
+    flippable = make_listing(
+        id="flip", price=200.0, market_value=400.0, pct_under_market=50.0, dollar_savings=200.0,
+        economics=make_economics(price=200.0, market=400.0),
+    )
+    body = body_of([cheap, flippable])
+    assert "ECONOMICS ASSUMPTIONS" in body
