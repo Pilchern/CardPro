@@ -82,6 +82,7 @@ class Reason:
     PICK_YOUR_CARD = "pick_your_card"
     DAMAGED_CONDITION = "damaged_condition"
     SELLER_RISK = "seller_risk"
+    COMMON_CARD = "common_card"
 
     # -- dedupe: real deal, but you have already seen it ------------------
     ALREADY_REPORTED = "already_reported"
@@ -146,6 +147,10 @@ REASON_LABELS: Dict[str, str] = {
     Reason.PICK_YOUR_CARD: "a pick-your-card listing -- the price is not for one specific card",
     Reason.DAMAGED_CONDITION: "described as damaged, creased, trimmed or altered",
     Reason.SELLER_RISK: "seller risk signals make this one to skip",
+    Reason.COMMON_CARD: (
+        "a cheap card with nothing that makes a copy scarce -- no rookie, auto, patch, "
+        "serial number, parallel or grade. Cheap because it is common"
+    ),
     # dedupe
     Reason.ALREADY_REPORTED: "already reported to you before",
     Reason.PRICE_NOT_DROPPED: "seen before and the price has not dropped since",
@@ -184,6 +189,7 @@ REASON_CATEGORIES: Dict[str, str] = {
     Reason.PICK_YOUR_CARD: CATEGORY_POLICY,
     Reason.DAMAGED_CONDITION: CATEGORY_POLICY,
     Reason.SELLER_RISK: CATEGORY_POLICY,
+    Reason.COMMON_CARD: CATEGORY_POLICY,
     # dedupe
     Reason.ALREADY_REPORTED: CATEGORY_DEDUPE,
     Reason.PRICE_NOT_DROPPED: CATEGORY_DEDUPE,

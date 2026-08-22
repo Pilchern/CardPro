@@ -84,6 +84,15 @@ class Config:
     immediate_alert_min_savings_dollars: float
     immediate_alert_min_discount_pct: float
 
+    # Cheap-card rules. Being cheap is not the same as being junk, and a flat
+    # dollar floor cannot tell the difference -- see config/settings.json's
+    # "cheap_cards" comment and src/desirability.py.
+    cheap_cards_enabled: bool
+    cheap_price_ceiling: float
+    cheap_min_discount_pct: float
+    cheap_min_savings_dollars: float
+    cheap_require_desirable_attribute: bool
+
 
 def _section(settings: dict, name: str) -> dict:
     """A settings section, or {} when absent.
@@ -116,6 +125,7 @@ def load_config() -> Config:
     economics = _section(settings, "economics")
     auctions = _section(settings, "auctions")
     alerts = _section(settings, "alerts")
+    cheap = _section(settings, "cheap_cards")
 
     # Treat the unfilled-in placeholder from .env.example the same as "not set".
     ebay_client_id = os.environ.get("EBAY_CLIENT_ID") or None
@@ -169,4 +179,9 @@ def load_config() -> Config:
         auction_ending_soon_hours=int(auctions.get("ending_soon_hours", 24)),
         immediate_alert_min_savings_dollars=float(alerts.get("immediate_alert_min_savings_dollars", 150.0)),
         immediate_alert_min_discount_pct=float(alerts.get("immediate_alert_min_discount_pct", 40.0)),
+        cheap_cards_enabled=bool(cheap.get("enabled", True)),
+        cheap_price_ceiling=float(cheap.get("price_ceiling", 10.0)),
+        cheap_min_discount_pct=float(cheap.get("min_discount_pct", 50.0)),
+        cheap_min_savings_dollars=float(cheap.get("min_savings_dollars", 3.0)),
+        cheap_require_desirable_attribute=bool(cheap.get("require_desirable_attribute", True)),
     )

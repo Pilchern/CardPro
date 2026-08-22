@@ -1,7 +1,7 @@
 {
   "discount_threshold_pct": 30,
-  "_min_savings_comment": "A listing must clear BOTH discount_threshold_pct (relative) AND min_savings_dollars (absolute) to get flagged. Keeps trivial deals out (e.g. 50% off a $5 common is still just $2.50) without hiding real money on expensive cards. Ranking in the email is by dollar amount saved, highest first.",
-  "min_savings_dollars": 10,
+  "_min_savings_comment": "A listing must clear BOTH discount_threshold_pct (relative) AND min_savings_dollars (absolute) to get flagged. The dollar floor exists to keep trivial deals out, but it was set at $10, which silently excluded the entire cheap end of the hobby: a $4 card worth $12 is 67% off and saves $8, and was being rejected. Lowered to $3, with the anti-junk job moved to cheap_cards below, where it belongs -- being cheap is not the same as being junk, and a dollar floor cannot tell the difference. Ranking in the email is by dollar amount saved, highest first, so cheap finds sort to the bottom naturally and never crowd out real money.",
+  "min_savings_dollars": 3,
   "ebay": {
     "_comment": "category_id 212 is eBay's 'Sports Trading Cards' category as of 2026. eBay occasionally renumbers categories -- if active-listing results look wrong, look up the current ID via the Taxonomy API (GET /commerce/taxonomy/v1/category_tree/0) and update this value.",
     "category_id": "212",
@@ -60,5 +60,13 @@
     "_comment": "Immediate-alert tier. Deliberately conservative: too many alerts destroy the product. An opportunity must clear BOTH of these AND have a flag-eligible comp to earn an out-of-band alert; everything else waits for the morning digest.",
     "immediate_alert_min_savings_dollars": 150,
     "immediate_alert_min_discount_pct": 40
+  },
+  "cheap_cards": {
+    "_comment": "Rules that apply only below price_ceiling. Cheap cards need their own gate because 48% of everything CardPro observes is under $10 and most of it is commodity -- base veterans, junk-wax commons, team cards. A 60%-off base common is still a base common. So a cheap card must clear a HIGHER percentage bar (min_discount_pct) and, if require_desirable_attribute is on, must actually have something that makes a copy scarce: rookie, autograph, patch/relic, serial numbering, a non-base parallel, or a grade. Anything cheap with none of those is rejected as common_card and counted in the report footer, not silently dropped. Set enabled=false to apply the ordinary rules at every price.",
+    "enabled": true,
+    "price_ceiling": 10.0,
+    "min_discount_pct": 50,
+    "min_savings_dollars": 3,
+    "require_desirable_attribute": true
   }
 }

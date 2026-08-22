@@ -45,6 +45,7 @@ from src import (
     comps,
     craigslist_links,
     dedupe,
+    desirability,
     ebay_client,
     ebay_email_alerts,
     economics,
@@ -506,6 +507,22 @@ def evaluate_listings(listings, engine, cfg, stats) -> None:
             stats.rejections.record(reasons.Reason.MULTI_PLAYER_CARD, listing.id)
             continue
 
+        listing.desirable_attributes = desirability.attributes_of(listing)
+        listing.is_cheap = cfg.cheap_cards_enabled and listing.price < cfg.cheap_price_ceiling
+
+        if (
+            listing.is_cheap
+            and cfg.cheap_require_desirable_attribute
+            and desirability.is_commodity(listing, cfg.cheap_price_ceiling)
+        ):
+            # Cheap is fine; cheap AND indistinguishable is not. There are
+            # thousands of base commons and a 60%-off base common is still a
+            # base common. Rejected with a stated reason and counted, not
+            # silently dropped -- see config/settings.json "cheap_cards".
+            listing.rejection_reason = reasons.Reason.COMMON_CARD
+            stats.rejections.record(reasons.Reason.COMMON_CARD, listing.id)
+            continue
+
         listing.target_hit = targets.best_hit(
             cfg.target_cards,
             player=listing.player,
@@ -559,6 +576,11 @@ def evaluate_listings(listings, engine, cfg, stats) -> None:
             fees,
             resale_haircut_pct=cfg.resale_haircut_pct,
         )
+        # Below roughly $10 a card, postage and fees eat the whole spread, so
+        # a negative profit here is arithmetic, not a warning. The report says
+        # "collector buy" rather than showing a scary ROI on a card nobody
+        # would ever flip.
+        listing.resale_uneconomic = listing.economics.expected_profit <= 0
 
         if listing.is_auction:
             listing.max_rational_bid = economics.max_rational_bid(
@@ -583,11 +605,19 @@ def evaluate_listings(listings, engine, cfg, stats) -> None:
 
         stats.valued_flag_eligible += 1
 
-        if listing.pct_under_market < cfg.discount_threshold_pct:
+        # Cheap cards clear a higher percentage bar and a lower dollar bar.
+        # A flat dollar floor is the wrong shape at both ends: $10 excluded a
+        # $4 card worth $12, while being trivially met by anything expensive.
+        required_pct = cfg.cheap_min_discount_pct if listing.is_cheap else cfg.discount_threshold_pct
+        required_savings = (
+            cfg.cheap_min_savings_dollars if listing.is_cheap else cfg.min_savings_dollars
+        )
+
+        if listing.pct_under_market < required_pct:
             listing.rejection_reason = reasons.Reason.BELOW_DISCOUNT_THRESHOLD
             stats.rejections.record(reasons.Reason.BELOW_DISCOUNT_THRESHOLD, listing.id)
             continue
-        if listing.dollar_savings < cfg.min_savings_dollars:
+        if listing.dollar_savings < required_savings:
             listing.rejection_reason = reasons.Reason.BELOW_MIN_SAVINGS
             stats.rejections.record(reasons.Reason.BELOW_MIN_SAVINGS, listing.id)
             continue

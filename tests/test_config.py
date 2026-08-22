@@ -249,3 +249,34 @@ def test_target_cards_load_from_the_watchlist(tmp_path, monkeypatch):
 
 def test_target_cards_default_to_empty_when_absent(tmp_path, monkeypatch):
     assert _load_with(tmp_path, monkeypatch).target_cards == []
+
+
+def test_cheap_card_settings_load(tmp_path, monkeypatch):
+    cfg = _load_with(
+        tmp_path,
+        monkeypatch,
+        settings_extra={
+            "cheap_cards": {
+                "enabled": False,
+                "price_ceiling": 25.0,
+                "min_discount_pct": 60,
+                "min_savings_dollars": 5,
+                "require_desirable_attribute": False,
+            }
+        },
+    )
+    assert cfg.cheap_cards_enabled is False
+    assert cfg.cheap_price_ceiling == 25.0
+    assert cfg.cheap_min_discount_pct == 60
+    assert cfg.cheap_min_savings_dollars == 5
+    assert cfg.cheap_require_desirable_attribute is False
+
+
+def test_cheap_card_defaults_keep_the_junk_filter_on(tmp_path, monkeypatch):
+    # A settings.json without the section must not silently disable the
+    # commodity filter -- that would surface every $2 base common.
+    cfg = _load_with(tmp_path, monkeypatch)
+    assert cfg.cheap_cards_enabled is True
+    assert cfg.cheap_price_ceiling == 10.0
+    assert cfg.cheap_min_discount_pct == 50.0
+    assert cfg.cheap_require_desirable_attribute is True

@@ -77,6 +77,15 @@ class Listing:
     # Set by the pipeline once every gate has run. is_opportunity means
     # "CardPro is willing to stand behind this as below market": it requires a
     # flag-eligible comp, so it is never true off a context-only level.
+    # Attributes that make a copy of this card scarce or wanted (rookie,
+    # auto, patch, serial numbering, parallel, grade) -- see
+    # src/desirability.py. Kept separate from every price figure: a card can
+    # be underpriced and undesirable, or desirable and badly priced, and
+    # collapsing the two would hide which is true.
+    desirable_attributes: tuple = ()
+    is_cheap: bool = False  # below the cheap_cards price ceiling; different rules apply
+    resale_uneconomic: bool = False  # fees + postage exceed the spread -- a collector buy, not a flip
+
     is_opportunity: bool = False
     is_price_drop: bool = False  # seen before, and cheaper than last time
     previous_price: Optional[float] = None  # what it was last time we saw it, for price drops

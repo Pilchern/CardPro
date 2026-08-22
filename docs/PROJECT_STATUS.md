@@ -52,7 +52,7 @@ them into a single score:
 | **Cheap** | The asking price is objectively low. Says nothing about value. |
 | **Underpriced** | Materially below what comparable copies of *that exact card in that exact grade* go for. Requires an identity-and-grade-matched comp; a price-bracket estimate can never establish this. |
 | **Flippable** | Enough spread to resell at a worthwhile profit after fees, shipping, supplies and a resale haircut. Shown with its assumptions attached. |
-| **Collectible opportunity** | Underpriced *and* carrying attributes you care about (rookie, auto, numbered, patch, young core). Tagged separately, never folded into the price maths. |
+| **Collectible opportunity** | Underpriced *and* carrying attributes that make a copy scarce (rookie, auto, patch, serial numbering, non-base parallel, grade). Tagged separately, never folded into the price maths -- see `src/desirability.py`. |
 | **Target acquisition** | A specific card you told CardPro to find below a price you set. A target hit is not a claim that it's underpriced — those are different answers and they get different sections. |
 
 ---
@@ -120,7 +120,10 @@ eBay saved-search alert email
   → economics: fees, outbound shipping, supplies, tax, net proceeds, ROI
   → auctions: max rational bid instead of a discount claim
   → acquisition targets matched against your price bands
-  → deal gate: ≥30% under market AND ≥$10 saved, on TOTAL cost
+  → deal gate on TOTAL cost, and it is not one gate but two:
+      normal cards  ≥30% under market AND ≥$3 saved
+      cheap (<$10)  ≥50% under market AND ≥$3 saved AND at least one attribute
+                    that makes a copy scarce -- otherwise rejected as common_card
   → dedupe: new listings and genuine price drops only
   → decision-first sectioned report, emailed via Gmail SMTP
 ```
@@ -147,6 +150,28 @@ market-matched comps gets no number at all.
 Confidence starts from the level and is downgraded, visibly, for each of:
 asking-price basis (always, today), fewer than 5 comps, stale comps, and
 wide dispersion. **Asking-price comps can never reach "high".**
+
+### Cheap cards
+
+Sub-$10 cards are eligible. They were not before: a flat `$10` minimum-savings
+floor rejected a $4 card worth $12, which is 67% off. The floor was the wrong
+tool — it cannot tell "cheap" from "junk", and it was simultaneously too
+strict at $4 and meaningless at $500.
+
+Cheap cards now clear a **higher** percentage bar (50% vs 30%) and a lower
+dollar bar ($3), and they must have at least one attribute that makes a copy
+scarce: rookie, autograph, patch, memorabilia, serial numbering, a non-base
+parallel, or a grade. Anything cheap with none of those is rejected as
+`common_card` and counted in the footer — a 60%-off base common is still a
+base common.
+
+Measured against the stored corpus, where 48% of all observations are under
+$10: **the commodity filter rejects 94% of that cheap slice.** What survives
+is the handful of cheap cards that are actually distinguishable.
+
+Cheap finds are also marked as collector buys rather than flips. Below roughly
+$10, postage and fees exceed the whole spread, so the report says so plainly
+instead of printing a negative ROI as though something were wrong.
 
 ---
 
@@ -211,6 +236,7 @@ shows the maximum bid that still preserves your margin.
 | `watchlist.json` → `players`, `player_tiers` | Who to watch, and who counts as young core |
 | `watchlist.json` → `target_cards` | Acquisition targets with `buy_zone` / `great_buy` / `immediate_alert` prices. Empty by default — see `_target_cards_example` |
 | `settings.json` → `discount_threshold_pct`, `min_savings_dollars` | The deal gate (both must clear) |
+| `settings.json` → `cheap_cards` | Rules below `price_ceiling` ($10): a higher percentage bar, a lower dollar bar, and the commodity filter. Set `enabled: false` to apply the ordinary rules at every price |
 | `settings.json` → `valuation` | Comp quality gates: minimum sample, recency half-life, staleness window, dispersion ceiling, outlier threshold, and whether context-only levels may flag (leave this `true`) |
 | `settings.json` → `economics` | Your real selling costs: fees, outbound shipping, supplies, tax, resale haircut |
 | `settings.json` → `auctions` | Required margin for max-rational-bid, and what counts as ending soon |
@@ -249,6 +275,7 @@ src/
   economics.py              -- fees, net proceeds, ROI, max rational bid, breakeven
   targets.py                -- acquisition targets and price bands
   search_terms.py           -- saved-search generation + coverage gaps
+  desirability.py           -- what makes a card worth owning, separate from what it's worth
   reasons.py                -- the canonical vocabulary of "why not"
   observability.py          -- per-run data-quality accounting
   price_history.py          -- self-building comp corpus

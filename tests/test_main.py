@@ -185,6 +185,11 @@ def fake_cfg(**overrides):
         auction_ending_soon_hours=24,
         immediate_alert_min_savings_dollars=150.0,
         immediate_alert_min_discount_pct=40.0,
+        cheap_cards_enabled=True,
+        cheap_price_ceiling=10.0,
+        cheap_min_discount_pct=50.0,
+        cheap_min_savings_dollars=3.0,
+        cheap_require_desirable_attribute=True,
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -614,3 +619,104 @@ class TestFlagEligibilityOverride:
         stats = observability.RunStats()
         main_module.evaluate_listings([], engine_for([]), fake_cfg(), stats)
         assert stats.warnings == []
+
+
+class TestCheapCards:
+    """Sub-$10 cards are allowed through, but "cheap" and "junk" are gated
+    separately. The old flat $10 dollar floor conflated them: a $4 card worth
+    $12 is 67% off and was being rejected outright."""
+
+    def _cheap_comps(self, median=12.0, **identity):
+        fields = dict(
+            card_type="raw", grader=None, grade=None, year=2024,
+            set_name="Prizm", parallel="Silver", card_number="301",
+        )
+        fields.update(identity)
+        return [observation(median, "o%d" % i, **fields) for i in range(6)]
+
+    def test_a_cheap_card_with_a_real_attribute_can_now_be_an_opportunity(self):
+        listing = make_listing(
+            "2024 Panini Prizm Caleb Williams Silver #301 RC", 4.0,
+            listing_id="CH1", listing_type="fixed_price",
+        )
+        stats = observability.RunStats()
+        main_module.evaluate_listings([listing], engine_for(self._cheap_comps()), fake_cfg(), stats)
+
+        assert listing.is_cheap is True
+        assert listing.is_opportunity is True
+        assert listing.dollar_savings == pytest.approx(8.0)
+
+    def test_the_old_ten_dollar_floor_would_have_rejected_it(self):
+        # Pinning the actual regression: the same card fails under a config
+        # where the cheap rules are off and the flat floor applies.
+        listing = make_listing(
+            "2024 Panini Prizm Caleb Williams Silver #301 RC", 4.0,
+            listing_id="CH2", listing_type="fixed_price",
+        )
+        cfg = fake_cfg(cheap_cards_enabled=False, min_savings_dollars=10.0)
+        stats = observability.RunStats()
+        main_module.evaluate_listings([listing], engine_for(self._cheap_comps()), cfg, stats)
+        assert listing.is_opportunity is False
+        assert listing.rejection_reason == reasons.Reason.BELOW_MIN_SAVINGS
+
+    def test_a_cheap_card_with_no_distinguishing_attribute_is_rejected_as_common(self):
+        listing = make_listing("Caleb Williams 2024 Panini card", 4.0, listing_id="CH3",
+                               listing_type="fixed_price")
+        stats = observability.RunStats()
+        main_module.evaluate_listings(
+            [listing], engine_for(self._cheap_comps(parallel=None, card_number=None)), fake_cfg(), stats
+        )
+        assert listing.is_opportunity is False
+        assert listing.rejection_reason == reasons.Reason.COMMON_CARD
+
+    def test_common_cards_are_counted_not_silently_dropped(self):
+        listing = make_listing("Caleb Williams 2024 Panini card", 2.0, listing_id="CH4",
+                               listing_type="fixed_price")
+        stats = observability.RunStats()
+        main_module.evaluate_listings([listing], engine_for([]), fake_cfg(), stats)
+        assert stats.rejections.counts()[reasons.Reason.COMMON_CARD] == 1
+        assert stats.unexplained_count() == 0
+
+    def test_cheap_cards_face_a_higher_percentage_bar(self):
+        # 40% off is plenty for a $200 card and not enough for a $6 one.
+        listing = make_listing(
+            "2024 Panini Prizm Caleb Williams Silver #301 RC", 7.2,
+            listing_id="CH5", listing_type="fixed_price",
+        )
+        stats = observability.RunStats()
+        main_module.evaluate_listings([listing], engine_for(self._cheap_comps()), fake_cfg(), stats)
+        assert listing.pct_under_market == pytest.approx(40.0)
+        assert listing.is_opportunity is False
+        assert listing.rejection_reason == reasons.Reason.BELOW_DISCOUNT_THRESHOLD
+
+    def test_an_expensive_plain_card_is_never_treated_as_common(self):
+        listing = make_listing("Caleb Williams 2024 Panini card", 250.0, listing_id="CH6",
+                               listing_type="fixed_price")
+        stats = observability.RunStats()
+        main_module.evaluate_listings([listing], engine_for([]), fake_cfg(), stats)
+        assert listing.rejection_reason != reasons.Reason.COMMON_CARD
+        assert listing.is_cheap is False
+
+    def test_cheap_buys_are_marked_as_uneconomic_to_flip(self):
+        # Postage and fees eat the spread at this price. That is arithmetic,
+        # not a warning -- the report says "collector buy" rather than showing
+        # a scary ROI on a card nobody would flip.
+        listing = make_listing(
+            "2024 Panini Prizm Caleb Williams Silver #301 RC", 4.0,
+            listing_id="CH7", listing_type="fixed_price",
+        )
+        stats = observability.RunStats()
+        main_module.evaluate_listings([listing], engine_for(self._cheap_comps()), fake_cfg(), stats)
+        assert listing.is_opportunity is True
+        assert listing.resale_uneconomic is True
+
+    def test_disabling_cheap_rules_applies_ordinary_thresholds_everywhere(self):
+        listing = make_listing(
+            "2024 Panini Prizm Caleb Williams Silver #301 RC", 4.0,
+            listing_id="CH8", listing_type="fixed_price",
+        )
+        cfg = fake_cfg(cheap_cards_enabled=False, min_savings_dollars=3.0)
+        stats = observability.RunStats()
+        main_module.evaluate_listings([listing], engine_for(self._cheap_comps()), cfg, stats)
+        assert listing.is_cheap is False
+        assert listing.is_opportunity is True  # 67% off clears the ordinary 30% bar
