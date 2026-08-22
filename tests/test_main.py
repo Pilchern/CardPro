@@ -339,7 +339,7 @@ class TestEvaluateListings:
 
         # Only two comps remain once L1 is excluded, so there is no valuation
         # at all rather than one built partly from the listing itself.
-        main_module.evaluate_listings([listing], engine_for(observations), fake_cfg(), stats, TODAY)
+        main_module.evaluate_listings([listing], engine_for(observations), fake_cfg(), stats)
         assert listing.comp_match is None
         assert listing.rejection_reason == reasons.Reason.NO_COMP_AT_ANY_LEVEL
 
@@ -347,14 +347,14 @@ class TestEvaluateListings:
         observations = [observation(400.0, "o%d" % i) for i in range(6)] + [observation(100.0, "L1")]
         listing = make_listing(EXACT_TITLE, 100.0, listing_id="L1", listing_type="fixed_price")
         stats = observability.RunStats()
-        main_module.evaluate_listings([listing], engine_for(observations), fake_cfg(), stats, TODAY)
+        main_module.evaluate_listings([listing], engine_for(observations), fake_cfg(), stats)
         assert listing.market_value == 400.0  # its own $100 didn't drag the median down
         assert listing.is_opportunity is True
 
     def test_reprint_is_blocked_with_its_own_reason(self):
         listing = make_listing("1986 Fleer Caleb Williams #57 REPRINT", 20.0)
         stats = observability.RunStats()
-        main_module.evaluate_listings([listing], engine_for([]), fake_cfg(), stats, TODAY)
+        main_module.evaluate_listings([listing], engine_for([]), fake_cfg(), stats)
         assert listing.is_opportunity is False
         assert listing.rejection_reason == reasons.Reason.REPRINT
         assert stats.blocked_by_negative_signal == 1
@@ -362,20 +362,20 @@ class TestEvaluateListings:
     def test_lot_is_blocked(self):
         listing = make_listing("Lot of 5 Caleb Williams rookie cards", 40.0)
         stats = observability.RunStats()
-        main_module.evaluate_listings([listing], engine_for([]), fake_cfg(), stats, TODAY)
+        main_module.evaluate_listings([listing], engine_for([]), fake_cfg(), stats)
         assert listing.rejection_reason == reasons.Reason.LOT
 
     def test_multi_player_card_is_not_valued_against_one_player(self):
         listing = make_listing("2024 Prizm Dual Auto Caleb Williams Kyle Teel #5", 300.0)
         stats = observability.RunStats()
-        main_module.evaluate_listings([listing], engine_for([]), fake_cfg(), stats, TODAY)
+        main_module.evaluate_listings([listing], engine_for([]), fake_cfg(), stats)
         assert listing.rejection_reason == reasons.Reason.MULTI_PLAYER_CARD
 
     def test_auction_is_never_an_opportunity_however_cheap(self):
         observations = [observation(400.0, "o%d" % i) for i in range(6)]
         listing = make_listing(EXACT_TITLE, 20.0, listing_id="A1", listing_type="auction", bid_count=3)
         stats = observability.RunStats()
-        main_module.evaluate_listings([listing], engine_for(observations), fake_cfg(), stats, TODAY)
+        main_module.evaluate_listings([listing], engine_for(observations), fake_cfg(), stats)
 
         assert listing.is_opportunity is False
         assert listing.rejection_reason == reasons.Reason.AUCTION_CURRENT_BID_NOT_A_PRICE
@@ -396,7 +396,7 @@ class TestEvaluateListings:
         ]
         listing = make_listing("Caleb Williams rookie card", 25.0, listing_id="L9", listing_type="fixed_price")
         stats = observability.RunStats()
-        main_module.evaluate_listings([listing], engine_for(observations), fake_cfg(), stats, TODAY)
+        main_module.evaluate_listings([listing], engine_for(observations), fake_cfg(), stats)
 
         assert listing.comp_match is not None
         assert listing.comp_match.level == "price_tier"
@@ -411,7 +411,7 @@ class TestEvaluateListings:
             listing_type="fixed_price",
         )
         stats = observability.RunStats()
-        main_module.evaluate_listings([psa9], engine_for(psa10_comps), fake_cfg(), stats, TODAY)
+        main_module.evaluate_listings([psa9], engine_for(psa10_comps), fake_cfg(), stats)
         assert psa9.is_opportunity is False
         # No level -- not even a context-only one -- will hand a PSA 9 the
         # PSA 10 median. Nothing to say beats saying the wrong thing.
@@ -422,14 +422,14 @@ class TestEvaluateListings:
         observations = [observation(300.0, "o%d" % i) for i in range(6)]
         listing = make_listing(EXACT_TITLE, 280.0, listing_id="L2", listing_type="fixed_price")
         stats = observability.RunStats()
-        main_module.evaluate_listings([listing], engine_for(observations), fake_cfg(), stats, TODAY)
+        main_module.evaluate_listings([listing], engine_for(observations), fake_cfg(), stats)
         assert listing.rejection_reason == reasons.Reason.BELOW_DISCOUNT_THRESHOLD
 
     def test_below_min_savings_records_the_specific_reason(self):
         observations = [observation(20.0, "o%d" % i) for i in range(6)]
         listing = make_listing(EXACT_TITLE, 12.0, listing_id="L3", listing_type="fixed_price")
         stats = observability.RunStats()
-        main_module.evaluate_listings([listing], engine_for(observations), fake_cfg(), stats, TODAY)
+        main_module.evaluate_listings([listing], engine_for(observations), fake_cfg(), stats)
         assert listing.pct_under_market >= 30
         assert listing.rejection_reason == reasons.Reason.BELOW_MIN_SAVINGS
 
@@ -439,14 +439,14 @@ class TestEvaluateListings:
             EXACT_TITLE, 260.0, listing_id="L4", listing_type="fixed_price", shipping_price=40.0
         )
         stats = observability.RunStats()
-        main_module.evaluate_listings([listing], engine_for(observations), fake_cfg(), stats, TODAY)
+        main_module.evaluate_listings([listing], engine_for(observations), fake_cfg(), stats)
         assert listing.dollar_savings == pytest.approx(100.0)  # 400 - (260 + 40), not 400 - 260
 
     def test_economics_are_attached_with_visible_assumptions(self):
         observations = [observation(400.0, "o%d" % i) for i in range(6)]
         listing = make_listing(EXACT_TITLE, 200.0, listing_id="L5", listing_type="fixed_price")
         stats = observability.RunStats()
-        main_module.evaluate_listings([listing], engine_for(observations), fake_cfg(), stats, TODAY)
+        main_module.evaluate_listings([listing], engine_for(observations), fake_cfg(), stats)
         assert listing.economics is not None
         assert listing.economics.assumptions  # never a bare unexplained profit figure
 
@@ -462,7 +462,7 @@ class TestEvaluateListings:
         ]
         stats = observability.RunStats()
         main_module.evaluate_listings(listings, engine_for([observation(400.0, "o%d" % i) for i in range(6)]),
-                                      fake_cfg(), stats, TODAY)
+                                      fake_cfg(), stats)
         for listing in listings:
             assert listing.is_opportunity or listing.rejection_reason, listing.title
         assert stats.unexplained_count() == 0
@@ -488,7 +488,7 @@ class TestEvaluateListings:
         )
         listing = make_listing(EXACT_TITLE, 450.0, listing_id="T1", listing_type="fixed_price")
         stats = observability.RunStats()
-        main_module.evaluate_listings([listing], engine_for([]), cfg, stats, TODAY)
+        main_module.evaluate_listings([listing], engine_for([]), cfg, stats)
 
         # In the buy zone the user set, but with no comps there is no claim
         # that it's underpriced -- those are separate answers.
@@ -537,3 +537,39 @@ class TestApplyDedupe:
         kept = main_module.apply_dedupe([auction], {}, "2026-08-22", stats)
         assert kept == [auction]
         assert stats.duplicates_suppressed == 0
+
+
+class TestListingsAsObservations:
+    """The eBay API path has no persisted corpus, so today's active listings
+    become asking-basis observations. Same exclusions as the alerts path."""
+
+    def test_fixed_price_listings_become_asking_basis_observations(self):
+        listing = make_listing(EXACT_TITLE, 240.0, listing_id="F1", listing_type="fixed_price")
+        obs = main_module.listings_as_observations([listing], "2026-08-22")
+        assert len(obs) == 1
+        assert obs[0]["basis"] == comps.BASIS_ASKING
+        assert obs[0]["id"] == "F1"
+        assert obs[0]["grade"] == "10"
+
+    def test_auctions_are_excluded(self):
+        auction = make_listing(EXACT_TITLE, 40.0, listing_id="A1", listing_type="auction", bid_count=4)
+        assert main_module.listings_as_observations([auction], "2026-08-22") == []
+
+    def test_blocked_listings_are_excluded(self):
+        reprint = make_listing("2024 Panini Prizm Caleb Williams Silver #301 REPRINT", 12.0)
+        assert main_module.listings_as_observations([reprint], "2026-08-22") == []
+
+    def test_sold_observations_take_priority_but_asking_still_counts(self):
+        # A bucket mixing both is reported as asking-basis, which caps its
+        # confidence -- honest, not a loss.
+        sold = [dict(observation(400.0, "s%d" % i), basis=comps.BASIS_SOLD) for i in range(3)]
+        asking = main_module.listings_as_observations(
+            [make_listing(EXACT_TITLE, 500.0, listing_id="a1", listing_type="fixed_price")], "2026-08-22"
+        )
+        engine = engine_for(sold + asking)
+        match = engine.lookup(
+            player="Caleb Williams", card_type="graded", price=200.0, grader="PSA", grade="10",
+            year=2024, set_name="Prizm", parallel="Silver", card_number="301",
+        )
+        assert match.stats.basis == comps.BASIS_ASKING
+        assert match.confidence != "high"

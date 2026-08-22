@@ -138,7 +138,11 @@ def coverage_gaps(players: list, observed_queries_by_player: dict, sport_by_play
             if search.query.lower() == player.lower():
                 continue  # the broad query is the one we know exists
             distinguishing = search.query.lower().replace(player.lower(), "").strip()
-            if not any(distinguishing in seen for seen in observed):
+            # Match in both directions: an observation may be a coarse marker
+            # ("psa") that covers a finer slice ("psa 10"), or a full query
+            # string that contains the slice. Either way it counts as evidence
+            # of coverage.
+            if not any(seen in distinguishing or distinguishing in seen for seen in observed if seen):
                 missing.append(search)
         if missing:
             gaps[player] = missing

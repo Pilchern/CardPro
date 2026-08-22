@@ -405,8 +405,15 @@ def fetch_alert_listings(
     sender_contains: str,
     lookback_days: int,
     mailbox: str = DEFAULT_MAILBOX,
+    counters: Optional[dict] = None,
 ) -> list[dict]:
     """Full pipeline: IMAP fetch -> HTML extraction -> [{title, url, price}].
+
+    `counters`, when given, gets `counters["messages"]` set to how many alert
+    emails were actually read. The daily report's data-quality footer needs
+    that number to distinguish "eBay sent nothing" from "we read 14 emails
+    and got nothing out of them" -- the same distinction the template-change
+    canary below exists for, surfaced in the email rather than only the log.
 
     Logs a warning if alert emails were found but nothing could be
     extracted from any of them -- that combination almost always means
@@ -416,6 +423,8 @@ def fetch_alert_listings(
     today" look identical in the report/logs -- see docs/AUDIT_AND_ROADMAP.md.
     """
     messages = fetch_alert_messages(gmail_address, gmail_app_password, sender_contains, lookback_days, mailbox)
+    if counters is not None:
+        counters["messages"] = len(messages)
     listings = []
     for msg in messages:
         html = get_html_body(msg)

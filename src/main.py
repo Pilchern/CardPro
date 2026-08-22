@@ -192,13 +192,16 @@ def _browse_listing_type(buying_options) -> str:
 
 def fetch_ebay_alert_active(cfg, stats) -> list:
     """eBay-via-email-alerts path (see ebay_email_alerts.py)."""
+    counters = {}
     items = ebay_email_alerts.fetch_alert_listings(
         cfg.gmail_address,
         cfg.gmail_app_password,
         cfg.ebay_alerts_sender_contains,
         cfg.ebay_alerts_lookback_days,
         cfg.ebay_alerts_mailbox,
+        counters=counters,
     )
+    stats.alert_emails_scanned += counters.get("messages", 0)
     stats.listings_extracted += len(items)
 
     listings = []
@@ -329,6 +332,44 @@ def repair_truncated_titles(listings, stats, limit: int = MAX_TITLE_REPAIRS_PER_
 # --------------------------------------------------------------------------
 
 
+def listings_as_observations(listings, today_str: str) -> list:
+    """Today's asking prices as comp observations, for a source that has no
+    persisted corpus of its own (the eBay API path).
+
+    Sold observations always win: a bucket's `basis` is only "sold" when every
+    point in it is a real transaction, so mixing these in downgrades the
+    bucket to asking-basis and caps its confidence -- which is the honest
+    outcome, not a loss. Auctions and hard-blocked listings are excluded for
+    the same reasons as record_observations.
+    """
+    observations = []
+    for listing in listings:
+        if listing.price is None or listing.is_auction:
+            continue
+        identity = listing.card_identity
+        if identity is not None and card_identity.is_excluded_from_deals(identity):
+            continue
+        grade_info = matcher.detect_grade_details(listing.title)
+        observations.append(
+            {
+                "price": listing.price,
+                "date": today_str,
+                "id": listing.id,
+                "player": listing.player,
+                "card_type": listing.card_type,
+                "year": identity.year.value if identity else None,
+                "set_name": identity.set_name.value if identity else None,
+                "parallel": identity.parallel.value if identity else None,
+                "card_number": identity.card_number.value if identity else None,
+                "grader": listing.grader,
+                "grade": listing.grade,
+                "qualifier": grade_info.qualifier,
+                "basis": comps.BASIS_ASKING,
+            }
+        )
+    return observations
+
+
 def record_observations(listings, history, today_str: str) -> int:
     """Append each listing's asking price to the self-built comp corpus.
 
@@ -413,7 +454,7 @@ def _count_shape(listing, stats) -> None:
         stats.shipping_known += 1
 
 
-def evaluate_listings(listings, engine, cfg, stats, today) -> None:
+def evaluate_listings(listings, engine, cfg, stats) -> None:
     """Value every listing and decide what, if anything, it is.
 
     Sets `rejection_reason` on everything that does not become an
@@ -626,6 +667,12 @@ def run(args: argparse.Namespace) -> None:
         logger.info("Fetching eBay sold comps for %d players", len(cfg.players))
         observations = fetch_ebay_sold_observations(cfg, cfg.players, token)
         logger.info("%d real sold observation(s) available", len(observations))
+        # Marketplace Insights access is normally declined, in which case the
+        # sold list is empty. Today's active listings still give the engine
+        # something to work with -- as asking-basis observations, which are
+        # capped at "medium" confidence and can only reach a flag-eligible
+        # level when the card is fully identified.
+        observations.extend(listings_as_observations(listings, today_str))
 
     elif cfg.ebay_alerts_enabled:
         logger.info("eBay API unavailable -- using saved-search email alerts (IMAP) instead")
@@ -670,7 +717,7 @@ def run(args: argparse.Namespace) -> None:
             "system being honest, not broken. See SEARCH COVERAGE below."
         )
 
-    evaluate_listings(listings, engine, cfg, stats, today)
+    evaluate_listings(listings, engine, cfg, stats)
 
     seen = dedupe.load_seen(cfg.seen_listings_path)
     listings = apply_dedupe(listings, seen, today_str, stats)

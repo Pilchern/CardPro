@@ -70,3 +70,13 @@ def test_no_misspelling_permutations_are_generated():
     # Explicitly not a feature: noise cost is certain, recall gain is not.
     queries = [s.query for s in search_terms.for_player("Munetaka Murakami", sport="baseball")]
     assert all("Murakami" in q for q in queries)
+
+
+def test_coarse_observed_marker_covers_finer_slices():
+    # A graded listing arriving for a player is evidence that a PSA-oriented
+    # search exists, even though the marker recorded is just "psa".
+    gaps = search_terms.coverage_gaps(["Caleb Williams"], {"Caleb Williams": ["psa", "auto"]})
+    remaining = [s.query for s in gaps.get("Caleb Williams", [])]
+    assert "Caleb Williams PSA 10" not in remaining
+    assert "Caleb Williams auto" not in remaining
+    assert "Caleb Williams rookie" in remaining
