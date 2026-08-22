@@ -66,6 +66,12 @@ class RunStats:
     duplicates_suppressed: int = 0
     blocked_by_negative_signal: int = 0
 
+    # One line about the hand-entered sold-comp corpus. Worth a permanent
+    # slot in the footer rather than a warning: "every comp is an asking
+    # price" is the single biggest caveat on everything above it, and it
+    # should be visible on the days it is true, not only when it changes.
+    sold_comps_summary: str = ""
+
     rejections: reasons.RejectionLog = field(default_factory=reasons.RejectionLog)
     warnings: list = field(default_factory=list)
 
@@ -144,6 +150,9 @@ class RunStats:
                 self.blocked_by_negative_signal,
             ),
         ]
+
+        if self.sold_comps_summary:
+            lines.append(self.sold_comps_summary)
 
         by_category = self.rejections.counts_by_category()
         if by_category:

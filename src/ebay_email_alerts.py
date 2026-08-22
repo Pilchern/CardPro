@@ -16,13 +16,26 @@ skips the inbox for these alerts (keeps your normal inbox clean) or
 archive them after the fact, without CardPro losing sight of them. Only
 actually deleting a message (emptying Trash) makes it disappear here.
 
+TRUNCATED TITLES: eBay truncates long titles in these emails with an
+ellipsis, which can cut a grade number mid-digit -- a "PSA 10" arriving as
+"PSA 1…", which parses as PSA 1. CardPro does NOT fetch the item page to
+resolve that. Doing so would mean automated access to eBay's site, which
+their User Agreement prohibits and which principle #1 in
+docs/PROJECT_STATUS.md rules out outright ("never build tooling to defeat a
+site's anti-bot measures") -- the same reason this project refuses to
+scrape Craigslist. There is no clever version of that request; there is
+only the request.
+
+So the grade on a truncated title is simply unknown. looks_truncated()
+flags it, main.mark_truncated_titles() sets `title_truncated`, the report
+surfaces it as a risk ("eBay truncated the title, so the grade shown may
+not be the real grade"), and a truncated listing that parsed a grade is
+rejected with GRADE_UNCERTAIN rather than valued against comps for a grade
+it may not have. Uncertain beats confidently wrong.
+
 VALIDATED (2026-08-18): extract_listings_from_html() was confirmed working
 against 14 real alert emails / 327 real extracted listings / 96 correctly
-matched watchlist listings, with no observed player-name collisions. One
-known minor quirk: eBay truncates long titles in these emails, which can
-occasionally cut a grade number mid-digit (e.g. "PSA 1…" that's really a
-truncated "PSA 10"). That only affects the grade text shown in reports,
-not comp bucketing (raw vs. graded is unaffected), so it's cosmetic. If
+matched watchlist listings, with no observed player-name collisions. If
 eBay changes their email template later, re-run
 `python -m scripts.test_ebay_alerts --raw` to re-validate.
 """
@@ -37,7 +50,6 @@ from email.message import Message
 from typing import Optional
 from urllib.parse import unquote
 
-import requests
 from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
@@ -86,14 +98,6 @@ LISTING_TYPE_FIXED = "fixed_price"
 LISTING_TYPE_UNKNOWN = "unknown"
 
 TRUNCATION_MARKERS = ("…", "...")  # eBay truncates long titles in these emails with an ellipsis
-
-_FULL_TITLE_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
-    )
-}
-_TITLE_SUFFIXES_TO_STRIP = (" | eBay", " for sale online | eBay", " | eBay US")
 
 
 def fetch_alert_messages(
@@ -356,47 +360,13 @@ def _extract_shipping(text: str) -> Optional[float]:
 
 
 def looks_truncated(title: str) -> bool:
-    return title.rstrip().endswith(TRUNCATION_MARKERS)
-
-
-def fetch_full_title(url: str, timeout: int = 10) -> Optional[str]:
-    """Best-effort fetch of the real (non-truncated) title from an eBay
-    item page -- eBay's alert emails truncate long titles, which can cut a
-    grade number mid-digit (a "PSA 10" showing as "PSA 1…"). Uses the
-    page's <title> element rather than guessing eBay's CSS class names,
-    since document titles are a far more stable target across redesigns.
-
-    Returns None on ANY failure (network error, non-200, no <title>) --
-    callers MUST treat that as "keep the truncated title," not an error.
-    This has not been tested against eBay's real item pages (this
-    project's sandbox can't reach ebay.com to check) -- if it turns out
-    eBay blocks plain requests here the way Craigslist did, this will
-    reliably return None and the caller's fallback (marking the grade as
-    uncertain rather than asserting a possibly-wrong number) takes over
-    with no further escalation attempted.
-
-    Only call this for listings that already cleared the deal threshold
-    (a handful a day) -- not the full raw batch -- to keep this occasional
-    rather than high-volume.
+    """True if eBay cut this title short. That is the end of what CardPro
+    can know about it -- there is no recovery step, because recovering the
+    full title would mean fetching the item page (see the module docstring).
+    A truncated title means an unreliable grade, nothing more and nothing
+    less, and callers treat it as such.
     """
-    try:
-        resp = requests.get(url, headers=_FULL_TITLE_HEADERS, timeout=timeout)
-    except requests.RequestException:
-        logger.warning("Couldn't fetch full title for %s (request failed)", url)
-        return None
-    if resp.status_code != 200:
-        logger.warning("Couldn't fetch full title for %s (HTTP %s)", url, resp.status_code)
-        return None
-
-    soup = BeautifulSoup(resp.text, "html.parser")
-    if not soup.title or not soup.title.string:
-        return None
-    title = soup.title.get_text(strip=True)
-    for suffix in _TITLE_SUFFIXES_TO_STRIP:
-        if title.endswith(suffix):
-            title = title[: -len(suffix)]
-            break
-    return title.strip() or None
+    return title.rstrip().endswith(TRUNCATION_MARKERS)
 
 
 def fetch_alert_listings(

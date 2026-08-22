@@ -23,10 +23,13 @@ CardPro 2.0 changed the shape of this file in three ways that matter:
    simply vanished when no comp was found, which made "quiet day" and
    "silently broken" look identical.
 
-3. **Order of operations.** Truncated titles are repaired BEFORE valuation,
-   not after. eBay truncates long titles and "PSA 1..." parses as PSA 1; the
-   old order meant a PSA 10 could be valued as a PSA 1 and the flag decision
-   was already made by the time the real title arrived.
+3. **Order of operations.** Truncated titles are flagged BEFORE valuation,
+   not after. eBay truncates long titles and "PSA 1..." parses as PSA 1, so
+   a PSA 10 could be valued as a PSA 1 with the flag decision already made.
+   CardPro does not fetch the item page to recover the real title -- that
+   would be automated access to eBay's site (principle #1). Instead a
+   truncated title that parsed a grade is rejected as GRADE_UNCERTAIN and
+   sent to NEEDS REVIEW, because a wrong grade is worse than no valuation.
 """
 from __future__ import annotations
 
@@ -55,6 +58,7 @@ from src import (
     price_history,
     reasons,
     report,
+    sold_comps,
     search_terms,
     targets,
 )
@@ -67,12 +71,6 @@ LOG_PATH = ROOT_DIR / "logs" / "scraper.log"
 # so a script that runs once a day forever doesn't grow the log unbounded.
 LOG_MAX_BYTES = 2_000_000
 LOG_BACKUP_COUNT = 5
-
-# Repairing a truncated title costs one HTTP request to the item page. This
-# caps how many we'll do per run so a template change that suddenly makes
-# every title look truncated turns into a logged warning, not hundreds of
-# requests at eBay.
-MAX_TITLE_REPAIRS_PER_RUN = 30
 
 # Which negative signal maps to which rejection reason. Signals that aren't
 # here (currently only "damaged") are surfaced as risks rather than blocks --
@@ -95,6 +93,7 @@ BLOCKED_TO_REASON = {
     "thin_sample": reasons.Reason.THIN_SAMPLE,
     "stale_comps": reasons.Reason.STALE_COMPS,
     "dispersed_comps": reasons.Reason.DISPERSED_COMPS,
+    "concentrated_sample": reasons.Reason.CONCENTRATED_SAMPLE,
 }
 
 
@@ -274,61 +273,6 @@ def fetch_ebay_sold_observations(cfg, players, token) -> list:
 
 
 # --------------------------------------------------------------------------
-# Title repair -- must run BEFORE valuation
-# --------------------------------------------------------------------------
-
-
-def repair_truncated_titles(listings, stats, limit: int = MAX_TITLE_REPAIRS_PER_RUN) -> None:
-    """eBay's alert emails truncate long titles, and a truncated grade parses
-    as the wrong grade ("PSA 1..." -> PSA 1, when it's really PSA 10). Fetch
-    the real title from the item page and re-derive identity from it.
-
-    This runs before valuation on purpose: the old code repaired titles only
-    after a listing had already been flagged, so the comp lookup and the deal
-    decision were both made against a grade that could be off by a factor of
-    ten. See docs/CARDPRO_2_AUDIT.md failure mode #5.
-
-    Fails safe in every direction: any fetch failure leaves the truncated
-    title in place and marks `title_truncated`, which the report shows as a
-    risk. Capped at `limit` fetches per run so a template change can't turn
-    into a burst of requests.
-    """
-    logger = logging.getLogger("main")
-    attempted = repaired = 0
-    for listing in listings:
-        if not ebay_email_alerts.looks_truncated(listing.title):
-            continue
-        if attempted >= limit:
-            listing.title_truncated = True
-            continue
-        attempted += 1
-        full_title = ebay_email_alerts.fetch_full_title(listing.url)
-        if not full_title:
-            listing.title_truncated = True
-            continue
-
-        repaired += 1
-        listing.title = full_title
-        identity = card_identity.extract_card_identity(full_title)
-        grade_info = matcher.detect_grade_details(full_title)
-        listing.card_identity = identity
-        listing.card_type = grade_info.card_type
-        listing.grader = grade_info.grader
-        listing.grade = grade_info.grade
-        listing.is_rookie_card = matcher.detect_rookie_card(full_title)
-        listing.negative_signals = tuple(identity.negative_signals.value or ())
-        listing.title_truncated = False
-
-    if attempted:
-        logger.info("Truncated titles: %d/%d repaired before valuation", repaired, attempted)
-    if attempted >= limit:
-        stats.warn(
-            "Hit the {}-per-run cap on truncated-title repairs. If that keeps happening, "
-            "eBay probably changed their email template.".format(limit)
-        )
-
-
-# --------------------------------------------------------------------------
 # Observations
 # --------------------------------------------------------------------------
 
@@ -340,12 +284,21 @@ def listings_as_observations(listings, today_str: str) -> list:
     Sold observations always win: a bucket's `basis` is only "sold" when every
     point in it is a real transaction, so mixing these in downgrades the
     bucket to asking-basis and caps its confidence -- which is the honest
-    outcome, not a loss. Auctions and hard-blocked listings are excluded for
-    the same reasons as record_observations.
+    outcome, not a loss. Auctions, hard-blocked listings, and listings with
+    an untrustworthy grade are excluded for the same reasons as
+    record_observations.
     """
     observations = []
     for listing in listings:
         if listing.price is None or listing.is_auction:
+            continue
+        if listing.title_truncated and listing.grade is not None:
+            # A grade read off a truncated title is probably wrong, and a
+            # wrong grade in the corpus is worse than a missing one: it sits
+            # there for the full retention window mis-valuing every genuine
+            # card at that grade (principle #6). The listing itself is
+            # already rejected as GRADE_UNCERTAIN; this keeps it from
+            # damaging everything else too.
             continue
         identity = listing.card_identity
         if identity is not None and card_identity.is_excluded_from_deals(identity):
@@ -378,11 +331,22 @@ def record_observations(listings, history, today_str: str) -> int:
     a price, and letting one into the comp corpus would poison every future
     valuation of that card with a number that was never paid. Listings with
     a hard negative signal (reprint, lot, sealed box) are excluded for the
-    same reason -- their price isn't the price of the card.
+    same reason -- their price isn't the price of the card. So are
+    listings whose grade came off a truncated title: recording one writes a
+    grade that is probably wrong into a corpus other cards are valued
+    against.
     """
     recorded = 0
     for listing in listings:
         if listing.price is None or listing.is_auction:
+            continue
+        if listing.title_truncated and listing.grade is not None:
+            # A grade read off a truncated title is probably wrong, and a
+            # wrong grade in the corpus is worse than a missing one: it sits
+            # there for the full retention window mis-valuing every genuine
+            # card at that grade (principle #6). The listing itself is
+            # already rejected as GRADE_UNCERTAIN; this keeps it from
+            # damaging everything else too.
             continue
         identity = listing.card_identity
         if identity is not None and card_identity.is_excluded_from_deals(identity):
@@ -407,6 +371,43 @@ def record_observations(listings, history, today_str: str) -> int:
         )
         recorded += 1
     return recorded
+
+
+# --------------------------------------------------------------------------
+# Truncated titles -- must run BEFORE valuation
+# --------------------------------------------------------------------------
+
+
+def mark_truncated_titles(listings) -> None:
+    """eBay's alert emails truncate long titles, and a truncated grade parses
+    as the wrong grade ("PSA 1..." -> PSA 1, when it's really PSA 10). Flag
+    those listings so nothing downstream trusts the grade.
+
+    CardPro does not go and fetch the real title from the item page. That
+    would be automated access to eBay's site, which their User Agreement
+    prohibits and which principle #1 rules out -- the same reason this
+    project won't scrape Craigslist. An unknown grade is an acceptable
+    outcome; defeating a site's defenses to learn it is not.
+
+    This runs before valuation on purpose: a listing whose grade can't be
+    trusted is worth knowing about before the comp lookup, not after one has
+    already been made against a grade that could be off by a factor of ten.
+    See docs/CARDPRO_2_AUDIT.md failure mode #5.
+    """
+    logger = logging.getLogger("main")
+    uncertain = 0
+    for listing in listings:
+        if not ebay_email_alerts.looks_truncated(listing.title):
+            continue
+        listing.title_truncated = True
+        uncertain += 1
+
+    if uncertain:
+        logger.info(
+            "%d listing(s) carry an uncertain grade (eBay truncated the title); "
+            "the grade on those is not trusted",
+            uncertain,
+        )
 
 
 # --------------------------------------------------------------------------
@@ -505,6 +506,22 @@ def evaluate_listings(listings, engine, cfg, stats) -> None:
             # single card, and no comp bucket here represents it.
             listing.rejection_reason = reasons.Reason.MULTI_PLAYER_CARD
             stats.rejections.record(reasons.Reason.MULTI_PLAYER_CARD, listing.id)
+            continue
+
+        if listing.title_truncated and listing.grade is not None:
+            # eBay cut the title short and a grade came out of what was left,
+            # so that grade is not merely unknown -- it is probably wrong
+            # ("PSA 1..." reads as PSA 1 when the card is a PSA 10). Comping
+            # it would compare two different cards as if they were the same
+            # (principle #6) and could declare a deal off a grade nobody ever
+            # verified. This sits BEFORE the comp lookup on purpose: valuing
+            # first and rejecting after would still attach a market value
+            # derived from the wrong grade to the listing, and the report
+            # would print that number in NEEDS REVIEW. A number from the
+            # wrong bucket is worse than no number (principles #4 and #7).
+            # Raw cards are unaffected -- there is no grade to get wrong.
+            listing.rejection_reason = reasons.Reason.GRADE_UNCERTAIN
+            stats.rejections.record(reasons.Reason.GRADE_UNCERTAIN, listing.id)
             continue
 
         listing.desirable_attributes = desirability.attributes_of(listing)
@@ -724,9 +741,9 @@ def run(args: argparse.Namespace) -> None:
         listings = fetch_ebay_alert_active(cfg, stats)
         logger.info("Matched %d listing(s) from eBay alert emails", len(listings))
 
-        # Repair truncated titles FIRST -- a wrong grade here becomes a wrong
-        # valuation everywhere downstream.
-        repair_truncated_titles(listings, stats)
+        # Flag truncated titles FIRST -- a grade we can't trust has to be
+        # known before valuation, not after.
+        mark_truncated_titles(listings)
 
         history = price_history.load(cfg.ebay_alert_price_history_path)
         recorded = record_observations(listings, history, today_str)
@@ -740,6 +757,18 @@ def run(args: argparse.Namespace) -> None:
             "sending Craigslist links only"
         )
 
+    # Hand-entered sold prices go in alongside everything else. They are the
+    # only real transactions in the corpus -- every other observation is a
+    # seller's asking price -- so they are the only thing that can reach
+    # "high" confidence, and the concentration gate exempts them (three real
+    # sales on one day are three real sales). Usually an empty list: most
+    # runs have none, and that is fine.
+    sold = sold_comps.load(cfg.sold_comps_path)
+    if sold:
+        observations = list(observations) + sold
+    stats.sold_comps_summary = sold_comps.summary(sold)
+    logger.info("%s", stats.sold_comps_summary)
+
     engine = comps.CompEngine(
         observations,
         min_comps_required=cfg.valuation_min_comps_required,
@@ -748,6 +777,8 @@ def run(args: argparse.Namespace) -> None:
         stale_after_days=cfg.valuation_stale_after_days,
         max_dispersion=cfg.valuation_max_dispersion,
         mad_threshold=cfg.valuation_mad_threshold,
+        min_distinct_comp_dates=cfg.valuation_min_distinct_comp_dates,
+        min_comp_span_days=cfg.valuation_min_comp_span_days,
     )
     coverage = engine.coverage()
     logger.info(

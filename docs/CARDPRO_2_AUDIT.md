@@ -263,6 +263,24 @@ detector. This is a direct consequence of one-query-per-player saved
 searches: eBay's alert digest returns whatever is newest, and what is
 newest is overwhelmingly cheap raw filler.
 
+> **Correction, added after implementation.** This audit read
+> `enrich_truncated_grades` as a sound mechanism applied in the wrong order,
+> and prescribed moving it earlier. That was half right. The ordering was
+> genuinely wrong, but the mechanism should never have existed: the fetch it
+> performed sent a spoofed Chrome `User-Agent` to eBay's item pages, which is
+> precisely the "defeat a site's anti-automation measures" the project's own
+> principle #1 forbids, and which this same audit praised the project for
+> refusing elsewhere (see the Craigslist row in §6). Acting on the
+> recommendation as written made it worse, by raising the call volume from a
+> handful of flagged listings to up to thirty per run.
+>
+> The fetch has since been removed entirely. A truncated title that produced a
+> grade is now refused before valuation — no market value, no deal, no entry in
+> the comp corpus — and surfaced under NEEDS REVIEW with the reason stated. The
+> lesson generalises: a defect can be real and the obvious fix can still be the
+> wrong move, and reading a function's behaviour is not the same as reading its
+> headers.
+
 **Honourable mentions (real, lower money-impact):** `#1 Draft Pick` parses
 as card number `1`; print-run-only notation (`/99` with no numerator) is
 missed entirely; `2023-24` season becomes year `2023`; dedupe records
@@ -283,7 +301,7 @@ scan is running.
 | 3 | **Exclude a listing from its own comp** (by listing id). | High | Trivial | Certain | **P0** |
 | 4 | **Negative-signal detection** — reprint / replica / custom / digital / facsimile / sealed box / art card / lot → never a deal, always visible. | Very high | Easy | Certain | **P0** |
 | 5 | **Team-name and false-parallel guard** — mask team/league/award phrases before parallel matching; require a known parallel vocabulary. | High | Easy | Certain | **P0** |
-| 6 | **Recover truncated titles before comping**, not after. | High | Trivial | Certain | **P0** |
+| 6 | **Handle truncated titles before comping**, not after. *(Shipped, but not as written: the recovery fetch this item assumed was itself a ToS violation — see the correction at the end of §3.)* | High | Trivial | Certain | **P0** |
 | 7 | **Auction detection + separate auction engine** — current bid never treated as a price; compute max rational bid. | High | Medium (needs real email samples) | High | **P0/P1** |
 | 8 | **Rejection reasons for every listing** — nothing is ever silently dropped; every skip has a machine-readable reason, counted in the report. | High | Easy | Certain | **P0** |
 | 9 | **Robust comp statistics** — MAD outlier trim, dispersion gate, time-decay weighting, expose n / range / median / newest / oldest. | High | Easy | High | **P1** |

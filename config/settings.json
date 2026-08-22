@@ -33,13 +33,15 @@
     "subject_prefix": "[Card Deals]"
   },
   "valuation": {
-    "_comment": "Comp-engine quality gates. These are the difference between a real valuation and a number that just restates the price. min_comps_required: how many comparable observations a bucket needs before it may be used at all. half_life_days: recency weighting -- a comp this many days old counts half as much as one from today. stale_after_days: if the NEWEST comp in a bucket is older than this, the bucket may not declare a deal. max_dispersion: MAD/median above this means the comps disagree too much to trust a median. mad_threshold: outlier trim, in scaled median-absolute-deviations. require_flag_eligible_comp: when true (strongly recommended) only identity-and-grade-matched comp levels may declare a deal -- broader levels are shown as context but can never flag one, which is what stops the circular price-tier comparison that produced every false positive in v1.",
+    "_comment": "Comp-engine quality gates. These are the difference between a real valuation and a number that just restates the price. min_comps_required: how many comparable observations a bucket needs before it may be used at all. min_distinct_comp_dates / min_comp_span_days: how much CALENDAR SPREAD those observations need. Counting observations alone is not enough -- the daily scan records every listing it sees each morning, so six asks captured in one morning is one snapshot six listings deep, not six independent readings of a market. Hand-entered sold comps are exempt: three real sales on one day are three real transactions. half_life_days: recency weighting -- a comp this many days old counts half as much as one from today. stale_after_days: if the NEWEST comp in a bucket is older than this, the bucket may not declare a deal. max_dispersion: MAD/median above this means the comps disagree too much to trust a median. mad_threshold: outlier trim, in scaled median-absolute-deviations. require_flag_eligible_comp: when true (strongly recommended) only identity-and-grade-matched comp levels may declare a deal -- broader levels are shown as context but can never flag one, which is what stops the circular price-tier comparison that produced every false positive in v1.",
     "min_comps_required": 3,
     "half_life_days": 30,
     "stale_after_days": 45,
     "max_dispersion": 0.5,
     "mad_threshold": 3.5,
-    "require_flag_eligible_comp": true
+    "require_flag_eligible_comp": true,
+    "min_distinct_comp_dates": 3,
+    "min_comp_span_days": 7
   },
   "economics": {
     "_comment": "Resale assumptions, not facts. Every one of these shows up in the report next to the profit figure so you can see what the number depends on. Tune them to how you actually sell. marketplace_fee_pct 13.25 + $0.30 is eBay's standard trading-card final value fee at time of writing -- verify against your own account. resale_haircut_pct is the gap between the median comp and what you'd realistically get selling it promptly.",
@@ -68,5 +70,9 @@
     "min_discount_pct": 50,
     "min_savings_dollars": 3,
     "require_desirable_attribute": true
+  },
+  "sold_comps": {
+    "_comment": "Hand-entered sold prices -- the only real market data CardPro can get. Every other comp in the system is an ASKING price (a seller's opinion), which is why the engine caps those below 'high' confidence. There is no free, automatable, ToS-respecting sold-price feed: eBay's Marketplace Insights API is closed to new users, Terapeak is manual-only, and scraping breaches terms. So you enter these by hand, usually after looking a card up on 130point.com (free, covers eBay + Goldin, includes accepted Best Offers). A handful of real sales for cards you actually care about is worth more than thousands of asking prices. Add one with: python -m scripts.add_sold_comp --help",
+    "path": "config/sold_comps.json"
   }
 }
