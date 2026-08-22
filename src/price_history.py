@@ -79,7 +79,27 @@ def record(
     card_number: Optional[str] = None,
     grader: Optional[str] = None,
     grade: Optional[str] = None,
+    qualifier: Optional[str] = None,
+    print_run: Optional[int] = None,
+    basis: str = "asking",
 ) -> None:
+    """Appends one price observation to the corpus.
+
+    `basis` records WHAT KIND of price this is: "asking" (a seller's opinion,
+    which is all this data path can see) or "sold" (an actual transaction,
+    available only via imported data). The comp engine caps confidence for
+    asking-basis comps, so this must be recorded honestly -- mislabelling an
+    asking price as sold would let a seller's wishful number masquerade as
+    market truth.
+
+    `qualifier` is a grade qualifier such as "OC" (off-centre). A qualified
+    slab is a materially different market from an unqualified one at the same
+    numeric grade, so it is stored separately rather than folded in.
+
+    Auctions must NOT be recorded here: a current bid is not a price. The
+    caller is responsible for that filter (see main.record_observations),
+    since only the caller knows the listing type.
+    """
     key = f"{player}|{card_type}"
     history.setdefault(key, []).append(
         {
@@ -92,6 +112,9 @@ def record(
             "card_number": card_number,
             "grader": grader,
             "grade": grade,
+            "qualifier": qualifier,
+            "print_run": print_run,
+            "basis": basis,
         }
     )
 

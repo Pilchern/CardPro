@@ -268,3 +268,77 @@ def test_fetch_full_title_returns_none_when_no_title_tag():
     fake_resp = mock.Mock(status_code=200, text="<html><body>no title here</body></html>")
     with mock.patch.object(ebay_email_alerts.requests, "get", return_value=fake_resp):
         assert ebay_email_alerts.fetch_full_title("https://www.ebay.com/itm/1") is None
+
+
+# --- listing-type detection -------------------------------------------------
+# An auction's current bid is not a price (a non-negotiable for this project),
+# so the parser has to distinguish the two -- and has to be able to say "I
+# can't tell" rather than defaulting to Buy It Now.
+
+AUCTION_HTML = """
+<html><body>
+  <div><a href="https://www.ebay.com/itm/111">Caleb Williams 2024 Prizm RC</a>
+       <span>$45.00</span><span>7 bids</span><span>Time left: 2d 04h</span></div>
+</body></html>
+"""
+
+FIXED_PRICE_HTML = """
+<html><body>
+  <div><a href="https://www.ebay.com/itm/222">Rome Odunze 2024 Prizm RC</a>
+       <span>$60.00</span><span>Buy It Now</span><span>or Best Offer</span></div>
+</body></html>
+"""
+
+NO_EVIDENCE_HTML = """
+<html><body>
+  <div><a href="https://www.ebay.com/itm/333">Connor Bedard Young Guns</a><span>$120.00</span></div>
+</body></html>
+"""
+
+TWO_LISTINGS_HTML = """
+<html><body>
+  <div><a href="https://www.ebay.com/itm/444">Auction card</a><span>$10.00</span><span>3 bids</span></div>
+  <div><a href="https://www.ebay.com/itm/555">Fixed card</a><span>$20.00</span><span>Buy It Now</span></div>
+</body></html>
+"""
+
+
+def test_auction_detected_with_bid_count_and_time_left():
+    listing = ebay_email_alerts.extract_listings_from_html(AUCTION_HTML)[0]
+    assert listing["listing_type"] == ebay_email_alerts.LISTING_TYPE_AUCTION
+    assert listing["bid_count"] == 7
+    assert listing["time_left_text"] is not None
+
+
+def test_fixed_price_detected_with_best_offer():
+    listing = ebay_email_alerts.extract_listings_from_html(FIXED_PRICE_HTML)[0]
+    assert listing["listing_type"] == ebay_email_alerts.LISTING_TYPE_FIXED
+    assert listing["has_best_offer"] is True
+    assert listing["bid_count"] is None
+
+
+def test_no_evidence_yields_unknown_not_fixed_price():
+    listing = ebay_email_alerts.extract_listings_from_html(NO_EVIDENCE_HTML)[0]
+    assert listing["listing_type"] == ebay_email_alerts.LISTING_TYPE_UNKNOWN
+    assert listing["has_best_offer"] is False
+
+
+def test_bid_evidence_wins_over_buy_it_now_on_the_same_listing():
+    # eBay auctions can carry a Buy It Now price until the first bid; once
+    # bidding starts the number shown is a current bid. Resolving toward
+    # "auction" is the safe direction.
+    html = """
+    <html><body><div><a href="https://www.ebay.com/itm/666">Card</a>
+      <span>$30.00</span><span>Buy It Now</span><span>2 bids</span></div></body></html>
+    """
+    assert ebay_email_alerts.extract_listings_from_html(html)[0]["listing_type"] == (
+        ebay_email_alerts.LISTING_TYPE_AUCTION
+    )
+
+
+def test_listing_type_does_not_leak_between_adjacent_listings():
+    auction, fixed = ebay_email_alerts.extract_listings_from_html(TWO_LISTINGS_HTML)
+    assert auction["listing_type"] == ebay_email_alerts.LISTING_TYPE_AUCTION
+    assert auction["bid_count"] == 3
+    assert fixed["listing_type"] == ebay_email_alerts.LISTING_TYPE_FIXED
+    assert fixed["bid_count"] is None
