@@ -16,6 +16,9 @@ def _obs(price, date, listing_id="", **identity_overrides):
         "card_number": None,
         "grader": None,
         "grade": None,
+        "qualifier": None,
+        "print_run": None,
+        "basis": "asking",
     }
     obs.update(identity_overrides)
     return obs
@@ -162,3 +165,33 @@ def test_load_corrupt_file_returns_empty_dict_and_does_not_raise(tmp_path):
     path = tmp_path / "corrupt.json"
     path.write_text("{not valid json")
     assert price_history.load(path) == {}
+
+
+def test_record_stores_basis_and_qualifier():
+    # basis distinguishes a seller's asking price from a real transaction --
+    # the comp engine caps confidence on asking-basis comps, so this has to
+    # be recorded honestly rather than defaulted optimistically.
+    history = {}
+    price_history.record(
+        history,
+        "Caleb Williams",
+        "graded",
+        400.0,
+        "2026-08-22",
+        "id-9",
+        grader="PSA",
+        grade="10",
+        qualifier="OC",
+        print_run=99,
+        basis="sold",
+    )
+    stored = history["Caleb Williams|graded"][0]
+    assert stored["basis"] == "sold"
+    assert stored["qualifier"] == "OC"
+    assert stored["print_run"] == 99
+
+
+def test_record_defaults_to_asking_basis():
+    history = {}
+    price_history.record(history, "Caleb Williams", "raw", 25.0, "2026-08-22", "id-10")
+    assert history["Caleb Williams|raw"][0]["basis"] == "asking"

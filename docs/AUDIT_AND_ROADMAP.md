@@ -1,10 +1,27 @@
 # CardPro v2 — Audit & Roadmap
 
-Produced per the "CardPro Improvement & Expansion" brief. This is the
-required pre-coding deliverable: an honest read of what exists today, where
-it breaks, and a prioritized plan to make CardPro answer "is this a good
-buy?" instead of just "is this cheap?" — without hiding the reasoning
-behind a score.
+> **Superseded, kept for history.** This is the v2 audit. The current audit
+> is **[CARDPRO_2_AUDIT.md](CARDPRO_2_AUDIT.md)**, which re-examined every
+> conclusion below against measured production data and found that several
+> of the "shipped" fixes in §9 and §11 did not actually solve the problem
+> they claimed to. Read that first; read this for how CardPro got here.
+>
+> What this document got right: the diagnosis in §2 row 5 — that the comp
+> bucket key was the single biggest accuracy ceiling in the system.
+>
+> What it got wrong: the fix. Adding identity-aware levels *above* the
+> price-tier bucket left the price-tier bucket in place as the fallback, and
+> because identity extraction was filling `parallel` on only 3% of listings,
+> **76% of real valuations still came out of that circular fallback.** The
+> hierarchy degraded gracefully into exactly the behaviour it was built to
+> replace. Marking it "shipped" in §11 was premature — the code shipped, the
+> outcome didn't.
+>
+> Also wrong: `near_exact` was specified as `(player, year, set, parallel,
+> card_type)`, which pools a PSA 9 with a PSA 10, violating the project's own
+> "never compare different grades" rule; and treating `parallel=None` on both
+> sides as a match let unknown-matches-unknown produce a real false positive
+> in production.
 
 ## 1. Current Architecture
 
@@ -324,7 +341,31 @@ first without changing the underlying $-saved ranking. This is Phase 19
 from the original brief ("What should I do?"), minus the absolute
 "BUY THIS" language it explicitly said to avoid.
 
-**Still open, in priority order per §9:** target-card watchlist, comp
-sample recency shown in the report (age of the observations backing a
-comp, not just the count), then the remaining P2 desirability/auction/
-report-redesign items.
+**Pass 6 (CardPro 2.0 — see [CARDPRO_2_AUDIT.md](CARDPRO_2_AUDIT.md)):** the
+P0 "trust" pass. Re-audited everything above against live production data,
+then rebuilt the parts that measurement showed were not working:
+
+- The price-tier comp level is no longer allowed to declare a deal (it is
+  circular by construction), and the grade-blind `family` level was deleted
+  outright rather than demoted.
+- Every comp level now segments by the full market key, so PSA 9 / PSA 10 /
+  raw / qualified slabs are separate markets everywhere.
+- A listing is excluded from the comp set used to judge it.
+- Outlier trimming, time-decay weighting, staleness and dispersion gates, and
+  a confidence ladder in which asking-price comps can never reach "high".
+- Team and award names no longer extract as card parallels; reprints,
+  replicas, customs, digital cards, sealed product, break slots and
+  pick-your-card listings are detected and blocked with a stated reason.
+- Truncated titles are repaired *before* valuation, not after.
+- Auctions are detected, never treated as a price, never recorded as comps,
+  and get a max-rational-bid calculation instead.
+- Nothing leaves the pipeline unexplained: one canonical reason per listing,
+  counted in the report's data-quality footer.
+- Added: deal economics, acquisition targets, saved-search generation, and a
+  corpus replay tool for before/after evidence.
+
+**Still open, in priority order per [CARDPRO_2_AUDIT.md](CARDPRO_2_AUDIT.md) §7:**
+real sold comps via user import (P1.2 — the single highest-ceiling item),
+robust comp statistics tuning, eBay Browse API re-application, search
+coverage into the graded market, SQLite migration, listing-lifecycle
+history, raw-to-graded scenario analysis, feedback loop, backtesting.

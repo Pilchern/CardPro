@@ -37,5 +37,20 @@
     "Kyle Teel": "young_core",
     "Colson Montgomery": "young_core",
     "Pete Crow-Armstrong": "young_core"
-  }
+  },
+  "_target_cards_comment": "Acquisition targets: specific cards you want, with YOUR price thresholds. Separate from the player watchlist and from valuation -- a target hit says 'the card you asked for is available at your price', not 'this is underpriced'. Copy the shape from _target_cards_example below. Only `player` and at least one threshold are required; every other field narrows the match, and a field you specify must match exactly (a listing whose parallel/grade CardPro couldn't identify never counts as a hit -- unknown is never treated as a match). Left empty on purpose: these are your prices to set, not ours to guess.",
+  "_target_cards_example": {
+    "label": "2024 Panini Prizm Caleb Williams Silver PSA 10",
+    "player": "Caleb Williams",
+    "year": 2024,
+    "set_name": "Prizm",
+    "parallel": "Silver",
+    "card_number": "301",
+    "grader": "PSA",
+    "grade": "10",
+    "buy_zone": 400,
+    "great_buy": 350,
+    "immediate_alert": 300
+  },
+  "target_cards": []
 }

@@ -1,8 +1,7 @@
 {
   "discount_threshold_pct": 30,
-  "_min_savings_comment": "A listing must clear BOTH discount_threshold_pct (relative) AND min_savings_dollars (absolute) to get flagged. Keeps trivial deals out (e.g. 50% off a $5 common is still just $2.50) without hiding real money on expensive cards. Ranking in the email is by dollar amount saved, highest first.",
-  "min_savings_dollars": 10,
-
+  "_min_savings_comment": "A listing must clear BOTH discount_threshold_pct (relative) AND min_savings_dollars (absolute) to get flagged. The dollar floor exists to keep trivial deals out, but it was set at $10, which silently excluded the entire cheap end of the hobby: a $4 card worth $12 is 67% off and saves $8, and was being rejected. Lowered to $3, with the anti-junk job moved to cheap_cards below, where it belongs -- being cheap is not the same as being junk, and a dollar floor cannot tell the difference. Ranking in the email is by dollar amount saved, highest first, so cheap finds sort to the bottom naturally and never crowd out real money.",
+  "min_savings_dollars": 3,
   "ebay": {
     "_comment": "category_id 212 is eBay's 'Sports Trading Cards' category as of 2026. eBay occasionally renumbers categories -- if active-listing results look wrong, look up the current ID via the Taxonomy API (GET /commerce/taxonomy/v1/category_tree/0) and update this value.",
     "category_id": "212",
@@ -11,7 +10,6 @@
     "sold_lookback_days": 60,
     "min_comps_required": 3
   },
-
   "ebay_alerts": {
     "_comment": "Used instead of the eBay API (declined account): reads eBay's own saved-search alert emails from your Gmail account via IMAP. Requires you to first create a saved search + email alert on eBay's site for each watchlist player -- see README 'eBay via saved-search email alerts'. VALIDATED against real alert emails -- see src/ebay_email_alerts.py.",
     "enabled": true,
@@ -22,19 +20,53 @@
     "price_history_path": "data/ebay_alert_price_history.json",
     "price_history_max_age_days": 180
   },
-
   "craigslist": {
     "_comment": "Craigslist blocks automated scraping outright (confirmed against both headless and headed browser automation), so these just build ready-to-click search links included in the daily email instead of being fetched automatically.",
     "site": "chicago",
     "category": "sss"
   },
-
   "dedupe": {
     "seen_listings_path": "data/seen_listings.json",
     "prune_after_days": 120
   },
-
   "email": {
     "subject_prefix": "[Card Deals]"
+  },
+  "valuation": {
+    "_comment": "Comp-engine quality gates. These are the difference between a real valuation and a number that just restates the price. min_comps_required: how many comparable observations a bucket needs before it may be used at all. half_life_days: recency weighting -- a comp this many days old counts half as much as one from today. stale_after_days: if the NEWEST comp in a bucket is older than this, the bucket may not declare a deal. max_dispersion: MAD/median above this means the comps disagree too much to trust a median. mad_threshold: outlier trim, in scaled median-absolute-deviations. require_flag_eligible_comp: when true (strongly recommended) only identity-and-grade-matched comp levels may declare a deal -- broader levels are shown as context but can never flag one, which is what stops the circular price-tier comparison that produced every false positive in v1.",
+    "min_comps_required": 3,
+    "half_life_days": 30,
+    "stale_after_days": 45,
+    "max_dispersion": 0.5,
+    "mad_threshold": 3.5,
+    "require_flag_eligible_comp": true
+  },
+  "economics": {
+    "_comment": "Resale assumptions, not facts. Every one of these shows up in the report next to the profit figure so you can see what the number depends on. Tune them to how you actually sell. marketplace_fee_pct 13.25 + $0.30 is eBay's standard trading-card final value fee at time of writing -- verify against your own account. resale_haircut_pct is the gap between the median comp and what you'd realistically get selling it promptly.",
+    "marketplace_fee_pct": 13.25,
+    "marketplace_fixed_fee": 0.3,
+    "payment_fee_pct": 0.0,
+    "outbound_shipping": 5.0,
+    "supplies": 1.0,
+    "sales_tax_pct": 0.0,
+    "resale_haircut_pct": 5.0
+  },
+  "auctions": {
+    "_comment": "An auction's current bid is not a price. Auctions get their own report section and their own math: max rational bid is the highest you could bid and still keep required_margin_pct of margin against estimated market value, after fees and shipping. ending_soon_hours controls what counts as urgent -- only used for ordering the section, never for relaxing any quality gate.",
+    "required_margin_pct": 25,
+    "ending_soon_hours": 24
+  },
+  "alerts": {
+    "_comment": "Immediate-alert tier. Deliberately conservative: too many alerts destroy the product. An opportunity must clear BOTH of these AND have a flag-eligible comp to earn an out-of-band alert; everything else waits for the morning digest.",
+    "immediate_alert_min_savings_dollars": 150,
+    "immediate_alert_min_discount_pct": 40
+  },
+  "cheap_cards": {
+    "_comment": "Rules that apply only below price_ceiling. Cheap cards need their own gate because 48% of everything CardPro observes is under $10 and most of it is commodity -- base veterans, junk-wax commons, team cards. A 60%-off base common is still a base common. So a cheap card must clear a HIGHER percentage bar (min_discount_pct) and, if require_desirable_attribute is on, must actually have something that makes a copy scarce: rookie, autograph, patch/relic, serial numbering, a non-base parallel, or a grade. Anything cheap with none of those is rejected as common_card and counted in the report footer, not silently dropped. Set enabled=false to apply the ordinary rules at every price.",
+    "enabled": true,
+    "price_ceiling": 10.0,
+    "min_discount_pct": 50,
+    "min_savings_dollars": 3,
+    "require_desirable_attribute": true
   }
 }

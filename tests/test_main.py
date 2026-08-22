@@ -1,660 +1,722 @@
-"""End-to-end orchestration test with the eBay/email network layer mocked
-out -- confirms fetch -> comp-building -> flagging -> dedupe -> report
-wiring works together, without hitting real eBay/Gmail. Craigslist link
-generation is a pure function (no network), so it isn't mocked.
+"""End-to-end orchestration tests with the eBay/email network layer mocked
+out, plus unit tests for the CardPro 2.0 evaluation pipeline.
+
+The unit tests below are regression tests for defects
+docs/CARDPRO_2_AUDIT.md measured in live production data -- every one of
+them was real, not hypothetical.
+
+Craigslist link generation is a pure function (no network), so it isn't
+mocked.
 """
 from __future__ import annotations
 
 import importlib
 import json
 import logging
+from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
+from types import SimpleNamespace
 from unittest import mock
 
 import pytest
 
-from src import ebay_client, ebay_email_alerts, emailer
+from src import (
+    card_identity,
+    comps,
+    ebay_client,
+    ebay_email_alerts,
+    emailer,
+    main as main_module,
+    matcher,
+    observability,
+    reasons,
+)
+from src.models import Listing
+
+# A fully-identified modern card: year + set + parallel + card number +
+# grader + grade. The CardPro 2.0 engine will only declare a deal off a comp
+# level that needs all of those, so test data that omits them (as the old
+# fixtures did) can no longer produce a flagged deal -- correctly.
+IDENTIFIED_TITLE = "2024 Panini Prizm Caleb Williams Silver #301 PSA 10"
+
+SETTINGS = {
+    "discount_threshold_pct": 30,
+    "min_savings_dollars": 0,
+    "ebay": {
+        "category_id": "212",
+        "marketplace_id": "EBAY_US",
+        "active_listing_limit_per_player": 50,
+        "sold_lookback_days": 60,
+        "min_comps_required": 3,
+    },
+    "ebay_alerts": {
+        "enabled": False,
+        "sender_contains": "ebay.com",
+        "lookback_days": 2,
+        "price_history_path": "data/ebay_alert_price_history.json",
+        "price_history_max_age_days": 180,
+    },
+    "craigslist": {"site": "chicago", "category": "sss"},
+    "dedupe": {"seen_listings_path": "data/seen_listings.json", "prune_after_days": 120},
+    "email": {"subject_prefix": "[Card Deals]"},
+    "valuation": {"min_comps_required": 3},
+}
+
+
+def _make_project(tmp_path, monkeypatch, *, alerts_enabled: bool):
+    settings = json.loads(json.dumps(SETTINGS))
+    settings["ebay_alerts"]["enabled"] = alerts_enabled
+
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "watchlist.json").write_text(json.dumps({"players": ["Caleb Williams"]}))
+    (tmp_path / "config" / "settings.json").write_text(json.dumps(settings))
+
+    if alerts_enabled:
+        monkeypatch.delenv("EBAY_CLIENT_ID", raising=False)
+        monkeypatch.delenv("EBAY_CLIENT_SECRET", raising=False)
+    else:
+        monkeypatch.setenv("EBAY_CLIENT_ID", "fake_id")
+        monkeypatch.setenv("EBAY_CLIENT_SECRET", "fake_secret")
+    monkeypatch.setenv("GMAIL_ADDRESS", "fake@gmail.com")
+    monkeypatch.setenv("GMAIL_APP_PASSWORD", "fakepassword")
+    monkeypatch.setenv("EMAIL_TO", "fake@gmail.com")
+
+    from src import config as config_module
+
+    monkeypatch.setattr(config_module, "ROOT_DIR", tmp_path)
+    monkeypatch.setattr(config_module, "CONFIG_DIR", tmp_path / "config")
+
+    from src import main as main_module
+
+    importlib.reload(main_module)
+    monkeypatch.setattr(main_module, "LOG_PATH", tmp_path / "logs" / "scraper.log")
+    return main_module
 
 
 @pytest.fixture
 def project(tmp_path, monkeypatch):
-    (tmp_path / "config").mkdir()
-    (tmp_path / "config" / "watchlist.json").write_text(json.dumps({"players": ["Michael Jordan"]}))
-    (tmp_path / "config" / "settings.json").write_text(
-        json.dumps(
-            {
-                "discount_threshold_pct": 30,
-                "min_savings_dollars": 0,
-                "ebay": {
-                    "category_id": "212",
-                    "marketplace_id": "EBAY_US",
-                    "active_listing_limit_per_player": 50,
-                    "sold_lookback_days": 60,
-                    "min_comps_required": 3,
-                },
-                "ebay_alerts": {
-                    "enabled": False,
-                    "sender_contains": "ebay.com",
-                    "lookback_days": 2,
-                    "price_history_path": "data/ebay_alert_price_history.json",
-                    "price_history_max_age_days": 180,
-                },
-                "craigslist": {"site": "chicago", "category": "sss"},
-                "dedupe": {"seen_listings_path": "data/seen_listings.json", "prune_after_days": 120},
-                "email": {"subject_prefix": "[Card Deals]"},
-            }
-        )
-    )
-    monkeypatch.setenv("EBAY_CLIENT_ID", "fake_id")
-    monkeypatch.setenv("EBAY_CLIENT_SECRET", "fake_secret")
-    monkeypatch.setenv("GMAIL_ADDRESS", "fake@gmail.com")
-    monkeypatch.setenv("GMAIL_APP_PASSWORD", "fakepassword")
-    monkeypatch.setenv("EMAIL_TO", "fake@gmail.com")
-
-    from src import config as config_module
-
-    monkeypatch.setattr(config_module, "ROOT_DIR", tmp_path)
-    monkeypatch.setattr(config_module, "CONFIG_DIR", tmp_path / "config")
-
-    from src import main as main_module
-
-    importlib.reload(main_module)
-    monkeypatch.setattr(main_module, "LOG_PATH", tmp_path / "logs" / "scraper.log")
-    return main_module
+    """eBay API credentials present -> run() takes the Browse/Insights branch."""
+    return _make_project(tmp_path, monkeypatch, alerts_enabled=False)
 
 
 @pytest.fixture
 def project_with_alerts_enabled(tmp_path, monkeypatch):
-    """Same as `project`, but eBay API creds are absent and
-    ebay_alerts.enabled=True, so run() takes the IMAP-alerts branch."""
-    (tmp_path / "config").mkdir()
-    (tmp_path / "config" / "watchlist.json").write_text(json.dumps({"players": ["Michael Jordan"]}))
-    (tmp_path / "config" / "settings.json").write_text(
-        json.dumps(
-            {
-                "discount_threshold_pct": 30,
-                "min_savings_dollars": 0,
-                "ebay": {
-                    "category_id": "212",
-                    "marketplace_id": "EBAY_US",
-                    "active_listing_limit_per_player": 50,
-                    "sold_lookback_days": 60,
-                    "min_comps_required": 3,
-                },
-                "ebay_alerts": {
-                    "enabled": True,
-                    "sender_contains": "ebay.com",
-                    "lookback_days": 2,
-                    "price_history_path": "data/ebay_alert_price_history.json",
-                    "price_history_max_age_days": 180,
-                },
-                "craigslist": {"site": "chicago", "category": "sss"},
-                "dedupe": {"seen_listings_path": "data/seen_listings.json", "prune_after_days": 120},
-                "email": {"subject_prefix": "[Card Deals]"},
-            }
-        )
-    )
-    monkeypatch.delenv("EBAY_CLIENT_ID", raising=False)
-    monkeypatch.delenv("EBAY_CLIENT_SECRET", raising=False)
-    monkeypatch.setenv("GMAIL_ADDRESS", "fake@gmail.com")
-    monkeypatch.setenv("GMAIL_APP_PASSWORD", "fakepassword")
-    monkeypatch.setenv("EMAIL_TO", "fake@gmail.com")
-
-    from src import config as config_module
-
-    monkeypatch.setattr(config_module, "ROOT_DIR", tmp_path)
-    monkeypatch.setattr(config_module, "CONFIG_DIR", tmp_path / "config")
-
-    from src import main as main_module
-
-    importlib.reload(main_module)
-    monkeypatch.setattr(main_module, "LOG_PATH", tmp_path / "logs" / "scraper.log")
-    return main_module
+    """No eBay API credentials, alerts enabled -> run() takes the IMAP branch."""
+    return _make_project(tmp_path, monkeypatch, alerts_enabled=True)
 
 
 def fake_active(query, token, category_id, marketplace_id, limit=50):
-    if "Michael Jordan" not in query:
+    if "Caleb Williams" not in query:
         return []
     return [
-        {"itemId": "e1", "title": "1986 Fleer Michael Jordan Rookie PSA 9", "price": {"value": "5000"}, "itemWebUrl": "http://ebay/e1"},
-        {"itemId": "e2", "title": "Michael Jordan raw rookie reprint", "price": {"value": "10"}, "itemWebUrl": "http://ebay/e2"},
+        {
+            "itemId": "e1",
+            "title": IDENTIFIED_TITLE,
+            "price": {"value": "200"},
+            "itemWebUrl": "http://ebay/e1",
+            "buyingOptions": ["FIXED_PRICE"],
+        },
+        {
+            "itemId": "e2",
+            "title": "2024 Panini Prizm Caleb Williams Silver #301 PSA 10 REPRINT",
+            "price": {"value": "10"},
+            "itemWebUrl": "http://ebay/e2",
+            "buyingOptions": ["FIXED_PRICE"],
+        },
     ]
 
 
 def fake_sold(query, token, category_id, marketplace_id, lookback_days, limit=100):
-    if "Michael Jordan" not in query:
+    """Real sold comps for the exact same card -- six of them, so the bucket
+    clears every quality gate."""
+    if "Caleb Williams" not in query:
         return []
-    return [{"title": "Michael Jordan PSA 9 rookie", "price": {"value": p}} for p in ("9000", "10000", "9500")]
-
-
-def test_full_run_flags_underpriced_listings_and_emails_report(project, monkeypatch):
-    sent = {}
-
-    def fake_send_email(subject, body, gmail_address, gmail_app_password, to_address):
-        sent["subject"] = subject
-        sent["body"] = body
-
-    monkeypatch.setattr(ebay_client, "get_app_token", lambda cid, secret: "fake-token")
-    monkeypatch.setattr(ebay_client, "search_active_listings", fake_active)
-    monkeypatch.setattr(ebay_client, "search_sold_items", fake_sold)
-    monkeypatch.setattr(emailer, "send_email", fake_send_email)
-    monkeypatch.setattr("sys.argv", ["main.py"])
-
-    project.main()
-
-    assert "1 card deal found" in sent["subject"]
-    assert "eBay" in sent["body"]
-    # the $10 "raw" reprint has no raw comps (all sold comps were graded) so it must NOT be flagged
-    assert "reprint" not in sent["body"]
-    # Craigslist isn't scraped, but a quick-check link for the player should still be included
-    assert "Craigslist quick check" in sent["body"]
-    assert "chicago.craigslist.org/search/sss" in sent["body"]
-
-
-def test_second_run_with_unchanged_prices_reports_nothing_new(project, monkeypatch):
-    monkeypatch.setattr(ebay_client, "get_app_token", lambda cid, secret: "fake-token")
-    monkeypatch.setattr(ebay_client, "search_active_listings", fake_active)
-    monkeypatch.setattr(ebay_client, "search_sold_items", fake_sold)
-    monkeypatch.setattr("sys.argv", ["main.py"])
-
-    sent_subjects = []
-    monkeypatch.setattr(
-        emailer, "send_email", lambda subject, body, *a, **kw: sent_subjects.append(subject)
-    )
-
-    project.main()
-    project.main()
-
-    assert "No deals today" in sent_subjects[1]
-
-
-def test_dry_run_does_not_send_email_or_write_dedupe_file(project, monkeypatch, capsys):
-    monkeypatch.setattr(ebay_client, "get_app_token", lambda cid, secret: "fake-token")
-    monkeypatch.setattr(ebay_client, "search_active_listings", fake_active)
-    monkeypatch.setattr(ebay_client, "search_sold_items", fake_sold)
-    monkeypatch.setattr(emailer, "send_email", mock.Mock(side_effect=AssertionError("should not send in dry-run")))
-    monkeypatch.setattr("sys.argv", ["main.py", "--dry-run"])
-
-    project.main()
-
-    from src.config import load_config
-
-    cfg = load_config()
-    assert not cfg.seen_listings_path.exists()
-    assert "card deal found" in capsys.readouterr().out
-
-
-def test_unhandled_error_still_sends_a_failure_email(project, monkeypatch):
-    def boom(client_id, client_secret):
-        raise RuntimeError("eBay is down")
-
-    sent = {}
-
-    def fake_send_email(subject, body, gmail_address, gmail_app_password, to_address):
-        sent["subject"] = subject
-        sent["body"] = body
-
-    monkeypatch.setattr(ebay_client, "get_app_token", boom)
-    monkeypatch.setattr(emailer, "send_email", fake_send_email)
-    monkeypatch.setattr("sys.argv", ["main.py"])
-
-    with pytest.raises(RuntimeError, match="eBay is down"):
-        project.main()
-
-    assert "FAILED" in sent["subject"]
-    assert "scraper.log" in sent["body"]
-
-
-def test_dry_run_does_not_send_failure_email_on_error(project, monkeypatch):
-    def boom(client_id, client_secret):
-        raise RuntimeError("eBay is down")
-
-    monkeypatch.setattr(ebay_client, "get_app_token", boom)
-    monkeypatch.setattr(emailer, "send_email", mock.Mock(side_effect=AssertionError("should not send in dry-run")))
-    monkeypatch.setattr("sys.argv", ["main.py", "--dry-run"])
-
-    with pytest.raises(RuntimeError, match="eBay is down"):
-        project.main()
-
-
-def test_runs_successfully_without_ebay_credentials(project, monkeypatch):
-    monkeypatch.delenv("EBAY_CLIENT_ID", raising=False)
-    monkeypatch.delenv("EBAY_CLIENT_SECRET", raising=False)
-    monkeypatch.setattr(
-        ebay_client, "get_app_token", mock.Mock(side_effect=AssertionError("eBay should not be called"))
-    )
-
-    sent = {}
-
-    def fake_send_email(subject, body, gmail_address, gmail_app_password, to_address):
-        sent["subject"] = subject
-        sent["body"] = body
-
-    monkeypatch.setattr(emailer, "send_email", fake_send_email)
-    monkeypatch.setattr("sys.argv", ["main.py"])
-
-    project.main()
-
-    assert "eBay not configured" in sent["subject"]
-    assert "Craigslist quick check" in sent["body"]
-    assert "chicago.craigslist.org/search/sss" in sent["body"]
-
-
-def test_ebay_alerts_path_cold_start_flags_nothing_yet(project_with_alerts_enabled, monkeypatch):
-    """With fewer than min_comps_required observations, no comp exists yet
-    for the bucket, so nothing should be flagged -- not a false deal."""
-    monkeypatch.setattr(
-        ebay_email_alerts,
-        "fetch_alert_listings",
-        lambda *a, **kw: [{"title": "Michael Jordan PSA 9 rookie", "url": "https://www.ebay.com/itm/1001", "price": 100.0}],
-    )
-    sent = {}
-    monkeypatch.setattr(
-        emailer, "send_email", lambda subject, body, *a, **kw: sent.update(subject=subject, body=body)
-    )
-    monkeypatch.setattr("sys.argv", ["main.py"])
-
-    project_with_alerts_enabled.main()
-
-    assert "No deals today" in sent["subject"]
-
-
-def test_ebay_alerts_path_flags_deal_once_enough_history_accumulated(project_with_alerts_enabled, monkeypatch):
-    responses = [
-        [{"title": "Michael Jordan PSA 9 rookie", "url": "https://www.ebay.com/itm/1001", "price": 9000.0}],
-        [{"title": "Michael Jordan PSA 9 rookie", "url": "https://www.ebay.com/itm/1002", "price": 9500.0}],
-        [{"title": "Michael Jordan PSA 9 rookie", "url": "https://www.ebay.com/itm/1003", "price": 10000.0}],
-        [{"title": "Michael Jordan PSA 9 rookie", "url": "https://www.ebay.com/itm/1004", "price": 5000.0}],
+    return [
+        {"itemId": "s%d" % i, "title": IDENTIFIED_TITLE, "price": {"value": str(value)}}
+        for i, value in enumerate([400, 405, 395, 410, 398, 402])
     ]
-    call_index = {"n": -1}
-
-    def fake_fetch(*a, **kw):
-        call_index["n"] += 1
-        return responses[call_index["n"]]
-
-    monkeypatch.setattr(ebay_email_alerts, "fetch_alert_listings", fake_fetch)
-
-    sent = []
-    monkeypatch.setattr(emailer, "send_email", lambda subject, body, *a, **kw: sent.append((subject, body)))
-    monkeypatch.setattr("sys.argv", ["main.py"])
-
-    for _ in range(4):
-        project_with_alerts_enabled.main()
-
-    last_subject, last_body = sent[-1]
-    assert "1 card deal found" in last_subject
-    assert "eBay (saved-search alert)" in last_body
 
 
-def test_ebay_alerts_dry_run_does_not_persist_price_history(project_with_alerts_enabled, monkeypatch):
-    monkeypatch.setattr(
-        ebay_email_alerts,
-        "fetch_alert_listings",
-        lambda *a, **kw: [{"title": "Michael Jordan PSA 9 rookie", "url": "https://www.ebay.com/itm/1001", "price": 100.0}],
+def alert_item(url, price, title=IDENTIFIED_TITLE, **extra):
+    item = {
+        "title": title,
+        "url": url,
+        "price": price,
+        "shipping_price": None,
+        "listing_type": "fixed_price",
+        "bid_count": None,
+        "has_best_offer": False,
+        "time_left_text": None,
+    }
+    item.update(extra)
+    return item
+
+
+# ---------------------------------------------------------------------------
+# Unit tests for the CardPro 2.0 evaluation pipeline
+# ---------------------------------------------------------------------------
+
+TODAY = datetime(2026, 8, 22, tzinfo=timezone.utc)
+
+
+def fake_cfg(**overrides):
+    """A config object with only what evaluate_listings/record_observations
+    actually read. Keeps these tests independent of the JSON config files."""
+    base = dict(
+        players=["Caleb Williams", "Kyle Teel"],
+        player_tiers={"Caleb Williams": "young_core"},
+        target_cards=[],
+        discount_threshold_pct=30.0,
+        min_savings_dollars=10.0,
+        valuation_min_comps_required=3,
+        valuation_half_life_days=30,
+        valuation_stale_after_days=45,
+        valuation_max_dispersion=0.5,
+        valuation_mad_threshold=3.5,
+        require_flag_eligible_comp=True,
+        fee_marketplace_pct=13.25,
+        fee_marketplace_fixed=0.30,
+        fee_payment_pct=0.0,
+        outbound_shipping=5.0,
+        supplies_cost=1.0,
+        sales_tax_pct=0.0,
+        resale_haircut_pct=5.0,
+        auction_required_margin_pct=25.0,
+        auction_ending_soon_hours=24,
+        immediate_alert_min_savings_dollars=150.0,
+        immediate_alert_min_discount_pct=40.0,
+        cheap_cards_enabled=True,
+        cheap_price_ceiling=10.0,
+        cheap_min_discount_pct=50.0,
+        cheap_min_savings_dollars=3.0,
+        cheap_require_desirable_attribute=True,
     )
-    monkeypatch.setattr(emailer, "send_email", mock.Mock(side_effect=AssertionError("should not send in dry-run")))
-    monkeypatch.setattr("sys.argv", ["main.py", "--dry-run"])
-
-    project_with_alerts_enabled.main()
-
-    from src.config import load_config
-
-    cfg = load_config()
-    assert not cfg.ebay_alert_price_history_path.exists()
+    base.update(overrides)
+    return SimpleNamespace(**base)
 
 
-def test_logging_is_rotated_not_unbounded(project, monkeypatch):
-    monkeypatch.setattr(ebay_client, "get_app_token", lambda cid, secret: "fake-token")
-    monkeypatch.setattr(ebay_client, "search_active_listings", fake_active)
-    monkeypatch.setattr(ebay_client, "search_sold_items", fake_sold)
-    monkeypatch.setattr(emailer, "send_email", lambda *a, **kw: None)
-    monkeypatch.setattr("sys.argv", ["main.py"])
+def make_listing(title, price, listing_id="L1", **overrides):
+    """Builds a Listing the same way main._build_listing does, so these
+    tests exercise the real identity/grade extraction rather than a
+    hand-written stand-in that could drift from it."""
+    identity = card_identity.extract_card_identity(title)
+    grade_info = matcher.detect_grade_details(title)
+    matched = matcher.match_players(title, overrides.pop("players", ["Caleb Williams", "Kyle Teel"]))
+    fields = dict(
+        id=listing_id,
+        source="ebay-alert",
+        title=title,
+        price=price,
+        url="https://www.ebay.com/itm/" + listing_id,
+        player=matched[0] if matched else "Caleb Williams",
+        card_type=grade_info.card_type,
+        grader=grade_info.grader,
+        grade=grade_info.grade,
+        card_identity=identity,
+        negative_signals=tuple(identity.negative_signals.value or ()),
+        matched_players=tuple(matched),
+    )
+    fields.update(overrides)
+    return Listing(**fields)
 
-    project.main()
 
-    file_handlers = [h for h in logging.getLogger().handlers if isinstance(h, RotatingFileHandler)]
-    assert len(file_handlers) == 1
-    assert file_handlers[0].maxBytes == project.LOG_MAX_BYTES
-    assert file_handlers[0].backupCount == project.LOG_BACKUP_COUNT
+def observation(price, listing_id, date="2026-08-20", **overrides):
+    base = dict(
+        price=price,
+        date=date,
+        id=listing_id,
+        player="Caleb Williams",
+        card_type="graded",
+        year=2024,
+        set_name="Prizm",
+        parallel="Silver",
+        card_number="301",
+        grader="PSA",
+        grade="10",
+        qualifier=None,
+        basis=comps.BASIS_ASKING,
+    )
+    base.update(overrides)
+    return base
 
 
-class TestEnrichTruncatedGrades:
-    """Unit tests for main.enrich_truncated_grades -- pure function, no
-    fixture/config needed."""
+def engine_for(observations, min_comps=3):
+    return comps.CompEngine(observations, min_comps_required=min_comps, today=TODAY)
 
-    def _listing(self, **overrides):
-        from src.models import Listing
 
-        defaults = dict(
-            id="1",
-            source="ebay-alert",
-            title="1990 Fleer Frank Thomas PSA 1…",
-            price=350.0,
-            url="https://www.ebay.com/itm/800530598774",
-            player="Frank Thomas",
-            card_type="graded",
-            grader="PSA",
-            grade="1",
-        )
-        defaults.update(overrides)
-        return Listing(**defaults)
+EXACT_TITLE = "2024 Panini Prizm Caleb Williams Silver #301 PSA 10"
 
-    def test_fixes_grade_when_fetch_succeeds(self, monkeypatch):
-        from src import ebay_email_alerts, main
 
-        monkeypatch.setattr(
-            ebay_email_alerts, "fetch_full_title", lambda url: "1990 Fleer Frank Thomas PSA 10"
-        )
-        deal = self._listing()
-        main.enrich_truncated_grades([deal])
+# --- Failure mode #5: truncated grades were comped before being repaired ---
 
-        assert deal.grade == "10"
-        assert deal.title == "1990 Fleer Frank Thomas PSA 10"
-        assert deal.title_truncated is False
 
-    def test_marks_uncertain_when_fetch_fails(self, monkeypatch):
-        from src import ebay_email_alerts, main
+class TestTruncatedTitleRepair:
+    def test_repair_happens_and_rewrites_identity(self):
+        listing = make_listing("2024 Panini Prizm Caleb Williams Silver #301 PSA 1…", 250.0)
+        assert listing.grade == "1"  # the whole problem: a PSA 10 parsed as PSA 1
 
-        monkeypatch.setattr(ebay_email_alerts, "fetch_full_title", lambda url: None)
-        deal = self._listing()
-        main.enrich_truncated_grades([deal])
+        stats = observability.RunStats()
+        with mock.patch.object(
+            main_module.ebay_email_alerts, "fetch_full_title", return_value=EXACT_TITLE
+        ):
+            main_module.repair_truncated_titles([listing], stats)
 
-        assert deal.grade == "1"  # left as-is, not overwritten with a guess
-        assert deal.title_truncated is True
+        assert listing.grade == "10"
+        assert listing.title_truncated is False
+        assert listing.card_identity.card_number.value == "301"
 
-    def test_skips_non_truncated_titles(self, monkeypatch):
-        from src import ebay_email_alerts, main
+    def test_failed_repair_marks_the_grade_uncertain_rather_than_asserting_it(self):
+        listing = make_listing("2024 Panini Prizm Caleb Williams Silver #301 PSA 1…", 250.0)
+        stats = observability.RunStats()
+        with mock.patch.object(main_module.ebay_email_alerts, "fetch_full_title", return_value=None):
+            main_module.repair_truncated_titles([listing], stats)
+        assert listing.title_truncated is True
 
-        fetch = mock.Mock(side_effect=AssertionError("should not be called"))
-        monkeypatch.setattr(ebay_email_alerts, "fetch_full_title", fetch)
-        deal = self._listing(title="1990 Fleer Frank Thomas PSA 10")
-        main.enrich_truncated_grades([deal])
-
-        assert deal.title_truncated is False
+    def test_untruncated_titles_are_never_fetched(self):
+        listing = make_listing(EXACT_TITLE, 250.0)
+        stats = observability.RunStats()
+        with mock.patch.object(main_module.ebay_email_alerts, "fetch_full_title") as fetch:
+            main_module.repair_truncated_titles([listing], stats)
         fetch.assert_not_called()
 
-    def test_skips_raw_listings_even_if_truncated(self, monkeypatch):
-        from src import ebay_email_alerts, main
+    def test_repairs_are_capped_and_warn(self):
+        listings = [
+            make_listing("2024 Prizm Caleb Williams PSA 1…", 10.0, listing_id="L%d" % i) for i in range(6)
+        ]
+        stats = observability.RunStats()
+        with mock.patch.object(
+            main_module.ebay_email_alerts, "fetch_full_title", return_value=EXACT_TITLE
+        ) as fetch:
+            main_module.repair_truncated_titles(listings, stats, limit=2)
+        assert fetch.call_count == 2
+        assert stats.warnings
+        # the ones we didn't get to are marked uncertain, not silently trusted
+        assert all(listing.title_truncated for listing in listings[2:])
 
-        fetch = mock.Mock(side_effect=AssertionError("should not be called"))
-        monkeypatch.setattr(ebay_email_alerts, "fetch_full_title", fetch)
-        deal = self._listing(card_type="raw", grader=None, grade=None, title="1993-94 Fleer Michael Jordan…")
-        main.enrich_truncated_grades([deal])
 
-        assert deal.title_truncated is False
-        fetch.assert_not_called()
+# --- An auction's current bid must never enter the comp corpus ---
 
 
-class TestFlagDeals:
-    """Unit tests for main.flag_deals -- pure function, no fixture needed."""
+class TestRecordObservations:
+    def test_auctions_are_not_recorded_as_comps(self):
+        history = {}
+        auction = make_listing(EXACT_TITLE, 45.0, listing_id="A1", listing_type="auction", bid_count=7)
+        main_module.record_observations([auction], history, "2026-08-22")
+        assert history == {}
 
-    def _listing(self, **overrides):
-        from src.models import Listing
+    def test_fixed_price_listings_are_recorded_as_asking_basis(self):
+        history = {}
+        listing = make_listing(EXACT_TITLE, 245.0, listing_id="F1", listing_type="fixed_price")
+        assert main_module.record_observations([listing], history, "2026-08-22") == 1
+        stored = history["Caleb Williams|graded"][0]
+        assert stored["basis"] == comps.BASIS_ASKING
+        assert stored["parallel"] == "Silver"
+        assert stored["grade"] == "10"
 
-        defaults = dict(
-            id="1",
-            source="ebay",
-            title="Michael Jordan card",
-            price=100.0,
-            url="http://example.com/1",
-            player="Michael Jordan",
-            card_type="raw",
+    def test_blocked_listings_are_not_recorded(self):
+        history = {}
+        for title in (
+            "1986 Fleer Caleb Williams REPRINT",
+            "Lot of 5 Caleb Williams cards",
+            "2024 Panini Prizm Caleb Williams Hobby Box sealed",
+        ):
+            main_module.record_observations([make_listing(title, 20.0)], history, "2026-08-22")
+        assert history == {}
+
+    def test_listings_without_a_price_are_not_recorded(self):
+        history = {}
+        main_module.record_observations([make_listing(EXACT_TITLE, None)], history, "2026-08-22")
+        assert history == {}
+
+
+# --- Evaluation ---
+
+
+class TestEvaluateListings:
+    def test_a_listing_is_never_part_of_its_own_comp(self):
+        # Failure mode #4. The listing under test is in the corpus; with
+        # min_comps=3 and only three observations, including itself would
+        # both change the median and let a lowball drag its own "market
+        # value" toward itself.
+        observations = [observation(400.0, "L1"), observation(400.0, "o2"), observation(400.0, "o3")]
+        listing = make_listing(EXACT_TITLE, 100.0, listing_id="L1")
+        stats = observability.RunStats()
+
+        # Only two comps remain once L1 is excluded, so there is no valuation
+        # at all rather than one built partly from the listing itself.
+        main_module.evaluate_listings([listing], engine_for(observations), fake_cfg(), stats)
+        assert listing.comp_match is None
+        assert listing.rejection_reason == reasons.Reason.NO_COMP_AT_ANY_LEVEL
+
+    def test_exclusion_does_not_break_a_healthy_bucket(self):
+        observations = [observation(400.0, "o%d" % i) for i in range(6)] + [observation(100.0, "L1")]
+        listing = make_listing(EXACT_TITLE, 100.0, listing_id="L1", listing_type="fixed_price")
+        stats = observability.RunStats()
+        main_module.evaluate_listings([listing], engine_for(observations), fake_cfg(), stats)
+        assert listing.market_value == 400.0  # its own $100 didn't drag the median down
+        assert listing.is_opportunity is True
+
+    def test_reprint_is_blocked_with_its_own_reason(self):
+        listing = make_listing("1986 Fleer Caleb Williams #57 REPRINT", 20.0)
+        stats = observability.RunStats()
+        main_module.evaluate_listings([listing], engine_for([]), fake_cfg(), stats)
+        assert listing.is_opportunity is False
+        assert listing.rejection_reason == reasons.Reason.REPRINT
+        assert stats.blocked_by_negative_signal == 1
+
+    def test_lot_is_blocked(self):
+        listing = make_listing("Lot of 5 Caleb Williams rookie cards", 40.0)
+        stats = observability.RunStats()
+        main_module.evaluate_listings([listing], engine_for([]), fake_cfg(), stats)
+        assert listing.rejection_reason == reasons.Reason.LOT
+
+    def test_multi_player_card_is_not_valued_against_one_player(self):
+        listing = make_listing("2024 Prizm Dual Auto Caleb Williams Kyle Teel #5", 300.0)
+        stats = observability.RunStats()
+        main_module.evaluate_listings([listing], engine_for([]), fake_cfg(), stats)
+        assert listing.rejection_reason == reasons.Reason.MULTI_PLAYER_CARD
+
+    def test_auction_is_never_an_opportunity_however_cheap(self):
+        observations = [observation(400.0, "o%d" % i) for i in range(6)]
+        listing = make_listing(EXACT_TITLE, 20.0, listing_id="A1", listing_type="auction", bid_count=3)
+        stats = observability.RunStats()
+        main_module.evaluate_listings([listing], engine_for(observations), fake_cfg(), stats)
+
+        assert listing.is_opportunity is False
+        assert listing.rejection_reason == reasons.Reason.AUCTION_CURRENT_BID_NOT_A_PRICE
+        # ...but it IS valued, and it gets the number that makes it actionable
+        assert listing.market_value == 400.0
+        assert listing.max_rational_bid > 0
+
+    def test_context_only_comp_can_never_flag_a_deal(self):
+        # Failure mode #1: the price-tier level is defined by price, so the
+        # cheap end of every bucket is automatically "under market". It may
+        # still be shown as context -- it may never declare a deal.
+        observations = [
+            observation(
+                p, "o%d" % i, card_type="raw", grader=None, grade=None, parallel=None, card_number=None,
+                set_name=None, year=None,
+            )
+            for i, p in enumerate([40.0, 45.0, 50.0, 55.0, 60.0])
+        ]
+        listing = make_listing("Caleb Williams rookie card", 25.0, listing_id="L9", listing_type="fixed_price")
+        stats = observability.RunStats()
+        main_module.evaluate_listings([listing], engine_for(observations), fake_cfg(), stats)
+
+        assert listing.comp_match is not None
+        assert listing.comp_match.level == "price_tier"
+        assert listing.is_opportunity is False
+        assert listing.rejection_reason == reasons.Reason.CONTEXT_ONLY_LEVEL
+
+    def test_different_grades_are_different_markets(self):
+        # Failure mode #3. A PSA 9 must not be valued off PSA 10 comps.
+        psa10_comps = [observation(400.0, "o%d" % i) for i in range(6)]
+        psa9 = make_listing(
+            "2024 Panini Prizm Caleb Williams Silver #301 PSA 9", 150.0, listing_id="L9",
+            listing_type="fixed_price",
         )
-        defaults.update(overrides)
-        return Listing(**defaults)
+        stats = observability.RunStats()
+        main_module.evaluate_listings([psa9], engine_for(psa10_comps), fake_cfg(), stats)
+        assert psa9.is_opportunity is False
+        # No level -- not even a context-only one -- will hand a PSA 9 the
+        # PSA 10 median. Nothing to say beats saying the wrong thing.
+        assert psa9.market_value is None
+        assert psa9.rejection_reason == reasons.Reason.NO_COMP_AT_ANY_LEVEL
 
-    def _comp_table(self, median, tier, n=5):
-        """The comp table key's tier must match the LISTING's own price
-        tier (that's what flag_deals looks up by), not the comp median's
-        tier -- see comps.price_tier."""
-        from src import comps
+    def test_below_threshold_records_the_specific_reason(self):
+        observations = [observation(300.0, "o%d" % i) for i in range(6)]
+        listing = make_listing(EXACT_TITLE, 280.0, listing_id="L2", listing_type="fixed_price")
+        stats = observability.RunStats()
+        main_module.evaluate_listings([listing], engine_for(observations), fake_cfg(), stats)
+        assert listing.rejection_reason == reasons.Reason.BELOW_DISCOUNT_THRESHOLD
 
-        return {("Michael Jordan", "raw", tier): comps.CompStats(median=median, sample_size=n, is_fallback=False)}
+    def test_below_min_savings_records_the_specific_reason(self):
+        observations = [observation(20.0, "o%d" % i) for i in range(6)]
+        listing = make_listing(EXACT_TITLE, 12.0, listing_id="L3", listing_type="fixed_price")
+        stats = observability.RunStats()
+        main_module.evaluate_listings([listing], engine_for(observations), fake_cfg(), stats)
+        assert listing.pct_under_market >= 30
+        assert listing.rejection_reason == reasons.Reason.BELOW_MIN_SAVINGS
 
-    def test_flags_when_both_percent_and_dollar_gates_clear(self):
-        from src import main
-
-        listing = self._listing(price=100.0)  # $100 -> "100_plus" tier; comp 200 -> 50% off, $100 saved
-        flagged = main.flag_deals([listing], self._comp_table(200.0, "100_plus"), threshold_pct=30, min_savings_dollars=10)
-        assert flagged == [listing]
-        assert listing.dollar_savings == 100.0
-        assert listing.pct_under_market == 50.0
-
-    def test_blocked_by_dollar_gate_despite_clearing_percent(self):
-        """50% off is well past the percent threshold, but $1 saved isn't
-        worth a click -- the dollar gate must still block it."""
-        from src import main
-
-        listing = self._listing(price=1.0)  # $1 -> "under_5" tier; comp 2.00 -> 50% off, $1 saved
-        flagged = main.flag_deals([listing], self._comp_table(2.0, "under_5"), threshold_pct=30, min_savings_dollars=10)
-        assert flagged == []
-
-    def test_blocked_by_percent_gate_despite_clearing_dollar_amount(self):
-        """$50 off a $10,000 card is real money but barely under market --
-        the percent gate must still block it."""
-        from src import main
-
-        listing = self._listing(price=9950.0)  # $9950 -> "100_plus" tier; comp 10000 -> 0.5% off, $50 saved
-        flagged = main.flag_deals([listing], self._comp_table(10000.0, "100_plus"), threshold_pct=30, min_savings_dollars=10)
-        assert flagged == []
-
-    def test_savings_computed_against_total_cost_including_shipping(self):
-        """A $40 card with $15 shipping is a $55 opportunity, not a $40
-        one -- comp median 100, price 40, shipping 15 -> $45 saved, not $60."""
-        from src import main
-
-        listing = self._listing(price=40.0, shipping_price=15.0)  # "25_to_100" tier
-        flagged = main.flag_deals([listing], self._comp_table(100.0, "25_to_100"), threshold_pct=30, min_savings_dollars=10)
-        assert flagged == [listing]
-        assert listing.dollar_savings == 45.0
-
-    def test_shipping_unknown_falls_back_to_price_only_savings(self):
-        """Backwards-compatible: a listing with no shipping data (the
-        default) is scored exactly as it was before shipping tracking existed."""
-        from src import main
-
-        listing = self._listing(price=100.0)  # shipping_price defaults to None
-        flagged = main.flag_deals([listing], self._comp_table(200.0, "100_plus"), threshold_pct=30, min_savings_dollars=10)
-        assert flagged == [listing]
-        assert listing.dollar_savings == 100.0
-
-    def test_min_savings_dollars_defaults_to_zero(self):
-        """Backwards-compatible default: omitting min_savings_dollars
-        shouldn't block anything that clears the percent threshold."""
-        from src import main
-
-        listing = self._listing(price=1.0)
-        flagged = main.flag_deals([listing], self._comp_table(2.0, "under_5"), threshold_pct=30)
-        assert flagged == [listing]
-
-    def test_comp_lookup_uses_listings_own_price_tier_not_comp_medians(self):
-        """A $1 listing must NOT be compared against a comp bucket built
-        from $90 items -- this is the whole point of tiering. A comp only
-        sitting in the "100_plus" bucket should never match a $1 listing,
-        even if that bucket exists."""
-        from src import main
-
-        listing = self._listing(price=1.0)  # "under_5" tier
-        comp_table = self._comp_table(90.0, "100_plus")  # wrong tier on purpose
-        flagged = main.flag_deals([listing], comp_table, threshold_pct=30, min_savings_dollars=0)
-        assert flagged == []
-        assert listing.comp_median is None  # never matched, so never filled in
-
-
-class TestFlagDealsHierarchical:
-    """Unit tests for main.flag_deals_hierarchical -- same two-gate logic
-    as flag_deals, but comps come from comps.lookup_hierarchical_comp
-    (identity-aware) instead of a flat price-tier dict."""
-
-    def _listing(self, **overrides):
-        from src.card_identity import CardIdentity, Field
-        from src.models import Listing
-
-        defaults = dict(
-            id="1",
-            source="ebay-alert",
-            title="2024 Panini Prizm Silver Caleb Williams #123 PSA 10",
-            price=100.0,
-            url="http://example.com/1",
-            player="Caleb Williams",
-            card_type="graded",
-            grader="PSA",
-            grade="10",
-            card_identity=CardIdentity(
-                year=Field(2024, "high"), set_name=Field("Prizm", "high"),
-                parallel=Field("Silver", "high"), card_number=Field("123", "high"),
-            ),
+    def test_shipping_is_included_in_the_discount_maths(self):
+        observations = [observation(400.0, "o%d" % i) for i in range(6)]
+        listing = make_listing(
+            EXACT_TITLE, 260.0, listing_id="L4", listing_type="fixed_price", shipping_price=40.0
         )
-        defaults.update(overrides)
-        return Listing(**defaults)
+        stats = observability.RunStats()
+        main_module.evaluate_listings([listing], engine_for(observations), fake_cfg(), stats)
+        assert listing.dollar_savings == pytest.approx(100.0)  # 400 - (260 + 40), not 400 - 260
 
-    def test_flags_and_sets_confidence_on_exact_match(self):
-        from src import comps, main
+    def test_economics_are_attached_with_visible_assumptions(self):
+        observations = [observation(400.0, "o%d" % i) for i in range(6)]
+        listing = make_listing(EXACT_TITLE, 200.0, listing_id="L5", listing_type="fixed_price")
+        stats = observability.RunStats()
+        main_module.evaluate_listings([listing], engine_for(observations), fake_cfg(), stats)
+        assert listing.economics is not None
+        assert listing.economics.assumptions  # never a bare unexplained profit figure
 
-        listing = self._listing(price=100.0)
-        hier_table = {
-            "exact": {("Caleb Williams", 2024, "Prizm", "Silver", "123", "PSA", "10"): comps.CompStats(200.0, 5, True)},
-            "near_exact": {}, "family": {}, "price_tier": {},
-        }
-        flagged = main.flag_deals_hierarchical([listing], hier_table, threshold_pct=30, min_savings_dollars=10)
+    def test_every_listing_leaves_with_an_outcome_or_a_reason(self):
+        # The invariant the whole reasons/observability layer exists for:
+        # 21% of listings used to vanish with neither.
+        listings = [
+            make_listing(EXACT_TITLE, 200.0, listing_id="a", listing_type="fixed_price"),
+            make_listing("1986 Fleer Caleb Williams REPRINT", 5.0, listing_id="b"),
+            make_listing("Caleb Williams mystery card", None, listing_id="c"),
+            make_listing("Lot of 3 Kyle Teel cards", 15.0, listing_id="d"),
+            make_listing(EXACT_TITLE, 50.0, listing_id="e", listing_type="auction", bid_count=2),
+        ]
+        stats = observability.RunStats()
+        main_module.evaluate_listings(listings, engine_for([observation(400.0, "o%d" % i) for i in range(6)]),
+                                      fake_cfg(), stats)
+        for listing in listings:
+            assert listing.is_opportunity or listing.rejection_reason, listing.title
+        assert stats.unexplained_count() == 0
 
-        assert flagged == [listing]
-        assert listing.comp_level_matched == "exact"
-        assert listing.comp_confidence == "high"
-        assert listing.dollar_savings == 100.0
+    def test_target_hit_is_recorded_separately_from_the_deal_verdict(self):
+        from src import targets
 
-    def test_falls_back_to_price_tier_and_marks_low_confidence(self):
-        from src import comps, main
-
-        listing = self._listing(price=100.0, card_identity=None)
-        hier_table = {
-            "exact": {}, "near_exact": {}, "family": {},
-            "price_tier": {("Caleb Williams", "graded", "100_plus"): comps.CompStats(150.0, 5, True)},
-        }
-        flagged = main.flag_deals_hierarchical([listing], hier_table, threshold_pct=30, min_savings_dollars=10)
-
-        assert flagged == [listing]
-        assert listing.comp_level_matched == "price_tier"
-        assert listing.comp_confidence == "low"
-
-    def test_not_flagged_when_no_level_matches(self):
-        from src import main
-
-        listing = self._listing(price=100.0)
-        hier_table = {"exact": {}, "near_exact": {}, "family": {}, "price_tier": {}}
-        flagged = main.flag_deals_hierarchical([listing], hier_table, threshold_pct=30, min_savings_dollars=10)
-
-        assert flagged == []
-        assert listing.comp_median is None
-
-    def test_savings_computed_against_total_cost_including_shipping(self):
-        from src import comps, main
-
-        listing = self._listing(price=100.0, shipping_price=20.0)
-        hier_table = {
-            "exact": {("Caleb Williams", 2024, "Prizm", "Silver", "123", "PSA", "10"): comps.CompStats(200.0, 5, True)},
-            "near_exact": {}, "family": {}, "price_tier": {},
-        }
-        flagged = main.flag_deals_hierarchical([listing], hier_table, threshold_pct=30, min_savings_dollars=10)
-
-        assert flagged == [listing]
-        assert listing.dollar_savings == 80.0  # 200 - (100 + 20), not 200 - 100
-
-    def test_still_respects_dollar_and_percent_gates(self):
-        from src import comps, main
-
-        listing = self._listing(price=195.0)  # comp 200 -> 2.5% off, $5 saved -- below both gates
-        hier_table = {
-            "exact": {("Caleb Williams", 2024, "Prizm", "Silver", "123", "PSA", "10"): comps.CompStats(200.0, 5, True)},
-            "near_exact": {}, "family": {}, "price_tier": {},
-        }
-        flagged = main.flag_deals_hierarchical([listing], hier_table, threshold_pct=30, min_savings_dollars=10)
-
-        assert flagged == []
-
-
-class TestCardIdentityWiring:
-    """A lot's price isn't comparable to a single card's -- lots must be
-    excluded from matching entirely (not recorded into comps, not flagged),
-    on both the eBay-API path and the eBay-alerts path."""
-
-    def test_fetch_ebay_active_excludes_lots(self, monkeypatch):
-        from src import ebay_client, main
-
-        def fake_search(query, token, category_id, marketplace_id, limit=50):
-            return [
-                {"itemId": "e1", "title": "Michael Jordan lot of 5 cards", "price": {"value": "20"}, "itemWebUrl": "http://ebay/e1"},
-                {"itemId": "e2", "title": "1986 Fleer Michael Jordan Rookie PSA 9", "price": {"value": "5000"}, "itemWebUrl": "http://ebay/e2"},
-            ]
-
-        monkeypatch.setattr(ebay_client, "search_active_listings", fake_search)
-
-        class FakeCfg:
-            ebay_category_id = "212"
-            ebay_marketplace_id = "EBAY_US"
-            ebay_active_listing_limit = 50
-            player_tiers = {}
-
-        listings = main.fetch_ebay_active(FakeCfg(), ["Michael Jordan"], token="fake-token")
-
-        assert len(listings) == 1
-        assert listings[0].id == "e2"
-        assert listings[0].card_identity is not None
-        assert listings[0].card_identity.is_lot.value is False
-
-    def test_fetch_ebay_alert_active_excludes_lots(self, monkeypatch):
-        from src import ebay_email_alerts, main
-
-        monkeypatch.setattr(
-            ebay_email_alerts,
-            "fetch_alert_listings",
-            lambda *a, **kw: [
-                {"title": "Michael Jordan 10 card lot vintage", "url": "https://www.ebay.com/itm/2001", "price": 40.0},
-                {"title": "Michael Jordan PSA 9 rookie", "url": "https://www.ebay.com/itm/2002", "price": 9000.0},
-            ],
+        cfg = fake_cfg(
+            target_cards=targets.load_targets(
+                [
+                    {
+                        "label": "Prizm Silver PSA 10",
+                        "player": "Caleb Williams",
+                        "year": 2024,
+                        "set_name": "Prizm",
+                        "parallel": "Silver",
+                        "grader": "PSA",
+                        "grade": "10",
+                        "buy_zone": 500,
+                    }
+                ]
+            )
         )
+        listing = make_listing(EXACT_TITLE, 450.0, listing_id="T1", listing_type="fixed_price")
+        stats = observability.RunStats()
+        main_module.evaluate_listings([listing], engine_for([]), cfg, stats)
 
-        class FakeCfg:
-            players = ["Michael Jordan"]
-            player_tiers = {}
-            gmail_address = "fake@gmail.com"
-            gmail_app_password = "fakepassword"
-            ebay_alerts_sender_contains = "ebay.com"
-            ebay_alerts_lookback_days = 2
-            ebay_alerts_mailbox = "[Gmail]/All Mail"
+        # In the buy zone the user set, but with no comps there is no claim
+        # that it's underpriced -- those are separate answers.
+        assert listing.target_hit is not None and listing.target_hit.in_buy_zone
+        assert listing.is_opportunity is False
 
-        listings = main.fetch_ebay_alert_active(FakeCfg(), "2026-08-19")
 
-        assert len(listings) == 1
-        assert listings[0].id == "https://www.ebay.com/itm/2002"
+class TestApplyDedupe:
+    def _opportunity(self, price, listing_id="D1"):
+        listing = make_listing(EXACT_TITLE, price, listing_id=listing_id, listing_type="fixed_price")
+        listing.is_opportunity = True
+        return listing
 
-    def test_fetch_ebay_active_populates_card_identity_on_kept_listings(self, monkeypatch):
-        from src import ebay_client, main
+    def test_first_sighting_is_reported_and_recorded(self):
+        seen = {}
+        stats = observability.RunStats()
+        listing = self._opportunity(200.0)
+        main_module.apply_dedupe([listing], seen, "2026-08-22", stats)
+        assert listing.is_opportunity is True
+        assert seen["D1"]["price"] == 200.0
 
-        def fake_search(query, token, category_id, marketplace_id, limit=50):
-            return [
-                {
-                    "itemId": "e1",
-                    "title": "2024 Panini Prizm Silver Caleb Williams #123 23/99 PSA 10",
-                    "price": {"value": "200"},
-                    "itemWebUrl": "http://ebay/e1",
-                }
-            ]
+    def test_same_price_next_run_is_suppressed_with_a_reason(self):
+        seen = {"D1": {"price": 200.0, "first_seen": "2026-08-21", "last_flagged": "2026-08-21"}}
+        stats = observability.RunStats()
+        listing = self._opportunity(200.0)
+        main_module.apply_dedupe([listing], seen, "2026-08-22", stats)
+        assert listing.is_opportunity is False
+        assert listing.rejection_reason == reasons.Reason.PRICE_NOT_DROPPED
+        assert stats.duplicates_suppressed == 1
 
-        monkeypatch.setattr(ebay_client, "search_active_listings", fake_search)
+    def test_price_drop_is_reported_and_labelled(self):
+        seen = {"D1": {"price": 200.0, "first_seen": "2026-08-21", "last_flagged": "2026-08-21"}}
+        stats = observability.RunStats()
+        listing = self._opportunity(150.0)
+        main_module.apply_dedupe([listing], seen, "2026-08-22", stats)
+        assert listing.is_opportunity is True
+        assert listing.is_price_drop is True
+        assert listing.previous_price == 200.0
+        assert stats.price_drops == 1
 
-        class FakeCfg:
-            ebay_category_id = "212"
-            ebay_marketplace_id = "EBAY_US"
-            ebay_active_listing_limit = 50
-            player_tiers = {}
+    def test_non_opportunities_pass_through_untouched(self):
+        # Auctions and needs-review items must not be deduped away: an
+        # auction that's still live is still worth seeing.
+        stats = observability.RunStats()
+        auction = make_listing(EXACT_TITLE, 50.0, listing_id="A1", listing_type="auction")
+        kept = main_module.apply_dedupe([auction], {}, "2026-08-22", stats)
+        assert kept == [auction]
+        assert stats.duplicates_suppressed == 0
 
-        listings = main.fetch_ebay_active(FakeCfg(), ["Caleb Williams"], token="fake-token")
 
-        assert len(listings) == 1
-        identity = listings[0].card_identity
-        assert identity.year.value == 2024
-        assert identity.manufacturer.value == "Panini"
-        assert identity.set_name.value == "Prizm"
-        assert identity.parallel.value == "Silver"
-        assert identity.serial_number.value == "23/99"
+class TestListingsAsObservations:
+    """The eBay API path has no persisted corpus, so today's active listings
+    become asking-basis observations. Same exclusions as the alerts path."""
+
+    def test_fixed_price_listings_become_asking_basis_observations(self):
+        listing = make_listing(EXACT_TITLE, 240.0, listing_id="F1", listing_type="fixed_price")
+        obs = main_module.listings_as_observations([listing], "2026-08-22")
+        assert len(obs) == 1
+        assert obs[0]["basis"] == comps.BASIS_ASKING
+        assert obs[0]["id"] == "F1"
+        assert obs[0]["grade"] == "10"
+
+    def test_auctions_are_excluded(self):
+        auction = make_listing(EXACT_TITLE, 40.0, listing_id="A1", listing_type="auction", bid_count=4)
+        assert main_module.listings_as_observations([auction], "2026-08-22") == []
+
+    def test_blocked_listings_are_excluded(self):
+        reprint = make_listing("2024 Panini Prizm Caleb Williams Silver #301 REPRINT", 12.0)
+        assert main_module.listings_as_observations([reprint], "2026-08-22") == []
+
+    def test_sold_observations_take_priority_but_asking_still_counts(self):
+        # A bucket mixing both is reported as asking-basis, which caps its
+        # confidence -- honest, not a loss.
+        sold = [dict(observation(400.0, "s%d" % i), basis=comps.BASIS_SOLD) for i in range(3)]
+        asking = main_module.listings_as_observations(
+            [make_listing(EXACT_TITLE, 500.0, listing_id="a1", listing_type="fixed_price")], "2026-08-22"
+        )
+        engine = engine_for(sold + asking)
+        match = engine.lookup(
+            player="Caleb Williams", card_type="graded", price=200.0, grader="PSA", grade="10",
+            year=2024, set_name="Prizm", parallel="Silver", card_number="301",
+        )
+        assert match.stats.basis == comps.BASIS_ASKING
+        assert match.confidence != "high"
+
+
+class TestFlagEligibilityOverride:
+    """`valuation.require_flag_eligible_comp` was loaded from config but
+    never read -- setting it to false silently did nothing. It is a real
+    escape hatch now, and a loud one."""
+
+    def _context_only_setup(self):
+        observations = [
+            observation(
+                p, "o%d" % i, card_type="raw", grader=None, grade=None,
+                parallel=None, card_number=None, set_name=None, year=None,
+            )
+            for i, p in enumerate([40.0, 45.0, 50.0, 55.0, 60.0])
+        ]
+        listing = make_listing("Caleb Williams rookie card", 25.0, listing_id="C1", listing_type="fixed_price")
+        return observations, listing
+
+    def test_default_refuses_to_flag_from_a_context_only_comp(self):
+        observations, listing = self._context_only_setup()
+        stats = observability.RunStats()
+        main_module.evaluate_listings([listing], engine_for(observations), fake_cfg(), stats)
+        assert listing.is_opportunity is False
+        assert listing.rejection_reason == reasons.Reason.CONTEXT_ONLY_LEVEL
+
+    def test_override_allows_it_but_warns_loudly(self):
+        observations, listing = self._context_only_setup()
+        stats = observability.RunStats()
+        cfg = fake_cfg(require_flag_eligible_comp=False)
+        main_module.evaluate_listings([listing], engine_for(observations), cfg, stats)
+
+        assert listing.is_opportunity is True
+        assert listing.comp_match.level == "price_tier"
+        warning = " ".join(stats.warnings)
+        assert "require_flag_eligible_comp is FALSE" in warning
+        assert "cannot be evidence about price" in warning
+
+    def test_override_does_not_warn_when_left_on(self):
+        stats = observability.RunStats()
+        main_module.evaluate_listings([], engine_for([]), fake_cfg(), stats)
+        assert stats.warnings == []
+
+
+class TestCheapCards:
+    """Sub-$10 cards are allowed through, but "cheap" and "junk" are gated
+    separately. The old flat $10 dollar floor conflated them: a $4 card worth
+    $12 is 67% off and was being rejected outright."""
+
+    def _cheap_comps(self, median=12.0, **identity):
+        fields = dict(
+            card_type="raw", grader=None, grade=None, year=2024,
+            set_name="Prizm", parallel="Silver", card_number="301",
+        )
+        fields.update(identity)
+        return [observation(median, "o%d" % i, **fields) for i in range(6)]
+
+    def test_a_cheap_card_with_a_real_attribute_can_now_be_an_opportunity(self):
+        listing = make_listing(
+            "2024 Panini Prizm Caleb Williams Silver #301 RC", 4.0,
+            listing_id="CH1", listing_type="fixed_price",
+        )
+        stats = observability.RunStats()
+        main_module.evaluate_listings([listing], engine_for(self._cheap_comps()), fake_cfg(), stats)
+
+        assert listing.is_cheap is True
+        assert listing.is_opportunity is True
+        assert listing.dollar_savings == pytest.approx(8.0)
+
+    def test_the_old_ten_dollar_floor_would_have_rejected_it(self):
+        # Pinning the actual regression: the same card fails under a config
+        # where the cheap rules are off and the flat floor applies.
+        listing = make_listing(
+            "2024 Panini Prizm Caleb Williams Silver #301 RC", 4.0,
+            listing_id="CH2", listing_type="fixed_price",
+        )
+        cfg = fake_cfg(cheap_cards_enabled=False, min_savings_dollars=10.0)
+        stats = observability.RunStats()
+        main_module.evaluate_listings([listing], engine_for(self._cheap_comps()), cfg, stats)
+        assert listing.is_opportunity is False
+        assert listing.rejection_reason == reasons.Reason.BELOW_MIN_SAVINGS
+
+    def test_a_cheap_card_with_no_distinguishing_attribute_is_rejected_as_common(self):
+        listing = make_listing("Caleb Williams 2024 Panini card", 4.0, listing_id="CH3",
+                               listing_type="fixed_price")
+        stats = observability.RunStats()
+        main_module.evaluate_listings(
+            [listing], engine_for(self._cheap_comps(parallel=None, card_number=None)), fake_cfg(), stats
+        )
+        assert listing.is_opportunity is False
+        assert listing.rejection_reason == reasons.Reason.COMMON_CARD
+
+    def test_common_cards_are_counted_not_silently_dropped(self):
+        listing = make_listing("Caleb Williams 2024 Panini card", 2.0, listing_id="CH4",
+                               listing_type="fixed_price")
+        stats = observability.RunStats()
+        main_module.evaluate_listings([listing], engine_for([]), fake_cfg(), stats)
+        assert stats.rejections.counts()[reasons.Reason.COMMON_CARD] == 1
+        assert stats.unexplained_count() == 0
+
+    def test_cheap_cards_face_a_higher_percentage_bar(self):
+        # 40% off is plenty for a $200 card and not enough for a $6 one.
+        listing = make_listing(
+            "2024 Panini Prizm Caleb Williams Silver #301 RC", 7.2,
+            listing_id="CH5", listing_type="fixed_price",
+        )
+        stats = observability.RunStats()
+        main_module.evaluate_listings([listing], engine_for(self._cheap_comps()), fake_cfg(), stats)
+        assert listing.pct_under_market == pytest.approx(40.0)
+        assert listing.is_opportunity is False
+        assert listing.rejection_reason == reasons.Reason.BELOW_DISCOUNT_THRESHOLD
+
+    def test_an_expensive_plain_card_is_never_treated_as_common(self):
+        listing = make_listing("Caleb Williams 2024 Panini card", 250.0, listing_id="CH6",
+                               listing_type="fixed_price")
+        stats = observability.RunStats()
+        main_module.evaluate_listings([listing], engine_for([]), fake_cfg(), stats)
+        assert listing.rejection_reason != reasons.Reason.COMMON_CARD
+        assert listing.is_cheap is False
+
+    def test_cheap_buys_are_marked_as_uneconomic_to_flip(self):
+        # Postage and fees eat the spread at this price. That is arithmetic,
+        # not a warning -- the report says "collector buy" rather than showing
+        # a scary ROI on a card nobody would flip.
+        listing = make_listing(
+            "2024 Panini Prizm Caleb Williams Silver #301 RC", 4.0,
+            listing_id="CH7", listing_type="fixed_price",
+        )
+        stats = observability.RunStats()
+        main_module.evaluate_listings([listing], engine_for(self._cheap_comps()), fake_cfg(), stats)
+        assert listing.is_opportunity is True
+        assert listing.resale_uneconomic is True
+
+    def test_disabling_cheap_rules_applies_ordinary_thresholds_everywhere(self):
+        listing = make_listing(
+            "2024 Panini Prizm Caleb Williams Silver #301 RC", 4.0,
+            listing_id="CH8", listing_type="fixed_price",
+        )
+        cfg = fake_cfg(cheap_cards_enabled=False, min_savings_dollars=3.0)
+        stats = observability.RunStats()
+        main_module.evaluate_listings([listing], engine_for(self._cheap_comps()), cfg, stats)
+        assert listing.is_cheap is False
+        assert listing.is_opportunity is True  # 67% off clears the ordinary 30% bar

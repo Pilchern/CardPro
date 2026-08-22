@@ -58,6 +58,33 @@ SHIPPING_RE = re.compile(r"\+?\s*\$([\d,]+(?:\.\d{2})?)\s*shipping", re.IGNORECA
 FREE_SHIPPING_RE = re.compile(r"\bfree\s+shipping\b", re.IGNORECASE)
 ITEM_URL_RE = re.compile(r"(https?://[^\s\"'<>]*?/itm/\d+)|(/itm/\d+)")
 
+# --- Listing-type detection -------------------------------------------------
+# An auction's current bid is NOT a price. Treating one as a completed sale
+# price is the fastest way to make CardPro recommend a bad buy (it's an
+# explicit non-negotiable for this project), so the parser has to be able to
+# tell the two apart -- and, just as importantly, has to be able to say "I
+# can't tell" instead of quietly assuming Buy It Now.
+#
+# These patterns are deliberately conservative. eBay's alert-email template
+# isn't a documented interface and can change without notice, so a miss here
+# yields LISTING_TYPE_UNKNOWN (which the report states plainly) rather than a
+# confident wrong answer.
+BID_COUNT_RE = re.compile(r"\b(\d{1,4})\s*bids?\b", re.IGNORECASE)
+CURRENT_BID_RE = re.compile(r"\bcurrent\s+bid\b|\bstarting\s+bid\b|\bplace\s+bid\b", re.IGNORECASE)
+BUY_IT_NOW_RE = re.compile(r"\bbuy\s*it\s*now\b|\bbuy-it-now\b|\bBIN\b", re.IGNORECASE)
+BEST_OFFER_RE = re.compile(r"\bor\s+best\s+offer\b|\bbest\s+offer\s+accepted\b|\bmake\s+(?:an\s+)?offer\b|\bOBO\b", re.IGNORECASE)
+# "6d 04h", "1h 12m", "Time left: 45m" -- eBay shows a countdown only on auctions.
+TIME_LEFT_RE = re.compile(
+    r"\btime\s+left\b|\b(\d{1,3})\s*d\s*(\d{1,2})\s*h\b|\b(\d{1,2})\s*h\s*(\d{1,2})\s*m\b|\bends?\s+in\b",
+    re.IGNORECASE,
+)
+
+COUNTDOWN_RE = re.compile(r"\b\d{1,3}\s*d\s*\d{1,2}\s*h\b|\b\d{1,2}\s*h\s*\d{1,2}\s*m\b|\b\d{1,2}\s*m\s*\d{1,2}\s*s\b", re.IGNORECASE)
+
+LISTING_TYPE_AUCTION = "auction"
+LISTING_TYPE_FIXED = "fixed_price"
+LISTING_TYPE_UNKNOWN = "unknown"
+
 TRUNCATION_MARKERS = ("…", "...")  # eBay truncates long titles in these emails with an ellipsis
 
 _FULL_TITLE_HEADERS = {
@@ -138,6 +165,12 @@ def extract_listings_from_html(html: str) -> list[dict]:
     just stays None for everything and total-cost calculations fall back
     to price alone, same as before this existed. Re-run
     `python -m scripts.test_ebay_alerts --raw` to check the real hit rate.
+
+    Also returns listing_type ("auction" | "fixed_price" | "unknown"),
+    bid_count, has_best_offer and time_left_text -- see _detect_listing_type.
+    Like shipping, these have NOT been validated against real alert-email
+    HTML yet, and they fail safe: no evidence either way yields "unknown",
+    which the report states plainly instead of assuming Buy It Now.
     """
     soup = BeautifulSoup(html, "html.parser")
     results = []
@@ -154,8 +187,21 @@ def extract_listings_from_html(html: str) -> list[dict]:
 
         price = _find_nearby(a, _extract_price)
         shipping_price = _find_nearby(a, _extract_shipping)
+        context = _nearby_text(a)
+        listing_type, bid_count = _detect_listing_type(context)
         seen_urls.add(clean_url)
-        results.append({"title": title, "url": clean_url, "price": price, "shipping_price": shipping_price})
+        results.append(
+            {
+                "title": title,
+                "url": clean_url,
+                "price": price,
+                "shipping_price": shipping_price,
+                "listing_type": listing_type,
+                "bid_count": bid_count,
+                "has_best_offer": bool(BEST_OFFER_RE.search(context)),
+                "time_left_text": _extract_time_left(context),
+            }
+        )
 
     return results
 
@@ -216,6 +262,73 @@ def _find_nearby(anchor_tag, extractor) -> Optional[float]:
             return value
 
     return None
+
+
+def _nearby_text(anchor_tag) -> str:
+    """The text CardPro is allowed to read for THIS listing: the link's own
+    text plus following siblings up to (not including) the next listing's
+    item link, plus the narrowest ancestor that doesn't contain another
+    listing. Same scoping rule as _find_nearby -- reused rather than
+    reinvented so listing-type detection can never pick up the neighbouring
+    listing's "3 bids" and mislabel a Buy It Now as an auction.
+    """
+    parts = [anchor_tag.get_text(" ", strip=True)]
+
+    for sibling in anchor_tag.find_next_siblings():
+        if getattr(sibling, "find", None) and (
+            (sibling.name == "a" and sibling.get("href") and ITEM_URL_RE.search(sibling.get("href", "")))
+            or sibling.find("a", href=ITEM_URL_RE)
+        ):
+            break
+        parts.append(sibling.get_text(" ", strip=True) if hasattr(sibling, "get_text") else str(sibling))
+
+    for ancestor in anchor_tag.parents:
+        other_item_links = [
+            a for a in ancestor.find_all("a", href=True) if a is not anchor_tag and ITEM_URL_RE.search(a["href"])
+        ]
+        if other_item_links:
+            break
+        parts.append(ancestor.get_text(" ", strip=True))
+
+    return " ".join(part for part in parts if part)
+
+
+def _detect_listing_type(text: str):
+    """Returns (listing_type, bid_count).
+
+    Bid evidence wins over Buy It Now evidence: eBay auctions can also carry
+    a Buy It Now price until the first bid, and once bidding has started the
+    number shown is a *current bid*. Being wrong in that direction is the
+    expensive mistake, so it's the one this resolves against.
+
+    Returns LISTING_TYPE_UNKNOWN when there's no evidence either way. That is
+    a real answer, not a failure -- callers must surface it rather than
+    defaulting to "fixed price", because a silent default is exactly how a
+    current bid gets reported as an asking price.
+    """
+    bid_match = BID_COUNT_RE.search(text)
+    bid_count = int(bid_match.group(1)) if bid_match else None
+
+    if bid_match or CURRENT_BID_RE.search(text) or TIME_LEFT_RE.search(text):
+        return LISTING_TYPE_AUCTION, bid_count
+    if BUY_IT_NOW_RE.search(text):
+        return LISTING_TYPE_FIXED, None
+    return LISTING_TYPE_UNKNOWN, None
+
+
+def _extract_time_left(text: str) -> Optional[str]:
+    """The raw countdown string ("6d 04h") when eBay included one, else None.
+    Kept as text on purpose: it's shown to a human for triage, and converting
+    it to an absolute end time would require assuming when the email was
+    generated, which is a guess this project doesn't make.
+    """
+    match = TIME_LEFT_RE.search(text)
+    if not match:
+        return None
+    # Prefer an actual countdown ("2d 04h") over the bare words "Time left"
+    # when both appear -- the countdown is the part a human triages on.
+    countdown = COUNTDOWN_RE.search(text)
+    return (countdown or match).group(0).strip()
 
 
 def _extract_price(text: str) -> Optional[float]:
@@ -292,8 +405,15 @@ def fetch_alert_listings(
     sender_contains: str,
     lookback_days: int,
     mailbox: str = DEFAULT_MAILBOX,
+    counters: Optional[dict] = None,
 ) -> list[dict]:
     """Full pipeline: IMAP fetch -> HTML extraction -> [{title, url, price}].
+
+    `counters`, when given, gets `counters["messages"]` set to how many alert
+    emails were actually read. The daily report's data-quality footer needs
+    that number to distinguish "eBay sent nothing" from "we read 14 emails
+    and got nothing out of them" -- the same distinction the template-change
+    canary below exists for, surfaced in the email rather than only the log.
 
     Logs a warning if alert emails were found but nothing could be
     extracted from any of them -- that combination almost always means
@@ -303,6 +423,8 @@ def fetch_alert_listings(
     today" look identical in the report/logs -- see docs/AUDIT_AND_ROADMAP.md.
     """
     messages = fetch_alert_messages(gmail_address, gmail_app_password, sender_contains, lookback_days, mailbox)
+    if counters is not None:
+        counters["messages"] = len(messages)
     listings = []
     for msg in messages:
         html = get_html_body(msg)

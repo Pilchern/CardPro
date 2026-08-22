@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from dotenv import load_dotenv
 
-from src import ebay_email_alerts, matcher
+from src import card_identity, ebay_email_alerts, matcher
 from src.config import CONFIG_DIR, ROOT_DIR
 
 
@@ -82,18 +82,40 @@ def main() -> None:
     if show_raw:
         print("--- Raw extracted listings (before player-matching) ---")
         shipping_found = 0
+        type_counts = {"auction": 0, "fixed_price": 0, "unknown": 0}
+        best_offer_found = 0
         for listing in all_listings:
             price_str = f"${listing['price']:,.2f}" if listing["price"] is not None else "NO PRICE FOUND"
             shipping = listing.get("shipping_price")
             shipping_str = f"${shipping:,.2f} shipping" if shipping is not None else "shipping unknown"
             if shipping is not None:
                 shipping_found += 1
-            print(f"  {price_str:>15}  ({shipping_str})  {listing['title']}")
+            listing_type = listing.get("listing_type", "unknown")
+            type_counts[listing_type] = type_counts.get(listing_type, 0) + 1
+            if listing.get("has_best_offer"):
+                best_offer_found += 1
+            bids = listing.get("bid_count")
+            type_str = listing_type if bids is None else f"{listing_type} ({bids} bids)"
+            print(f"  {price_str:>15}  ({shipping_str})  [{type_str}]  {listing['title']}")
             print(f"                   {listing['url']}")
+        total = len(all_listings) or 1
         print(
             f"\nShipping found for {shipping_found}/{len(all_listings)} listing(s) -- "
             f"shipping extraction is unvalidated against real data (unlike price), "
             f"so a low hit rate here is expected/fine, not necessarily a bug."
+        )
+        print(
+            f"Listing type: {type_counts.get('auction', 0)} auction / "
+            f"{type_counts.get('fixed_price', 0)} fixed price / "
+            f"{type_counts.get('unknown', 0)} unknown "
+            f"({type_counts.get('unknown', 0) / total * 100:.0f}% unknown). "
+            f"{best_offer_found} with Best Offer."
+        )
+        print(
+            "  Listing-type detection is ALSO unvalidated against real alert emails. "
+            "A high unknown rate is safe (the report says 'unknown' rather than assuming "
+            "Buy It Now), but it means auctions can't be told apart yet -- if you see "
+            "auctions in your inbox showing up as 'unknown' here, that's the thing to fix."
         )
         print()
 
@@ -110,6 +132,7 @@ def main() -> None:
         print(f"  {'':<20}             {listing['url']}")
 
     print(f"\nTotal matched: {matched_count} / {len(all_listings)} extracted listing(s)")
+    _print_identity_coverage(all_listings, players)
     if all_listings and matched_count == 0:
         print(
             "\nExtraction found listings but none matched a watchlist player -- "
@@ -123,6 +146,45 @@ def main() -> None:
             "eBay's actual template. See the PROVISIONAL note in "
             "src/ebay_email_alerts.py."
         )
+
+
+def _print_identity_coverage(all_listings: list, players: list) -> None:
+    """Identity fill rates -- the KPI that decides whether CardPro can value
+    anything at all.
+
+    `exact` and `same_card` comps both require a KNOWN parallel, so the
+    parallel fill rate below is effectively a ceiling on how many listings can
+    ever be called a deal. When the audit measured this against production
+    data it was 3%, which is why nothing could be honestly flagged. Watch this
+    number, not the deal count.
+    """
+    matched = [item for item in all_listings if matcher.match_player(item["title"], players)]
+    if not matched:
+        return
+
+    counts = {"year": 0, "set_name": 0, "parallel": 0, "card_number": 0, "graded": 0, "blocked": 0}
+    for item in matched:
+        identity = card_identity.extract_card_identity(item["title"])
+        for field in ("year", "set_name", "parallel", "card_number"):
+            if getattr(identity, field).value is not None:
+                counts[field] += 1
+        if matcher.detect_grade_details(item["title"]).card_type == "graded":
+            counts["graded"] += 1
+        if card_identity.is_excluded_from_deals(identity):
+            counts["blocked"] += 1
+
+    total = len(matched)
+    print("\n--- Identity coverage (the ceiling on what can ever be valued) ---")
+    for field in ("year", "set_name", "parallel", "card_number"):
+        print(f"  {field:<12} {counts[field]:>4}/{total}  ({counts[field] / total * 100:.0f}%)")
+    print(f"  {'graded':<12} {counts['graded']:>4}/{total}  ({counts['graded'] / total * 100:.0f}%)")
+    print(f"  {'blocked':<12} {counts['blocked']:>4}/{total}  (reprint/lot/sealed/break/etc)")
+    print(
+        "\n  A deal can only be declared off an exact or same-card comp, and both need a "
+        "known parallel -- so the parallel row is the hard ceiling on flaggable listings. "
+        "A low graded row means your saved searches aren't reaching the liquid half of the "
+        "market; the daily report lists the searches that would fix that."
+    )
 
 
 if __name__ == "__main__":

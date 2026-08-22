@@ -1,10 +1,32 @@
-"""Daily entry point: scan eBay for the watchlist, flag underpriced
-listings against comp medians, dedupe against prior runs, and email a
-ranked report (plus ready-to-click Craigslist search links -- see
-craigslist_links.py for why Craigslist isn't scraped automatically).
+"""Daily entry point.
+
+Scan the watchlist, work out what each listing actually is, value it
+against comparable sales, run the economics, and email a decision-first
+report. Nothing is ever bought automatically -- CardPro discovers and
+analyses, you decide.
 
 Run manually:   python -m src.main
-Dry run (no email sent, no dedupe file written):   python -m src.main --dry-run
+Dry run (no email sent, no state written):   python -m src.main --dry-run
+
+CardPro 2.0 changed the shape of this file in three ways that matter:
+
+1. **One evaluation path.** There used to be two near-duplicate flagging
+   functions, one per data source, which had to be kept in sync by hand.
+   Both sources now produce the same `Listing` objects and go through the
+   same `evaluate_listings()`, differing only in where their observations
+   came from and whether those observations are sold prices or asking
+   prices (`basis`).
+
+2. **Nothing leaves silently.** Every listing exits with either a slot in
+   the report or exactly one recorded reason (src/reasons.py), counted in
+   the run's `RunStats` (src/observability.py). Previously 21% of listings
+   simply vanished when no comp was found, which made "quiet day" and
+   "silently broken" look identical.
+
+3. **Order of operations.** Truncated titles are repaired BEFORE valuation,
+   not after. eBay truncates long titles and "PSA 1..." parses as PSA 1; the
+   old order meant a PSA 10 could be valued as a PSA 1 and the flag decision
+   was already made by the time the real title arrived.
 """
 from __future__ import annotations
 
@@ -18,7 +40,24 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src import card_identity, comps, craigslist_links, dedupe, ebay_client, ebay_email_alerts, emailer, matcher, price_history, report
+from src import (
+    card_identity,
+    comps,
+    craigslist_links,
+    dedupe,
+    desirability,
+    ebay_client,
+    ebay_email_alerts,
+    economics,
+    emailer,
+    matcher,
+    observability,
+    price_history,
+    reasons,
+    report,
+    search_terms,
+    targets,
+)
 from src.config import ROOT_DIR, load_config
 from src.models import Listing
 
@@ -28,6 +67,35 @@ LOG_PATH = ROOT_DIR / "logs" / "scraper.log"
 # so a script that runs once a day forever doesn't grow the log unbounded.
 LOG_MAX_BYTES = 2_000_000
 LOG_BACKUP_COUNT = 5
+
+# Repairing a truncated title costs one HTTP request to the item page. This
+# caps how many we'll do per run so a template change that suddenly makes
+# every title look truncated turns into a logged warning, not hundreds of
+# requests at eBay.
+MAX_TITLE_REPAIRS_PER_RUN = 30
+
+# Which negative signal maps to which rejection reason. Signals that aren't
+# here (currently only "damaged") are surfaced as risks rather than blocks --
+# a damaged card is still a real card, just worth less.
+SIGNAL_TO_REASON = {
+    "reprint": reasons.Reason.REPRINT,
+    "replica": reasons.Reason.REPLICA,
+    "custom": reasons.Reason.CUSTOM_CARD,
+    "digital": reasons.Reason.DIGITAL_CARD,
+    "facsimile_auto": reasons.Reason.FACSIMILE_AUTO,
+    "sealed_product": reasons.Reason.SEALED_PRODUCT,
+    "break_slot": reasons.Reason.BREAK_SLOT,
+    "pick_your_card": reasons.Reason.PICK_YOUR_CARD,
+    "lot": reasons.Reason.LOT,
+}
+
+# comps.CompMatch.blocked_reasons -> the canonical rejection reason.
+BLOCKED_TO_REASON = {
+    "context_only_level": reasons.Reason.CONTEXT_ONLY_LEVEL,
+    "thin_sample": reasons.Reason.THIN_SAMPLE,
+    "stale_comps": reasons.Reason.STALE_COMPS,
+    "dispersed_comps": reasons.Reason.DISPERSED_COMPS,
+}
 
 
 def setup_logging() -> None:
@@ -41,7 +109,48 @@ def setup_logging() -> None:
     )
 
 
-def fetch_ebay_active(cfg, players: list[str], token: str) -> list[Listing]:
+# --------------------------------------------------------------------------
+# Building Listings from each source
+# --------------------------------------------------------------------------
+
+
+def _build_listing(cfg, *, listing_id, source, title, price, url, players, shipping_price=None,
+                   listing_type="unknown", bid_count=None, time_left_text=None, has_best_offer=False):
+    """One Listing with identity fully extracted. Returns None when no
+    watchlist player is in the title -- the caller records the reason."""
+    matched = matcher.match_players(title, players)
+    if not matched:
+        return None
+
+    identity = card_identity.extract_card_identity(title)
+    grade_info = matcher.detect_grade_details(title)
+    return Listing(
+        id=listing_id,
+        source=source,
+        title=title,
+        price=price,
+        url=url,
+        player=matched[0],
+        card_type=grade_info.card_type,
+        grader=grade_info.grader,
+        grade=grade_info.grade,
+        player_tier=cfg.player_tiers.get(matched[0], "legend"),
+        is_rookie_card=matcher.detect_rookie_card(title),
+        card_identity=identity,
+        shipping_price=shipping_price,
+        listing_type=listing_type,
+        bid_count=bid_count,
+        time_left_text=time_left_text,
+        has_best_offer=has_best_offer,
+        negative_signals=tuple(identity.negative_signals.value or ()),
+        matched_players=tuple(matched),
+    )
+
+
+def fetch_ebay_active(cfg, players, token, stats) -> list:
+    """Active listings via the eBay Browse API (dormant unless credentials
+    are set). Unlike the email path, Browse tells us the buying option
+    outright, so listing_type is known rather than inferred."""
     listings = []
     for player in players:
         items = ebay_client.search_active_listings(
@@ -52,41 +161,79 @@ def fetch_ebay_active(cfg, players: list[str], token: str) -> list[Listing]:
             limit=cfg.ebay_active_listing_limit,
         )
         for item in items:
+            stats.listings_extracted += 1
             title = item.get("title", "")
-            matched_player = matcher.match_player(title, [player])
-            if not matched_player:
-                continue
-            identity = card_identity.extract_card_identity(title)
-            if identity.is_lot.value:
-                # A lot-of-N price isn't comparable to a single card's price --
-                # excluded from matching entirely, not just flagged, so it can
-                # never contaminate comps or get reported as a "deal".
-                continue
-            card_type, grader, grade = matcher.detect_grading(title)
             price = ebay_client.extract_price(item)
-            if price is None:
-                continue
-            listings.append(
-                Listing(
-                    id=item.get("itemId", item.get("itemWebUrl", title)),
-                    source="ebay",
-                    title=title,
-                    price=price,
-                    url=item.get("itemWebUrl", ""),
-                    player=matched_player,
-                    card_type=card_type,
-                    grader=grader,
-                    grade=grade,
-                    player_tier=cfg.player_tiers.get(matched_player, "legend"),
-                    is_rookie_card=matcher.detect_rookie_card(title),
-                    card_identity=identity,
-                )
+            buying_options = item.get("buyingOptions") or []
+            listing = _build_listing(
+                cfg,
+                listing_id=item.get("itemId", item.get("itemWebUrl", title)),
+                source="ebay",
+                title=title,
+                price=price,
+                url=item.get("itemWebUrl", ""),
+                players=[player],
+                listing_type=_browse_listing_type(buying_options),
+                has_best_offer="BEST_OFFER" in buying_options,
             )
+            if listing is None:
+                stats.rejections.record(reasons.Reason.NO_PLAYER_MATCH)
+                continue
+            listings.append(listing)
     return listings
 
 
-def fetch_ebay_sold_buckets(cfg, players: list[str], token: str) -> dict[tuple[str, str, str], list[float]]:
-    buckets: dict[tuple[str, str, str], list[float]] = defaultdict(list)
+def _browse_listing_type(buying_options) -> str:
+    if "AUCTION" in buying_options:
+        return "auction"
+    if "FIXED_PRICE" in buying_options:
+        return "fixed_price"
+    return "unknown"
+
+
+def fetch_ebay_alert_active(cfg, stats) -> list:
+    """eBay-via-email-alerts path (see ebay_email_alerts.py)."""
+    counters = {}
+    items = ebay_email_alerts.fetch_alert_listings(
+        cfg.gmail_address,
+        cfg.gmail_app_password,
+        cfg.ebay_alerts_sender_contains,
+        cfg.ebay_alerts_lookback_days,
+        cfg.ebay_alerts_mailbox,
+        counters=counters,
+    )
+    stats.alert_emails_scanned += counters.get("messages", 0)
+    stats.listings_extracted += len(items)
+
+    listings = []
+    for item in items:
+        listing = _build_listing(
+            cfg,
+            listing_id=item["url"],
+            source="ebay-alert",
+            title=item["title"],
+            price=item["price"],
+            url=item["url"],
+            players=cfg.players,
+            shipping_price=item.get("shipping_price"),
+            listing_type=item.get("listing_type", "unknown"),
+            bid_count=item.get("bid_count"),
+            time_left_text=item.get("time_left_text"),
+            has_best_offer=bool(item.get("has_best_offer")),
+        )
+        if listing is None:
+            stats.rejections.record(reasons.Reason.NO_PLAYER_MATCH)
+            continue
+        listings.append(listing)
+    return listings
+
+
+def fetch_ebay_sold_observations(cfg, players, token) -> list:
+    """Real sold comps via Marketplace Insights, as observation dicts with
+    basis="sold" -- the only source in this project that can produce them.
+    Empty when the API isn't available, which is the normal case."""
+    observations = []
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     for player in players:
         items = ebay_client.search_sold_items(
             query=player,
@@ -99,193 +246,448 @@ def fetch_ebay_sold_buckets(cfg, players: list[str], token: str) -> dict[tuple[s
             title = item.get("title", "")
             if not matcher.match_player(title, [player]):
                 continue
-            if card_identity.extract_card_identity(title).is_lot.value:
-                continue  # a lot's price isn't a valid single-card comp
-            card_type, _, _ = matcher.detect_grading(title)
+            identity = card_identity.extract_card_identity(title)
+            if card_identity.is_excluded_from_deals(identity):
+                continue  # a lot / reprint / sealed box price is not a single-card comp
             price = ebay_client.extract_price(item)
-            if price is not None:
-                buckets[(player, card_type, comps.price_tier(price))].append(price)
-    return buckets
-
-
-def active_price_buckets(active_listings: list[Listing]) -> dict[tuple[str, str, str], list[float]]:
-    """Used only as the comps fallback when real sold comps aren't available."""
-    buckets: dict[tuple[str, str, str], list[float]] = defaultdict(list)
-    for listing in active_listings:
-        if listing.price is not None:
-            buckets[(listing.player, listing.card_type, comps.price_tier(listing.price))].append(listing.price)
-    return buckets
-
-
-def fetch_ebay_alert_active(cfg, today_str: str) -> list[Listing]:
-    """eBay-via-email-alerts path (see ebay_email_alerts.py). Returns
-    matched Listings; also records every observed price into the
-    self-building comp history as a side effect, since that's the only
-    comp signal available on this path.
-    """
-    items = ebay_email_alerts.fetch_alert_listings(
-        cfg.gmail_address,
-        cfg.gmail_app_password,
-        cfg.ebay_alerts_sender_contains,
-        cfg.ebay_alerts_lookback_days,
-        cfg.ebay_alerts_mailbox,
-    )
-
-    listings = []
-    for item in items:
-        matched_player = matcher.match_player(item["title"], cfg.players)
-        if not matched_player or item["price"] is None:
-            continue
-        identity = card_identity.extract_card_identity(item["title"])
-        if identity.is_lot.value:
-            # See fetch_ebay_active's identical check -- a lot's price isn't
-            # comparable to a single card's, so it's excluded here rather
-            # than being recorded into price_history or flagged as a deal.
-            continue
-        card_type, grader, grade = matcher.detect_grading(item["title"])
-        listings.append(
-            Listing(
-                id=item["url"],
-                source="ebay-alert",
-                title=item["title"],
-                price=item["price"],
-                url=item["url"],
-                player=matched_player,
-                card_type=card_type,
-                grader=grader,
-                grade=grade,
-                player_tier=cfg.player_tiers.get(matched_player, "legend"),
-                is_rookie_card=matcher.detect_rookie_card(item["title"]),
-                card_identity=identity,
-                shipping_price=item.get("shipping_price"),
+            if price is None:
+                continue
+            grade_info = matcher.detect_grade_details(title)
+            observations.append(
+                {
+                    "price": price,
+                    "date": (item.get("lastSoldDate") or today_str)[:10],
+                    "id": item.get("itemId", title),
+                    "player": player,
+                    "card_type": grade_info.card_type,
+                    "year": identity.year.value,
+                    "set_name": identity.set_name.value,
+                    "parallel": identity.parallel.value,
+                    "card_number": identity.card_number.value,
+                    "grader": grade_info.grader,
+                    "grade": grade_info.grade,
+                    "qualifier": grade_info.qualifier,
+                    "basis": comps.BASIS_SOLD,
+                }
             )
-        )
-    return listings
+    return observations
 
 
-def enrich_truncated_grades(candidate_deals: list[Listing]) -> None:
-    """eBay's alert emails truncate long titles, which can cut a grade
-    number mid-digit (a "PSA 10" showing as "PSA 1..."). For the (small)
-    set of listings that already cleared the deal threshold, try fetching
-    the real title from the item page; if that fails for any reason, mark
-    the grade as uncertain instead of showing a possibly-wrong number.
-    Mutates candidate_deals in place. No-op for listings that aren't
-    graded or don't look truncated -- keeps this occasional, not
-    high-volume. See ebay_email_alerts.fetch_full_title's docstring for
-    why this may not work at all (untested against eBay's real site).
+# --------------------------------------------------------------------------
+# Title repair -- must run BEFORE valuation
+# --------------------------------------------------------------------------
+
+
+def repair_truncated_titles(listings, stats, limit: int = MAX_TITLE_REPAIRS_PER_RUN) -> None:
+    """eBay's alert emails truncate long titles, and a truncated grade parses
+    as the wrong grade ("PSA 1..." -> PSA 1, when it's really PSA 10). Fetch
+    the real title from the item page and re-derive identity from it.
+
+    This runs before valuation on purpose: the old code repaired titles only
+    after a listing had already been flagged, so the comp lookup and the deal
+    decision were both made against a grade that could be off by a factor of
+    ten. See docs/CARDPRO_2_AUDIT.md failure mode #5.
+
+    Fails safe in every direction: any fetch failure leaves the truncated
+    title in place and marks `title_truncated`, which the report shows as a
+    risk. Capped at `limit` fetches per run so a template change can't turn
+    into a burst of requests.
     """
     logger = logging.getLogger("main")
-    checked = fixed = 0
-    for deal in candidate_deals:
-        if deal.card_type != "graded" or not ebay_email_alerts.looks_truncated(deal.title):
+    attempted = repaired = 0
+    for listing in listings:
+        if not ebay_email_alerts.looks_truncated(listing.title):
             continue
-        checked += 1
-        full_title = ebay_email_alerts.fetch_full_title(deal.url)
-        if full_title:
-            deal.title = full_title
-            _, deal.grader, deal.grade = matcher.detect_grading(full_title)
-            fixed += 1
-        else:
-            deal.title_truncated = True
-    if checked:
-        logger.info("Truncated-grade recovery: %d/%d listing(s) fixed via full-title fetch", fixed, checked)
+        if attempted >= limit:
+            listing.title_truncated = True
+            continue
+        attempted += 1
+        full_title = ebay_email_alerts.fetch_full_title(listing.url)
+        if not full_title:
+            listing.title_truncated = True
+            continue
+
+        repaired += 1
+        listing.title = full_title
+        identity = card_identity.extract_card_identity(full_title)
+        grade_info = matcher.detect_grade_details(full_title)
+        listing.card_identity = identity
+        listing.card_type = grade_info.card_type
+        listing.grader = grade_info.grader
+        listing.grade = grade_info.grade
+        listing.is_rookie_card = matcher.detect_rookie_card(full_title)
+        listing.negative_signals = tuple(identity.negative_signals.value or ())
+        listing.title_truncated = False
+
+    if attempted:
+        logger.info("Truncated titles: %d/%d repaired before valuation", repaired, attempted)
+    if attempted >= limit:
+        stats.warn(
+            "Hit the {}-per-run cap on truncated-title repairs. If that keeps happening, "
+            "eBay probably changed their email template.".format(limit)
+        )
 
 
-def build_craigslist_links(cfg, players: list[str]) -> dict[str, str]:
+# --------------------------------------------------------------------------
+# Observations
+# --------------------------------------------------------------------------
+
+
+def listings_as_observations(listings, today_str: str) -> list:
+    """Today's asking prices as comp observations, for a source that has no
+    persisted corpus of its own (the eBay API path).
+
+    Sold observations always win: a bucket's `basis` is only "sold" when every
+    point in it is a real transaction, so mixing these in downgrades the
+    bucket to asking-basis and caps its confidence -- which is the honest
+    outcome, not a loss. Auctions and hard-blocked listings are excluded for
+    the same reasons as record_observations.
+    """
+    observations = []
+    for listing in listings:
+        if listing.price is None or listing.is_auction:
+            continue
+        identity = listing.card_identity
+        if identity is not None and card_identity.is_excluded_from_deals(identity):
+            continue
+        grade_info = matcher.detect_grade_details(listing.title)
+        observations.append(
+            {
+                "price": listing.price,
+                "date": today_str,
+                "id": listing.id,
+                "player": listing.player,
+                "card_type": listing.card_type,
+                "year": identity.year.value if identity else None,
+                "set_name": identity.set_name.value if identity else None,
+                "parallel": identity.parallel.value if identity else None,
+                "card_number": identity.card_number.value if identity else None,
+                "grader": listing.grader,
+                "grade": listing.grade,
+                "qualifier": grade_info.qualifier,
+                "basis": comps.BASIS_ASKING,
+            }
+        )
+    return observations
+
+
+def record_observations(listings, history, today_str: str) -> int:
+    """Append each listing's asking price to the self-built comp corpus.
+
+    Auctions are deliberately NOT recorded: an auction's current bid is not
+    a price, and letting one into the comp corpus would poison every future
+    valuation of that card with a number that was never paid. Listings with
+    a hard negative signal (reprint, lot, sealed box) are excluded for the
+    same reason -- their price isn't the price of the card.
+    """
+    recorded = 0
+    for listing in listings:
+        if listing.price is None or listing.is_auction:
+            continue
+        identity = listing.card_identity
+        if identity is not None and card_identity.is_excluded_from_deals(identity):
+            continue
+        grade_info = matcher.detect_grade_details(listing.title)
+        price_history.record(
+            history,
+            listing.player,
+            listing.card_type,
+            listing.price,
+            today_str,
+            listing.id,
+            year=identity.year.value if identity else None,
+            set_name=identity.set_name.value if identity else None,
+            parallel=identity.parallel.value if identity else None,
+            card_number=identity.card_number.value if identity else None,
+            grader=listing.grader,
+            grade=listing.grade,
+            qualifier=grade_info.qualifier,
+            print_run=identity.print_run.value if identity else None,
+            basis=comps.BASIS_ASKING,
+        )
+        recorded += 1
+    return recorded
+
+
+# --------------------------------------------------------------------------
+# Evaluation -- the single path both sources go through
+# --------------------------------------------------------------------------
+
+
+def _fee_model(cfg):
+    return economics.FeeModel(
+        marketplace_fee_pct=cfg.fee_marketplace_pct,
+        marketplace_fixed_fee=cfg.fee_marketplace_fixed,
+        payment_fee_pct=cfg.fee_payment_pct,
+        outbound_shipping=cfg.outbound_shipping,
+        supplies=cfg.supplies_cost,
+        sales_tax_pct=cfg.sales_tax_pct,
+    )
+
+
+def _count_identity(listing, stats) -> None:
+    identity = listing.card_identity
+    known = 0
+    if identity is not None:
+        known = sum(
+            1
+            for field in (identity.year, identity.set_name, identity.parallel, identity.card_number)
+            if field.value is not None
+        )
+    if known >= 4:
+        stats.identity_exact += 1
+    elif known:
+        stats.identity_partial += 1
+    else:
+        stats.identity_none += 1
+
+
+def _count_shape(listing, stats) -> None:
+    if listing.listing_type == "auction":
+        stats.auctions += 1
+    elif listing.listing_type == "fixed_price":
+        stats.fixed_price += 1
+    else:
+        stats.listing_type_unknown += 1
+    if listing.shipping_price is None:
+        stats.shipping_unknown += 1
+    else:
+        stats.shipping_known += 1
+
+
+def evaluate_listings(listings, engine, cfg, stats) -> None:
+    """Value every listing and decide what, if anything, it is.
+
+    Sets `rejection_reason` on everything that does not become an
+    opportunity, so the run can account for every listing it saw. A listing
+    can carry a rejection reason and still appear in the report (as an
+    auction, a target hit, or in NEEDS REVIEW) -- the reason explains why it
+    isn't being called a deal, not that it was thrown away.
+    """
+    fees = _fee_model(cfg)
+
+    if not cfg.require_flag_eligible_comp:
+        # You turned this off deliberately, so CardPro will do it -- but it
+        # will not do it quietly. Context-only levels are the price-tier
+        # bucket (defined by price, so the cheap end of every bucket reads as
+        # under market) and same_set (parallel unknown on both sides). Both
+        # produced real false positives in production; see
+        # docs/CARDPRO_2_AUDIT.md failure modes #1 and #3.
+        stats.warn(
+            "valuation.require_flag_eligible_comp is FALSE, so deals may be declared from "
+            "context-only comps -- including the price-bracket level, which is defined by "
+            "price and therefore cannot be evidence about price. Every one of v1's false "
+            "positives came from exactly this. Treat anything flagged today at a "
+            "context-only level as unverified."
+        )
+
+    for listing in listings:
+        stats.listings_matched_to_watchlist += 1
+        _count_identity(listing, stats)
+        _count_shape(listing, stats)
+
+        if listing.price is None:
+            listing.rejection_reason = reasons.Reason.NO_PRICE
+            stats.rejections.record(reasons.Reason.NO_PRICE, listing.id)
+            continue
+
+        identity = listing.card_identity
+        if identity is not None and card_identity.is_excluded_from_deals(identity):
+            blocking = [s for s in listing.negative_signals if s in SIGNAL_TO_REASON]
+            reason = SIGNAL_TO_REASON[blocking[0]] if blocking else reasons.Reason.IDENTITY_UNCERTAIN
+            listing.rejection_reason = reason
+            stats.rejections.record(reason, listing.id)
+            stats.blocked_by_negative_signal += 1
+            continue
+
+        if len(listing.matched_players) > 1:
+            # A dual/triple auto is a different market from either player's
+            # single card, and no comp bucket here represents it.
+            listing.rejection_reason = reasons.Reason.MULTI_PLAYER_CARD
+            stats.rejections.record(reasons.Reason.MULTI_PLAYER_CARD, listing.id)
+            continue
+
+        listing.desirable_attributes = desirability.attributes_of(listing)
+        listing.is_cheap = cfg.cheap_cards_enabled and listing.price < cfg.cheap_price_ceiling
+
+        if (
+            listing.is_cheap
+            and cfg.cheap_require_desirable_attribute
+            and desirability.is_commodity(listing, cfg.cheap_price_ceiling)
+        ):
+            # Cheap is fine; cheap AND indistinguishable is not. There are
+            # thousands of base commons and a 60%-off base common is still a
+            # base common. Rejected with a stated reason and counted, not
+            # silently dropped -- see config/settings.json "cheap_cards".
+            listing.rejection_reason = reasons.Reason.COMMON_CARD
+            stats.rejections.record(reasons.Reason.COMMON_CARD, listing.id)
+            continue
+
+        listing.target_hit = targets.best_hit(
+            cfg.target_cards,
+            player=listing.player,
+            total_cost=listing.total_cost,
+            year=identity.year.value if identity else None,
+            set_name=identity.set_name.value if identity else None,
+            parallel=identity.parallel.value if identity else None,
+            card_number=identity.card_number.value if identity else None,
+            grader=listing.grader,
+            grade=listing.grade,
+            card_type=listing.card_type,
+        )
+
+        grade_info = matcher.detect_grade_details(listing.title)
+        match = engine.lookup(
+            player=listing.player,
+            card_type=listing.card_type,
+            price=listing.price,
+            grader=listing.grader,
+            grade=listing.grade,
+            qualifier=grade_info.qualifier,
+            year=identity.year.value if identity else None,
+            set_name=identity.set_name.value if identity else None,
+            parallel=identity.parallel.value if identity else None,
+            card_number=identity.card_number.value if identity else None,
+            # A listing must never be part of the comp set used to judge it.
+            exclude_id=listing.id,
+        )
+
+        if match is None:
+            stats.unvalued += 1
+            listing.rejection_reason = reasons.Reason.NO_COMP_AT_ANY_LEVEL
+            stats.rejections.record(reasons.Reason.NO_COMP_AT_ANY_LEVEL, listing.id)
+            continue
+
+        stats.valued += 1
+        listing.comp_match = match
+        listing.market_value = match.stats.median
+        listing.comp_median = match.stats.median
+        listing.comp_sample_size = match.stats.sample_size
+        listing.comp_is_fallback = match.stats.basis == comps.BASIS_ASKING
+        listing.comp_level_matched = match.level
+        listing.comp_confidence = match.confidence
+        listing.dollar_savings = match.stats.median - listing.total_cost
+        listing.pct_under_market = listing.dollar_savings / match.stats.median * 100 if match.stats.median else 0.0
+        listing.economics = economics.evaluate(
+            economics.Acquisition(
+                price=listing.price, shipping=listing.shipping_price, sales_tax_pct=cfg.sales_tax_pct
+            ),
+            match.stats.median,
+            fees,
+            resale_haircut_pct=cfg.resale_haircut_pct,
+        )
+        # Below roughly $10 a card, postage and fees eat the whole spread, so
+        # a negative profit here is arithmetic, not a warning. The report says
+        # "collector buy" rather than showing a scary ROI on a card nobody
+        # would ever flip.
+        listing.resale_uneconomic = listing.economics.expected_profit <= 0
+
+        if listing.is_auction:
+            listing.max_rational_bid = economics.max_rational_bid(
+                match.stats.median,
+                required_margin_pct=cfg.auction_required_margin_pct,
+                shipping_in=listing.shipping_price,
+                fees=fees,
+            )
+            # A current bid is not a price, so an auction is never a
+            # confirmed deal no matter how far under market it sits. It gets
+            # its own report section and its own math instead.
+            listing.rejection_reason = reasons.Reason.AUCTION_CURRENT_BID_NOT_A_PRICE
+            stats.rejections.record(reasons.Reason.AUCTION_CURRENT_BID_NOT_A_PRICE, listing.id)
+            continue
+
+        if not match.flag_eligible and cfg.require_flag_eligible_comp:
+            blocked = match.blocked_reasons or ("context_only_level",)
+            reason = BLOCKED_TO_REASON.get(blocked[0], reasons.Reason.CONTEXT_ONLY_LEVEL)
+            listing.rejection_reason = reason
+            stats.rejections.record(reason, listing.id)
+            continue
+
+        stats.valued_flag_eligible += 1
+
+        # Cheap cards clear a higher percentage bar and a lower dollar bar.
+        # A flat dollar floor is the wrong shape at both ends: $10 excluded a
+        # $4 card worth $12, while being trivially met by anything expensive.
+        required_pct = cfg.cheap_min_discount_pct if listing.is_cheap else cfg.discount_threshold_pct
+        required_savings = (
+            cfg.cheap_min_savings_dollars if listing.is_cheap else cfg.min_savings_dollars
+        )
+
+        if listing.pct_under_market < required_pct:
+            listing.rejection_reason = reasons.Reason.BELOW_DISCOUNT_THRESHOLD
+            stats.rejections.record(reasons.Reason.BELOW_DISCOUNT_THRESHOLD, listing.id)
+            continue
+        if listing.dollar_savings < required_savings:
+            listing.rejection_reason = reasons.Reason.BELOW_MIN_SAVINGS
+            stats.rejections.record(reasons.Reason.BELOW_MIN_SAVINGS, listing.id)
+            continue
+
+        listing.is_opportunity = True
+        stats.opportunities_reported += 1
+
+
+def apply_dedupe(listings, seen, today_str, stats) -> list:
+    """Suppress opportunities already reported at the same or a higher price,
+    and mark genuine price drops. Everything else (auctions, target hits,
+    needs-review) passes through untouched -- deduping those would hide an
+    auction that's still live, which is the opposite of useful.
+    """
+    kept = []
+    for listing in listings:
+        if not listing.is_opportunity:
+            kept.append(listing)
+            continue
+
+        prior = seen.get(listing.id)
+        if prior is None:
+            dedupe.record_flagged(listing.id, listing.price, seen, today_str)
+            kept.append(listing)
+            continue
+
+        if listing.price < prior["price"]:
+            listing.is_price_drop = True
+            listing.previous_price = prior["price"]
+            stats.price_drops += 1
+            dedupe.record_flagged(listing.id, listing.price, seen, today_str)
+            kept.append(listing)
+            continue
+
+        listing.is_opportunity = False
+        listing.rejection_reason = reasons.Reason.PRICE_NOT_DROPPED
+        stats.rejections.record(reasons.Reason.PRICE_NOT_DROPPED, listing.id)
+        stats.duplicates_suppressed += 1
+        # evaluate_listings already counted this as an opportunity; dedupe
+        # is taking it back, so the "every listing is accounted for"
+        # invariant has to stay true through this stage too.
+        stats.opportunities_reported -= 1
+        kept.append(listing)
+    return kept
+
+
+def build_craigslist_links(cfg, players) -> dict:
     return {
         player: craigslist_links.search_url(f"{player} card", cfg.craigslist_site, cfg.craigslist_category)
         for player in players
     }
 
 
-def flag_deals(
-    active_listings: list[Listing],
-    comp_table: dict[tuple[str, str, str], comps.CompStats],
-    threshold_pct: float,
-    min_savings_dollars: float = 0,
-) -> list[Listing]:
-    """A listing is flagged only if it clears BOTH gates: threshold_pct
-    (relative -- % under market) AND min_savings_dollars (absolute -- real
-    dollars saved). Percent alone lets trivial deals through (50% off a $5
-    common is still just $2.50); dollars alone would flag a $10 discount on
-    a $10,000 card that's barely below market. Both together is what
-    "worth your time" actually means.
-
-    A listing is compared only against comps in its own price tier (see
-    comps.price_tier) -- looked up using the listing's own price -- so a
-    $1 common isn't measured against a median pulled from $90 parallels.
-
-    Savings are computed against total_cost (price + shipping, when
-    shipping is known -- see models.Listing.total_cost), not price alone,
-    so a $40 card with $15 shipping isn't reported as a $40 opportunity.
-    """
-    flagged = []
-    for listing in active_listings:
-        if listing.price is None:
-            continue
-        stats = comp_table.get((listing.player, listing.card_type, comps.price_tier(listing.price)))
-        if stats is None:
-            continue
-        listing.comp_median = stats.median
-        listing.comp_sample_size = stats.sample_size
-        listing.comp_is_fallback = stats.is_fallback
-        dollar_savings = stats.median - listing.total_cost
-        pct_under = dollar_savings / stats.median * 100
-        listing.pct_under_market = pct_under
-        listing.dollar_savings = dollar_savings
-        if pct_under >= threshold_pct and dollar_savings >= min_savings_dollars:
-            flagged.append(listing)
-    return flagged
-
-
-def flag_deals_hierarchical(
-    active_listings: list[Listing],
-    hier_table: dict[str, dict[tuple, comps.CompStats]],
-    threshold_pct: float,
-    min_savings_dollars: float = 0,
-) -> list[Listing]:
-    """Same two-gate deal logic as flag_deals (percent AND dollar), but
-    looks the comp up through comps.lookup_hierarchical_comp's
-    exact -> near_exact -> family -> price_tier levels instead of a single
-    price-tier bucket -- see comps.py module docstring. Used on the
-    eBay-alerts path, where every listing already has card_identity set
-    (see fetch_ebay_alert_active). Sets comp_level_matched/comp_confidence
-    on the listing so the report can show how strong the match actually was.
-    Savings are computed against total_cost (price + shipping when known),
-    same reasoning as flag_deals -- see its docstring.
-    """
-    flagged = []
-    for listing in active_listings:
-        if listing.price is None:
-            continue
+def build_search_suggestions(cfg, listings) -> dict:
+    """Saved searches worth adding, for the players where today's data shows
+    no sign of graded/auto/numbered coverage. See src/search_terms.py for
+    why this matters: 99.3% of everything observed so far has been raw."""
+    observed = defaultdict(set)
+    for listing in listings:
+        if listing.card_type == "graded":
+            observed[listing.player].add("psa")
         identity = listing.card_identity
-        result = comps.lookup_hierarchical_comp(
-            hier_table,
-            player=listing.player,
-            card_type=listing.card_type,
-            price=listing.price,
-            grader=listing.grader,
-            grade=listing.grade,
-            year=identity.year.value if identity else None,
-            set_name=identity.set_name.value if identity else None,
-            parallel=identity.parallel.value if identity else None,
-            card_number=identity.card_number.value if identity else None,
-        )
-        if result is None:
-            continue
-        stats, level = result
-        listing.comp_median = stats.median
-        listing.comp_sample_size = stats.sample_size
-        listing.comp_is_fallback = stats.is_fallback
-        listing.comp_level_matched = level
-        listing.comp_confidence = comps.CONFIDENCE_BY_LEVEL[level]
-        dollar_savings = stats.median - listing.total_cost
-        pct_under = dollar_savings / stats.median * 100
-        listing.pct_under_market = pct_under
-        listing.dollar_savings = dollar_savings
-        if pct_under >= threshold_pct and dollar_savings >= min_savings_dollars:
-            flagged.append(listing)
-    return flagged
+        if identity is not None and identity.is_autograph.value:
+            observed[listing.player].add("auto")
+    return search_terms.coverage_gaps(cfg.players, observed)
+
+
+# --------------------------------------------------------------------------
+# Orchestration
+# --------------------------------------------------------------------------
 
 
 def run(args: argparse.Namespace) -> None:
@@ -295,65 +697,42 @@ def run(args: argparse.Namespace) -> None:
     cfg = load_config()
     today = datetime.now(timezone.utc)
     today_str = today.strftime("%Y-%m-%d")
+    stats = observability.RunStats()
 
     ebay_api_enabled = bool(cfg.ebay_client_id and cfg.ebay_client_secret)
     ebay_data_available = ebay_api_enabled or cfg.ebay_alerts_enabled
-    candidate_deals: list[Listing] = []
+    listings = []
+    observations = []
+    history = None
 
     if ebay_api_enabled:
         token = ebay_client.get_app_token(cfg.ebay_client_id, cfg.ebay_client_secret)
-
         logger.info("Fetching eBay active listings for %d players", len(cfg.players))
-        ebay_active = fetch_ebay_active(cfg, cfg.players, token)
-
+        listings = fetch_ebay_active(cfg, cfg.players, token, stats)
         logger.info("Fetching eBay sold comps for %d players", len(cfg.players))
-        sold_buckets = fetch_ebay_sold_buckets(cfg, cfg.players, token)
-
-        fallback_buckets = active_price_buckets(ebay_active)
-        comp_table = comps.build_comp_table(sold_buckets, cfg.ebay_min_comps_required, fallback_buckets)
-        logger.info("Built comps for %d (player, card_type) buckets", len(comp_table))
-
-        candidate_deals = flag_deals(ebay_active, comp_table, cfg.discount_threshold_pct, cfg.min_savings_dollars)
-        logger.info("%d listing(s) clear the %.0f%% discount threshold", len(candidate_deals), cfg.discount_threshold_pct)
+        observations = fetch_ebay_sold_observations(cfg, cfg.players, token)
+        logger.info("%d real sold observation(s) available", len(observations))
+        # Marketplace Insights access is normally declined, in which case the
+        # sold list is empty. Today's active listings still give the engine
+        # something to work with -- as asking-basis observations, which are
+        # capped at "medium" confidence and can only reach a flag-eligible
+        # level when the card is fully identified.
+        observations.extend(listings_as_observations(listings, today_str))
 
     elif cfg.ebay_alerts_enabled:
         logger.info("eBay API unavailable -- using saved-search email alerts (IMAP) instead")
-        ebay_active = fetch_ebay_alert_active(cfg, today_str)
-        logger.info("Matched %d listing(s) from eBay alert emails", len(ebay_active))
+        listings = fetch_ebay_alert_active(cfg, stats)
+        logger.info("Matched %d listing(s) from eBay alert emails", len(listings))
+
+        # Repair truncated titles FIRST -- a wrong grade here becomes a wrong
+        # valuation everywhere downstream.
+        repair_truncated_titles(listings, stats)
 
         history = price_history.load(cfg.ebay_alert_price_history_path)
-        for listing in ebay_active:
-            identity = listing.card_identity
-            price_history.record(
-                history,
-                listing.player,
-                listing.card_type,
-                listing.price,
-                today_str,
-                listing.id,
-                year=identity.year.value if identity else None,
-                set_name=identity.set_name.value if identity else None,
-                parallel=identity.parallel.value if identity else None,
-                card_number=identity.card_number.value if identity else None,
-                grader=listing.grader,
-                grade=listing.grade,
-            )
+        recorded = record_observations(listings, history, today_str)
+        logger.info("Recorded %d asking-price observation(s) (auctions and blocked listings excluded)", recorded)
         history = price_history.prune_old(history, cfg.ebay_alert_price_history_max_age_days, today)
-
         observations = price_history.deduped_observations(history)
-        hier_table = comps.build_hierarchical_comp_table(observations, cfg.ebay_min_comps_required)
-        logger.info(
-            "Built hierarchical comps from accumulated alert history: %d exact, %d near-exact, %d family, %d price-tier bucket(s)",
-            len(hier_table["exact"]), len(hier_table["near_exact"]), len(hier_table["family"]), len(hier_table["price_tier"]),
-        )
-
-        candidate_deals = flag_deals_hierarchical(ebay_active, hier_table, cfg.discount_threshold_pct, cfg.min_savings_dollars)
-        logger.info("%d listing(s) clear the %.0f%% discount threshold", len(candidate_deals), cfg.discount_threshold_pct)
-
-        enrich_truncated_grades(candidate_deals)
-
-        if not args.dry_run:
-            price_history.save(cfg.ebay_alert_price_history_path, history)
 
     else:
         logger.warning(
@@ -361,38 +740,71 @@ def run(args: argparse.Namespace) -> None:
             "sending Craigslist links only"
         )
 
-    cl_links = build_craigslist_links(cfg, cfg.players)
+    engine = comps.CompEngine(
+        observations,
+        min_comps_required=cfg.valuation_min_comps_required,
+        today=today,
+        half_life_days=cfg.valuation_half_life_days,
+        stale_after_days=cfg.valuation_stale_after_days,
+        max_dispersion=cfg.valuation_max_dispersion,
+        mad_threshold=cfg.valuation_mad_threshold,
+    )
+    coverage = engine.coverage()
+    logger.info(
+        "Comp buckets: %s (from %d observation(s))",
+        ", ".join("{} {}".format(count, level) for level, count in coverage.items()),
+        len(observations),
+    )
+    if not any(coverage.get(level) for level in comps.FLAG_ELIGIBLE_LEVELS):
+        stats.warn(
+            "No comp bucket anywhere is strong enough to declare a deal from (needs an "
+            "identified card at a known grade). Nothing can be flagged today -- that is the "
+            "system being honest, not broken. See SEARCH COVERAGE below."
+        )
+
+    evaluate_listings(listings, engine, cfg, stats)
 
     seen = dedupe.load_seen(cfg.seen_listings_path)
-    new_deals = []
-    for deal in candidate_deals:
-        if dedupe.is_new_or_price_drop(deal.id, deal.price, seen):
-            new_deals.append(deal)
-            dedupe.record_flagged(deal.id, deal.price, seen, today_str)
-    logger.info("%d deal(s) are new or price-dropped since last run", len(new_deals))
+    listings = apply_dedupe(listings, seen, today_str, stats)
+    logger.info(
+        "%d opportunity(ies) after dedupe; %d listing(s) not reported, top reasons: %s",
+        stats.opportunities_reported,
+        stats.rejections.total(),
+        "; ".join(stats.rejections.summary_lines()[:3]) or "none",
+    )
 
     subject, body = report.build_report(
-        new_deals, cfg.discount_threshold_pct, date.today(), cl_links, ebay_data_available, cfg.min_savings_dollars
+        listings,
+        cfg.discount_threshold_pct,
+        date.today(),
+        build_craigslist_links(cfg, cfg.players),
+        ebay_data_available,
+        cfg.min_savings_dollars,
+        stats=stats,
+        search_suggestions=build_search_suggestions(cfg, listings),
+        immediate_min_savings=cfg.immediate_alert_min_savings_dollars,
+        immediate_min_discount_pct=cfg.immediate_alert_min_discount_pct,
+        ending_soon_hours=cfg.auction_ending_soon_hours,
     )
     subject = f"{cfg.email_subject_prefix} {subject}"
 
     if args.dry_run:
         print(f"SUBJECT: {subject}\n\n{body}")
-        logger.info("Dry run -- not sending email or updating dedupe file")
+        logger.info("Dry run -- not sending email or updating state files")
         return
 
     emailer.send_email(subject, body, cfg.gmail_address, cfg.gmail_app_password, cfg.email_to)
 
+    if history is not None:
+        price_history.save(cfg.ebay_alert_price_history_path, history)
     seen = dedupe.prune_old(seen, cfg.prune_after_days, today)
     dedupe.save_seen(cfg.seen_listings_path, seen)
     logger.info("Done")
 
 
 def _notify_failure() -> None:
-    """Best-effort failure email so a crashed cron run doesn't fail silently
-    -- mirrors the "send something, not silence" rule that already applies
-    to the zero-deals case, extended to actual errors.
-    """
+    """Best-effort failure email so a crashed run doesn't fail silently --
+    "never go silent" applies to errors too, not just quiet days."""
     logger = logging.getLogger("main")
     try:
         cfg = load_config()
@@ -417,7 +829,9 @@ def _notify_failure() -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dry-run", action="store_true", help="Print the report instead of emailing it; don't touch the dedupe file")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Print the report instead of emailing it; don't write state files"
+    )
     args = parser.parse_args()
 
     setup_logging()

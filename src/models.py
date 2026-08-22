@@ -35,6 +35,69 @@ class Listing:
     comp_level_matched: Optional[str] = None  # "exact" | "near_exact" | "family" | "price_tier" -- see comps.py
     comp_confidence: Optional[str] = None  # "high" | "medium" | "low" -- derived from comp_level_matched
 
+    # --- CardPro 2.0 fields -------------------------------------------------
+    # Listing type. "unknown" is a real answer, not a placeholder: eBay's
+    # alert emails don't always say, and an auction's current bid is not a
+    # price. Never default this to "fixed_price" -- see
+    # ebay_email_alerts._detect_listing_type.
+    listing_type: str = "unknown"
+    bid_count: Optional[int] = None
+    time_left_text: Optional[str] = None  # raw countdown text, e.g. "2d 04h"
+    has_best_offer: bool = False
+
+    # Canonical negative signals found in the title (reprint, custom, sealed
+    # product, break slot, ...) -- see card_identity.NEGATIVE_SIGNAL_LABELS.
+    negative_signals: tuple = ()
+    matched_players: tuple = ()  # every watchlist player in the title; >1 means a multi-player card
+
+    # Why this listing did NOT become a reported opportunity, or why it was
+    # downgraded. Exactly one canonical reason from src/reasons.py. Nothing
+    # leaves the pipeline unexplained -- 21% of listings used to vanish
+    # silently, which made it impossible to tell "found nothing" from "broke".
+    rejection_reason: Optional[str] = None
+
+    # The full comp match (comps.CompMatch) backing market_value: level,
+    # confidence, sample size, range, recency, dispersion, why it was or
+    # wasn't allowed to declare a deal. Kept whole rather than flattened so
+    # the report can explain the valuation instead of asserting it.
+    comp_match: Optional[object] = None
+    market_value: Optional[float] = None  # the estimate actually used, from comp_match.stats.median
+
+    # Deal economics (economics.DealEconomics): acquisition cost, fees,
+    # expected net proceeds, profit, ROI, and the assumptions behind them.
+    economics: Optional[object] = None
+    max_rational_bid: Optional[float] = None  # auctions only -- highest bid that still keeps your margin
+
+    # An explicit acquisition target this listing satisfies (targets.TargetHit),
+    # or None. A target hit is NOT a claim that the card is underpriced -- it
+    # means "the card you asked for is available at the price you set". The two
+    # are reported separately on purpose.
+    target_hit: Optional[object] = None
+
+    # Set by the pipeline once every gate has run. is_opportunity means
+    # "CardPro is willing to stand behind this as below market": it requires a
+    # flag-eligible comp, so it is never true off a context-only level.
+    # Attributes that make a copy of this card scarce or wanted (rookie,
+    # auto, patch, serial numbering, parallel, grade) -- see
+    # src/desirability.py. Kept separate from every price figure: a card can
+    # be underpriced and undesirable, or desirable and badly priced, and
+    # collapsing the two would hide which is true.
+    desirable_attributes: tuple = ()
+    is_cheap: bool = False  # below the cheap_cards price ceiling; different rules apply
+    resale_uneconomic: bool = False  # fees + postage exceed the spread -- a collector buy, not a flip
+
+    is_opportunity: bool = False
+    is_price_drop: bool = False  # seen before, and cheaper than last time
+    previous_price: Optional[float] = None  # what it was last time we saw it, for price drops
+
+    @property
+    def is_auction(self) -> bool:
+        return self.listing_type == "auction"
+
+    @property
+    def listing_type_known(self) -> bool:
+        return self.listing_type in ("auction", "fixed_price")
+
     @property
     def total_cost(self) -> Optional[float]:
         """Price + shipping when shipping is known, else just price (the
