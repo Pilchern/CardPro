@@ -573,3 +573,44 @@ class TestListingsAsObservations:
         )
         assert match.stats.basis == comps.BASIS_ASKING
         assert match.confidence != "high"
+
+
+class TestFlagEligibilityOverride:
+    """`valuation.require_flag_eligible_comp` was loaded from config but
+    never read -- setting it to false silently did nothing. It is a real
+    escape hatch now, and a loud one."""
+
+    def _context_only_setup(self):
+        observations = [
+            observation(
+                p, "o%d" % i, card_type="raw", grader=None, grade=None,
+                parallel=None, card_number=None, set_name=None, year=None,
+            )
+            for i, p in enumerate([40.0, 45.0, 50.0, 55.0, 60.0])
+        ]
+        listing = make_listing("Caleb Williams rookie card", 25.0, listing_id="C1", listing_type="fixed_price")
+        return observations, listing
+
+    def test_default_refuses_to_flag_from_a_context_only_comp(self):
+        observations, listing = self._context_only_setup()
+        stats = observability.RunStats()
+        main_module.evaluate_listings([listing], engine_for(observations), fake_cfg(), stats)
+        assert listing.is_opportunity is False
+        assert listing.rejection_reason == reasons.Reason.CONTEXT_ONLY_LEVEL
+
+    def test_override_allows_it_but_warns_loudly(self):
+        observations, listing = self._context_only_setup()
+        stats = observability.RunStats()
+        cfg = fake_cfg(require_flag_eligible_comp=False)
+        main_module.evaluate_listings([listing], engine_for(observations), cfg, stats)
+
+        assert listing.is_opportunity is True
+        assert listing.comp_match.level == "price_tier"
+        warning = " ".join(stats.warnings)
+        assert "require_flag_eligible_comp is FALSE" in warning
+        assert "cannot be evidence about price" in warning
+
+    def test_override_does_not_warn_when_left_on(self):
+        stats = observability.RunStats()
+        main_module.evaluate_listings([], engine_for([]), fake_cfg(), stats)
+        assert stats.warnings == []

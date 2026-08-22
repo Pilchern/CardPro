@@ -465,6 +465,21 @@ def evaluate_listings(listings, engine, cfg, stats) -> None:
     """
     fees = _fee_model(cfg)
 
+    if not cfg.require_flag_eligible_comp:
+        # You turned this off deliberately, so CardPro will do it -- but it
+        # will not do it quietly. Context-only levels are the price-tier
+        # bucket (defined by price, so the cheap end of every bucket reads as
+        # under market) and same_set (parallel unknown on both sides). Both
+        # produced real false positives in production; see
+        # docs/CARDPRO_2_AUDIT.md failure modes #1 and #3.
+        stats.warn(
+            "valuation.require_flag_eligible_comp is FALSE, so deals may be declared from "
+            "context-only comps -- including the price-bracket level, which is defined by "
+            "price and therefore cannot be evidence about price. Every one of v1's false "
+            "positives came from exactly this. Treat anything flagged today at a "
+            "context-only level as unverified."
+        )
+
     for listing in listings:
         stats.listings_matched_to_watchlist += 1
         _count_identity(listing, stats)
@@ -559,7 +574,7 @@ def evaluate_listings(listings, engine, cfg, stats) -> None:
             stats.rejections.record(reasons.Reason.AUCTION_CURRENT_BID_NOT_A_PRICE, listing.id)
             continue
 
-        if not match.flag_eligible:
+        if not match.flag_eligible and cfg.require_flag_eligible_comp:
             blocked = match.blocked_reasons or ("context_only_level",)
             reason = BLOCKED_TO_REASON.get(blocked[0], reasons.Reason.CONTEXT_ONLY_LEVEL)
             listing.rejection_reason = reason

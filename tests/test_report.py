@@ -13,7 +13,7 @@ Two things are being protected here, and they are different:
 """
 from datetime import date
 
-from src import report
+from src import reasons, report
 from src.card_identity import CardIdentity, Field
 from src.comps import CompMatch, CompStatsV2
 from src.models import Listing
@@ -283,14 +283,19 @@ def test_watch_catches_big_dollar_savings_at_a_modest_percentage():
     """$500 off a $5,000 slab is 10% and obviously worth a look."""
     deal = make_listing(id="big", is_opportunity=False, price=4500.0, market_value=5000.0,
                         pct_under_market=10.0, dollar_savings=500.0)
-    sections = report.classify_sections([deal], threshold_pct=30, min_savings_dollars=100.0)
+    sections = report.classify_sections([deal], threshold_pct=30, immediate_min_savings=150.0)
     assert sections[report.SECTION_WATCH] == [deal]
 
 
-def test_a_zero_dollar_minimum_does_not_turn_watch_into_a_dumping_ground():
-    deal = make_listing(id="tiny", is_opportunity=False, pct_under_market=2.0, dollar_savings=4.0)
-    sections = report.classify_sections([deal], threshold_pct=30, min_savings_dollars=0.0)
+def test_a_modest_dollar_saving_does_not_turn_watch_into_a_dumping_ground():
+    """Measured against the ACT NOW dollar bar, not the ordinary minimum --
+    at a $25 minimum the dollar rule swallowed every mildly discounted
+    listing in the run, price drops included."""
+    deal = make_listing(id="drop", is_opportunity=False, is_price_drop=True, previous_price=260.0,
+                        pct_under_market=12.5, dollar_savings=30.0)
+    sections = report.classify_sections([deal], threshold_pct=30, immediate_min_savings=150.0)
     assert sections[report.SECTION_WATCH] == []
+    assert sections[report.SECTION_PRICE_DROPS] == [deal]
 
 
 def test_needs_review_catches_context_only_comps():
@@ -1140,3 +1145,57 @@ def test_report_never_prints_a_blended_score_or_a_buy_instruction():
     assert "score" not in lowered
     assert "buy now" not in lowered
     assert "you should buy" not in lowered
+
+
+class TestWatchWhy:
+    """The WATCH "Why here" line must name the actual reason with the actual
+    numbers. It used to hedge ("close to your threshold, OR clearing it on
+    percent but not dollars"), which read as nonsense next to a 5% discount
+    that was really parked there for low confidence."""
+
+    def test_below_threshold_states_the_gap(self):
+        deal = make_listing(
+            comp_match=make_match(),
+            market_value=200.0,
+            pct_under_market=14.2,
+            dollar_savings=28.4,
+            is_opportunity=False,
+            rejection_reason=reasons.Reason.BELOW_DISCOUNT_THRESHOLD,
+        )
+        why = report._watch_why(deal, 30.0, 10.0)
+        assert "14.2%" in why
+        assert "30%" in why
+
+    def test_below_min_savings_states_the_dollars(self):
+        deal = make_listing(
+            comp_match=make_match(),
+            market_value=200.0,
+            pct_under_market=32.0,
+            dollar_savings=4.0,
+            is_opportunity=False,
+            rejection_reason=reasons.Reason.BELOW_MIN_SAVINGS,
+        )
+        why = report._watch_why(deal, 30.0, 10.0)
+        assert "$4.00" in why
+        assert "$10.00" in why
+
+    def test_low_confidence_opportunity_says_so(self):
+        deal = make_listing(
+            comp_match=make_match(confidence="low"),
+            market_value=200.0,
+            pct_under_market=40.0,
+            dollar_savings=80.0,
+            is_opportunity=True,
+        )
+        assert "low-confidence" in report._watch_why(deal, 30.0, 10.0)
+
+    def test_the_old_hedging_phrasing_is_gone(self):
+        deal = make_listing(
+            comp_match=make_match(),
+            market_value=200.0,
+            pct_under_market=14.2,
+            dollar_savings=28.4,
+            is_opportunity=False,
+            rejection_reason=reasons.Reason.BELOW_DISCOUNT_THRESHOLD,
+        )
+        assert "or clearing it on percent" not in report._watch_why(deal, 30.0, 10.0)

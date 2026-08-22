@@ -897,7 +897,6 @@ def classify_sections(
     deals: list,
     *,
     threshold_pct: float = 0.0,
-    min_savings_dollars: float = 0.0,
     immediate_min_savings: float = DEFAULT_IMMEDIATE_MIN_SAVINGS,
     immediate_min_discount_pct: float = DEFAULT_IMMEDIATE_MIN_DISCOUNT_PCT,
     ending_soon_hours: float = DEFAULT_ENDING_SOON_HOURS,
@@ -930,6 +929,11 @@ def classify_sections(
       bury the best card of the day under a tier label.
     * ``needs_review`` catches context-only comps AND no-comp-at-all, which
       is the 21% of listings that used to vanish without a trace.
+
+    ``min_savings_dollars`` is deliberately NOT a parameter here: a listing
+    that clears the discount threshold but misses the dollar minimum is
+    already caught by the percentage rule, so accepting the argument would
+    only imply an influence it does not have.
     """
     # Dedupe by LISTING id, not object identity: the same eBay item arriving
     # twice in one run (two saved searches, one card) must not be reported
@@ -987,7 +991,7 @@ def classify_sections(
             continue
         if deal.is_opportunity:  # low confidence, by elimination
             take(SECTION_WATCH, deal)
-        elif _is_close_but_under(deal, threshold_pct, min_savings_dollars):
+        elif _is_close_but_under(deal, threshold_pct, immediate_min_savings):
             take(SECTION_WATCH, deal)
 
     for deal in ranked:
@@ -1005,7 +1009,7 @@ def classify_sections(
     return sections
 
 
-def _is_close_but_under(deal: Listing, threshold_pct: float, min_savings_dollars: float) -> bool:
+def _is_close_but_under(deal: Listing, threshold_pct: float, big_dollar_savings: float) -> bool:
     """A real, flag-eligible comp that just missed the bar. Not an
     opportunity, but a near-miss worth an eye rather than a silent drop.
 
@@ -1014,11 +1018,16 @@ def _is_close_but_under(deal: Listing, threshold_pct: float, min_savings_dollars
 
     * within ``WATCH_CLOSE_FRACTION`` of your discount percentage -- the
       ordinary near-miss; and
-    * already past your dollar minimum on a smaller percentage -- $500 off
-      a $5,000 slab is 10% and is obviously worth a look, and a
-      percentage-only rule would throw it away. Only applies when you have
-      actually set a dollar minimum; with the default of $0 every listing
-      would qualify, which would turn WATCH into a dumping ground.
+    * a large amount of money in absolute terms on a modest percentage --
+      $500 off a $5,000 slab is 10% and is obviously worth a look, and a
+      percentage-only rule would throw it away.
+
+    "Large" is measured against the ACT NOW dollar threshold, not the
+    ordinary minimum-savings setting. That distinction matters: an ordinary
+    minimum is often $10-25, and at that level the dollar rule swallowed
+    every mildly-discounted listing in the run and turned WATCH into a
+    dumping ground -- price drops included, which then never reached their
+    own section.
     """
     match = deal.comp_match
     if match is None or not getattr(match, "flag_eligible", False):
@@ -1027,7 +1036,7 @@ def _is_close_but_under(deal: Listing, threshold_pct: float, min_savings_dollars
         return False
     if deal.pct_under_market >= threshold_pct * WATCH_CLOSE_FRACTION:
         return True
-    return min_savings_dollars > 0 and (deal.dollar_savings or 0.0) >= min_savings_dollars
+    return (deal.dollar_savings or 0.0) >= big_dollar_savings
 
 
 def _identity_untrustworthy(deal: Listing) -> bool:
@@ -1052,7 +1061,8 @@ def _needs_review(deal: Listing) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _render_section(key: str, deals: list, threshold_pct: float, ending_soon_hours: float) -> str:
+def _render_section(key: str, deals: list, threshold_pct: float, ending_soon_hours: float,
+                    min_savings_dollars: float = 0.0) -> str:
     title = SECTION_TITLES[key]
     # A fixed-width rule rather than one measured from the title: an emoji's
     # rendered width varies by client, so a "measured" underline is ragged
@@ -1078,20 +1088,40 @@ def _render_section(key: str, deals: list, threshold_pct: float, ending_soon_hou
             block = _price_drop_block(index, deal)
         else:
             block = _compact_block(
-                index, deal, why=_watch_why(deal, threshold_pct), ending_soon_hours=ending_soon_hours
+                index,
+                deal,
+                why=_watch_why(deal, threshold_pct, min_savings_dollars),
+                ending_soon_hours=ending_soon_hours,
             )
         lines.append(block)
         lines.append("")
     return "\n".join(lines)
 
 
-def _watch_why(deal: Listing, threshold_pct: float) -> str:
+def _watch_why(deal: Listing, threshold_pct: float, min_savings_dollars: float = 0.0) -> str:
+    """Why THIS card is in WATCH rather than acted on.
+
+    Says the actual reason with the actual numbers. An earlier version
+    hedged -- "close to your threshold, or clearing it on percent but not on
+    dollars" -- which forced you to work out which of the two applied, and
+    read as nonsense next to a 5% discount that was really parked here for
+    low confidence.
+    """
     if deal.is_opportunity and _confidence(deal) == "low":
         return "below market, but on a low-confidence comp -- worth watching, not acting on"
-    return (
-        "close to your {:.0f}% threshold without clearing it, or clearing it on percent but "
-        "not on dollars".format(threshold_pct)
-    )
+
+    reason = deal.rejection_reason
+    if reason == reasons.Reason.BELOW_DISCOUNT_THRESHOLD and deal.pct_under_market is not None:
+        return "{} under market, short of your {:.0f}% threshold".format(
+            _pct1(deal.pct_under_market), threshold_pct
+        )
+    if reason == reasons.Reason.BELOW_MIN_SAVINGS and deal.dollar_savings is not None:
+        return "clears {:.0f}% but saves only {}, under your {} minimum".format(
+            threshold_pct, _money(deal.dollar_savings), _money(min_savings_dollars)
+        )
+    if _confidence(deal) == "low":
+        return "the comp behind this is low confidence -- watch it, don't act on it"
+    return "close to your thresholds without clearing them"
 
 
 def _summary_line(sections) -> str:
@@ -1488,7 +1518,6 @@ def build_report(
     sections = classify_sections(
         deals,
         threshold_pct=threshold_pct,
-        min_savings_dollars=min_savings_dollars,
         immediate_min_savings=immediate_min_savings,
         immediate_min_discount_pct=immediate_min_discount_pct,
         ending_soon_hours=ending_soon_hours,
@@ -1512,7 +1541,11 @@ def build_report(
         )
     for key in SECTION_ORDER:
         if sections[key]:
-            blocks.append(_render_section(key, sections[key], threshold_pct, ending_soon_hours))
+            blocks.append(
+                _render_section(
+                    key, sections[key], threshold_pct, ending_soon_hours, min_savings_dollars
+                )
+            )
 
     shown = {deal.id for key in SECTION_ORDER for deal in sections[key]}
     not_shown = len({deal.id for deal in deals}) - len(shown)

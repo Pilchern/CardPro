@@ -1,8 +1,9 @@
-# Card Deal Scraper
+# CardPro — Card Deal Scraper
 
 Daily scan of eBay for underpriced sports card listings on a watchlist,
-emailed to you as a ranked report -- plus ready-to-click Craigslist search
-links, since Craigslist can't be scraped automatically (see below).
+emailed to you as a decision-first, sectioned report -- plus ready-to-click
+Craigslist search links, since Craigslist can't be scraped automatically
+(see below).
 
 **Current status: eBay API access was declined; running on the
 email-alerts path instead.** eBay's developer account application was
@@ -14,77 +15,292 @@ saved-search email alerts" below. Validated against real alert emails
 path takes over automatically with no config changes needed -- it's
 checked first.
 
+**Contents**
+
+- [What changed in 2.0, and why you'll see fewer deals](#what-changed-in-20-and-why-youll-see-fewer-deals)
+- [What it does](#what-it-does)
+- [How a deal is decided](#how-a-deal-is-decided)
+- [Comps: what may and may not declare a deal](#comps-what-may-and-may-not-declare-a-deal)
+- [Cheap, underpriced, flippable, collectible, target](#cheap-underpriced-flippable-collectible-target)
+- [Known limitation: every comp is an asking price](#known-limitation-every-comp-is-an-asking-price)
+- [eBay account declined](#ebay-account-declined)
+- [eBay via saved-search email alerts](#ebay-via-saved-search-email-alerts)
+- [Search coverage: why almost everything you see is a cheap raw card](#search-coverage-why-almost-everything-you-see-is-a-cheap-raw-card)
+- [Why Craigslist isn't scraped](#why-craigslist-isnt-scraped)
+- [Setup](#setup)
+- [Running tests](#running-tests)
+- [Checking the claims yourself: `replay_corpus`](#checking-the-claims-yourself-replay_corpus)
+- [Configuring](#configuring)
+- [Acquisition targets](#acquisition-targets)
+- [How dedupe works](#how-dedupe-works)
+- [Project layout](#project-layout)
+- [The non-negotiables](#the-non-negotiables)
+- [Explicitly out of scope](#explicitly-out-of-scope)
+
+## What changed in 2.0, and why you'll see fewer deals
+
+The most important thing to know before you read a report: **the deal count
+dropped on purpose, and it dropped a long way.**
+
+[`docs/CARDPRO_2_AUDIT.md`](docs/CARDPRO_2_AUDIT.md) audited the system
+against its own production data (563 observations, 280 distinct listings)
+and found the valuation engine wasn't valuing anything. **76% of all
+valuations resolved to a comp bucket defined by price itself** -- the median
+of everything priced $25-$100 is about $44, so anything priced $25-$31 was
+automatically "30% under market". That is not a valuation, it is a
+restatement of the price. Zero exact comps had ever existed in production.
+All fifteen "deals" CardPro had ever flagged were artifacts of that
+circularity, or of broader levels that pooled different parallels and
+different grades together (one was a $1.25 base card reported as 95% under
+market against a bucket containing refractors).
+
+Replaying that exact same corpus through the 2.0 engine flags **zero**
+opportunities where the old one flagged fifteen. You can re-run that
+comparison yourself in about a second -- see
+[`replay_corpus`](#checking-the-claims-yourself-replay_corpus).
+
+So: some mornings the email will say it found nothing. That is the system
+working. A report that says "I found nothing I can stand behind" is worth
+more than one that says "95% under market" about a common.
+
 ## What it does
 
 1. For each player on your watchlist, pulls **active** eBay listings --
    either via the Browse API, or via eBay's own saved-search email alerts
    if the API isn't available (see below for both).
-2. Builds comps (market-value medians) per (player, raw-vs-graded, price
-   tier): real eBay sold data when the API + Marketplace Insights are
-   available, otherwise a self-building history of observed prices (from
-   the API's active listings, or from alert emails) that gets more
-   reliable over time. The price-tier split (under $5 / $5-25 / $25-100 /
-   $100+) exists so a $1 base common never gets measured against a median
-   pulled from $90 numbered parallels of the same player -- see "Comps:
-   why price tiers" below.
-3. Flags an active eBay listing only if it clears **both** gates: 30%+
+2. Extracts a structured identity from each title -- year, season,
+   manufacturer, set, parallel, card number, serial/print run, autograph,
+   memorabilia, lot -- plus grading details (grader, grade, label
+   qualifier, authenticity-only slabs) and negative signals (reprint,
+   replica, custom, digital, facsimile auto, sealed product, break slot,
+   pick-your-card, lot). Anything it can't read stays **unknown**; nothing
+   is ever guessed.
+3. Records every non-auction, non-blocked asking price into a self-building
+   comp corpus, then values each listing against comparable observations of
+   *that card in that grade* -- see
+   [How a deal is decided](#how-a-deal-is-decided).
+4. Flags a fixed-price listing only if it clears **both** gates: 30%+
    (configurable) below its matched comp median, AND at least $10
-   (configurable) in real dollar savings -- percent alone lets trivial
+   (configurable) in real dollar savings, measured against **total cost**
+   (price + shipping + any tax you configure). Percent alone lets trivial
    deals through (50% off a $5 common is still just $2.50), so both
    together is what "worth your time" actually means.
-4. Drops anything already emailed in a prior run, unless its price has
+5. Runs the resale arithmetic -- marketplace fees, outbound shipping,
+   supplies, tax, a resale haircut -- and prints every assumption next to
+   the number it produced.
+6. Drops anything already emailed in a prior run, unless its price has
    dropped further.
-5. Emails you a ranked report -- **ranked by dollar amount saved**, not
-   percent (a $250-off $999 card matters more than a 90%-off $10 one) --
-   with each entry tagged `[YOUNG CORE]` and/or `[ROOKIE CARD]` where they
-   apply, so you can weigh "good value today" against "betting on this
-   player long-term" yourself (see "Value vs. potential tags" below) --
-   plus a Craigslist quick-check link per watchlist player so you can
-   eyeball that source yourself in a few seconds. If no eBay deals
-   qualify, you still get a short "nothing today" email (with the
-   Craigslist links still attached), not silence. If the run crashes outright (network
-   blip, eBay API issue, etc.), you get a short "Scan FAILED" email
-   instead of nothing at all -- same "not silence" principle applied to
-   errors, not just the zero-deals case.
+7. Emails a **sectioned, decision-first report**, each section omitted when
+   empty:
 
-## Comps: why price tiers
+   `ACT NOW` · `TOP OPPORTUNITIES` · `TARGET CARD HITS` ·
+   `INVESTMENT WATCHLIST` · `AUCTIONS ENDING SOON` · `OFFER OPPORTUNITIES` ·
+   `WATCH` · `LOW CONFIDENCE / NEEDS REVIEW` · `PRICE DROPS`
 
-Splitting "raw" into one bucket per player was too coarse: a $1 base
-common and a $90 numbered parallel of the same player are both "raw", and
-averaging their prices together produces a median that doesn't represent
-either one -- in practice this made ordinary $1 commons look like 97%-off
-steals against a comp median that was really describing rare parallels.
-Comps are now bucketed by `(player, card_type, price_tier)`, where a
-listing's own price picks which tier it's compared against (tiers: under
-$5, $5-25, $25-100, $100+ -- see `comps.PRICE_TIERS`).
+   followed by the Craigslist quick-check links, suggested saved searches
+   you don't appear to have yet, and a **SYSTEM HEALTH** footer.
 
-**Accepted tradeoff:** a genuinely rare card that got mistakenly listed
-cheap is now compared only against other cheap-tier items, so it's less
-likely to stand out as an outlier deal than it would have under the old
-(contaminated) bucketing. That's intentional -- it trades a small chance
-of missing a rare fluke for a large reduction in false-positive noise from
-ordinary commons, which is what was actually happening.
+   Within a section, entries are still ranked by **dollar amount saved**,
+   not percent (a $250-off $999 card matters more than a 90%-off $10 one).
+   Each headline entry answers the whole thesis: what the card is, total
+   acquisition cost, estimated market value *with the comp level, sample
+   size, asking-vs-sold basis, price range and recency behind it*, the
+   discount, the resale economics and their assumptions, the confidence
+   **and why it isn't higher**, the risks that would make it wrong, and the
+   link. There is no blended 0-100 "deal score" and there never will be.
 
-## Value vs. potential tags
+   Auctions get their own block that never calls a current bid a price, and
+   shows the maximum bid that still preserves your margin instead.
 
-Flagged deals aren't just "underpriced today" -- they're evaluated on two
-separate, visible dimensions rather than one hidden blended score (this
-project has always avoided black-box ranking, see "Explicitly out of
-scope" below):
+   If nothing qualifies you still get a short "nothing today" email (with
+   the Craigslist links and the health footer attached), not silence. If the
+   run crashes outright (network blip, eBay issue, etc.), you get a short
+   "Scan FAILED" email instead of nothing at all -- same "not silence"
+   principle applied to errors, not just the zero-deals case.
+
+Every listing exits the pipeline with either a slot in the report or exactly
+one recorded reason, counted in the footer (`src/reasons.py`). Nothing is
+dropped silently -- 21% of listings used to vanish with no flag, no count
+and no explanation.
+
+## How a deal is decided
+
+The whole path, in order. Every step can only ever *narrow* what qualifies.
+
+1. **Identity extraction.** Title → player(s), year, set, parallel, card
+   number, print run, auto/memorabilia, negative signals, and grading
+   details. Team names, award names and league names are masked before
+   parallel matching, and a parallel must come from a known vocabulary --
+   `White Sox` used to become parallel `White`.
+2. **Truncation repair, before anything is valued.** eBay truncates long
+   titles in alert emails, and `PSA 1…` parses as PSA 1 when it's really
+   PSA 10. Candidates are re-fetched from the item page and re-parsed
+   *before* the comp lookup (capped at 30 fetches per run). This used to
+   happen after flagging, so the buy decision was made on a grade that could
+   be off by a factor of ten. If the fetch fails, the listing keeps the
+   truncated title and carries "grade uncertain" as a visible risk.
+3. **Market key.** Every card-level comp bucket is segmented by the market
+   the card actually trades in: `raw`, or `graded + grader + grade +
+   qualifier`. PSA 9 and BGS 9 are different markets. PSA 9 and PSA 10 are
+   different markets. PSA 9 with an `OC` (off-centre) qualifier is a third.
+   A slab whose grader or grade can't be read has **no known market** and is
+   excluded from grade-segmented levels rather than pooled with every other
+   slab.
+4. **Comp level.** First level that applies *and* has enough surviving
+   samples wins. A level only applies when the listing itself knows every
+   field that level keys on -- missing means skip the level, never a guessed
+   match. Only the top two may declare a deal; see the next section.
+5. **Quality gates**, applied in this order:
+   - **self-exclusion** -- a listing is removed from the comp set used to
+     judge it, by listing id;
+   - **outlier trim** -- MAD-based, default 3.5 scaled deviations, and only
+     when there are at least 5 points (with 3 or 4, "outlier" is
+     indistinguishable from "the market");
+   - **recency weighting** -- weighted median with a 30-day half-life, so a
+     month-old asking price counts half as much as today's;
+   - **minimum sample** -- default 3 surviving points, or the level doesn't
+     apply;
+   - **staleness** -- if the newest comp in the bucket is more than 45 days
+     old, the bucket may not declare a deal;
+   - **dispersion** -- if MAD/median exceeds 0.5, the comps disagree too
+     much to trust a median, and the bucket may not declare a deal.
+6. **Confidence**, as a checklist rather than a model -- every step is a
+   sentence the report prints. It starts at the level's own confidence
+   (`exact` = high, `same_card` = medium, everything else = low) and steps
+   down once for each of: asking-price basis, fewer than 5 comps, stale
+   comps, wide dispersion. **Because 100% of the corpus is asking prices
+   today, "medium" is this project's honest ceiling -- an asking-basis comp
+   can never reach "high".**
+7. **Economics.** Total acquisition cost (price + shipping + tax) versus
+   expected net proceeds after marketplace fees, outbound shipping, supplies
+   and a resale haircut. Unknown shipping never becomes $0; it becomes
+   "shipping unknown -- actual cost may be higher".
+8. **The two-gate deal test, on TOTAL cost.** `pct_under_market >=
+   discount_threshold_pct` **AND** `dollar_savings >= min_savings_dollars`.
+   Both, or it isn't a deal. Auctions never reach this test at all -- a
+   current bid is not a price, so they route to their own section with a max
+   rational bid instead.
+9. **Dedupe.** Already-reported opportunities are suppressed unless the
+   price has dropped further. Auctions, target hits and needs-review entries
+   pass through undeduped -- hiding a still-live auction is the opposite of
+   useful.
+
+## Comps: what may and may not declare a deal
+
+CardPro 1.0 bucketed comps by `(player, card_type, price_tier)` and defended
+it as noise reduction. It was, in fact, circular: **the bucket is defined by
+price, so the cheap end of every bucket automatically reads as "under
+market."** There is no card in existence that this can't flag if it happens
+to be priced below its neighbours. It produced 76% of all valuations in
+production and every single false positive. It can no longer declare a deal.
+
+The current ladder, narrowest first:
+
+| Level | Matches on | May flag a deal? |
+|---|---|---|
+| `exact` | player + year + set + parallel + card # + market | **Yes** (base confidence: high) |
+| `same_card` | player + year + set + parallel + market | **Yes** (base confidence: medium) |
+| `same_set` | player + year + set + market (parallel unknown) | No -- context only |
+| `price_tier` | player + market + price bracket | No -- circular by construction |
+
+`market` is `raw`, or `graded + grader + grade + qualifier`.
+
+**Why `exact` and `same_card` may flag:** both require a *known* parallel, so
+"unknown parallel" never matches "unknown parallel", and both are segmented
+by the full market key, so a PSA 8 is never compared to a PSA 10.
+
+**Why `price_tier` was kept at all:** as context, and only as context. "Cards
+of this player, in this grade, around this price" is genuinely useful colour
+when you're eyeballing a listing that has no identity-matched comp -- it tells
+you roughly what neighbourhood you're in. What it cannot do is tell you
+anything about *price*, because price is what defines the bucket. It is
+structurally incapable of triggering a purchase: the level is marked
+`flag_eligible=False` in `comps.LEVEL_SPECS` and the deal gate is never
+reached from it. Note that it still keys on the full market, not just
+raw-vs-graded, for the same reason everything else does -- a PSA 9 must never
+be shown the PSA 10 median, not even as colour.
+
+**What was deleted rather than demoted:** the old grade-blind `family` level
+(`player + year + set`). `same_set` already covers "same year and set,
+parallel unknown" while keeping the market segmentation, so the only thing
+`family` added was the ability to pool different grades. Labelling a number
+"context only" does not make it safe when it's wrong by 4x, so the level is
+gone. A card with no market-matched comps gets **no number at all** and is
+reported as unvalued.
+
+Comps are computed once per run. Real sold data is used the moment it exists
+(the eBay Marketplace Insights path is built and dormant); until then, every
+comp is an asking price -- see below.
+
+## Cheap, underpriced, flippable, collectible, target
+
+CardPro keeps five different questions apart and never blends them into a
+single score:
+
+| Question | What it means |
+|---|---|
+| **Cheap** | The asking price is objectively low. Says nothing about value. |
+| **Underpriced** | Materially below what comparable copies of *that exact card in that exact grade* go for. Requires an identity-and-grade-matched comp; a price-bracket estimate can never establish this. |
+| **Flippable** | Enough spread to resell at a worthwhile profit after fees, shipping, supplies and a resale haircut. Shown with its assumptions attached. |
+| **Collectible opportunity** | Underpriced *and* carrying attributes you care about (rookie, auto, numbered, patch, young core). Tagged separately, never folded into the price maths. |
+| **Target acquisition** | A specific card you told CardPro to find below a price you set. A target hit is **not** a claim that the card is underpriced -- different answers, different sections. See [Acquisition targets](#acquisition-targets). |
+
+### Value vs. potential tags
+
+The two attribute tags sit alongside those five answers and are displayed,
+never blended into the ranking math:
 
 - **`[YOUNG CORE]`** -- the player is tagged `young_core` in
-  `config/watchlist.json`'s `player_tiers`, meaning you're betting on
-  their long-term growth, not just today's price. Untagged players
-  default to `legend` (established value, no tag shown).
+  `config/watchlist.json`'s `player_tiers`, meaning you're betting on their
+  long-term growth, not just today's price. Untagged players default to
+  `legend` (established value, no tag shown).
 - **`[ROOKIE CARD]`** -- the title matched "RC" or "Rookie"
   (`matcher.detect_rookie_card`), the same simple keyword-match style as
   grading detection.
 
-Both tags are shown, not blended into the ranking math -- the report
-still ranks by dollar saved, and you apply your own judgment about how
-much a `[YOUNG CORE] [ROOKIE CARD]` tag on a deal should move it up your
-list. Edit `player_tiers` in `config/watchlist.json` any time your read on
-a player changes.
+Entries are still ranked within a section by dollar saved; you apply your own
+judgment about how much a `[YOUNG CORE] [ROOKIE CARD]` tag should move
+something up your list. Edit `player_tiers` any time your read on a player
+changes.
+
+## Known limitation: every comp is an asking price
+
+This is the largest single limitation in the system, and it is structural.
+
+eBay's Browse API only returns **active** listings. Real historical sold
+prices come from eBay's **Marketplace Insights API**, which is a
+limited-release API -- a standard free developer account is not granted
+access to it, and eBay's own documentation describes it as restricted and not
+open to new users. The saved-search email path has no sold feed at all.
+
+So **100% of CardPro's comp corpus today is asking prices**, accumulated from
+what it observes in alert emails
+(`data/ebay_alert_price_history.json`, pruned after 180 days by default). An
+asking price is the seller's opinion; a sold price is the market's. Worse,
+alert emails are biased toward *brand-new* listings, which skew high (sellers
+start high and reduce) and skew toward whatever is being freshly dumped.
+
+The engine treats this as a first-class fact rather than a footnote:
+
+- **An asking-basis comp can never reach "high" confidence.** It is
+  downgraded one full step automatically, so "medium" is the ceiling until
+  real sold data exists. `basis` is only `sold` when *every* surviving point
+  in the bucket is a sold price.
+- Every headline entry in the report prints the basis on its Market line
+  ("asking comps" vs "sold comps"), and the Confidence line leads with the
+  asking-vs-sold caveat whenever it applies.
+
+How fast comps become usable depends on volume, not calendar time: a bucket
+needs `valuation.min_comps_required` observations (default 3) before it can
+be used at all, and every matched listing in a run counts toward that -- so a
+high-volume player can clear the bar quickly, while a thin one may never.
+Note that with identity-and-grade-matched buckets this is a much higher bar
+than it was in 1.0, which is exactly the point.
+
+The highest-value next step is importing real sold comps by hand (130point is
+free and includes accepted Best Offers; Card Ladder is the paid option). See
+[`docs/CARDPRO_2_AUDIT.md`](docs/CARDPRO_2_AUDIT.md) §6 for the full
+data-source matrix and cost analysis.
 
 ## eBay account declined
 
@@ -100,9 +316,12 @@ a policy objection to the use case.
 
 **Worth trying:** the Contact Channels / FAQ page linked from the
 rejection screen, or emailing `developer-support@ebay.com` directly and
-asking specifically what triggered it. If that gets resolved and you get
-real keys, nothing else needs to change -- see the status note at the top
-of this README.
+asking specifically what triggered it. Browse access alone would be a large
+upgrade even with no sold data -- structured item specifics (set, parallel,
+grade as real fields instead of title guesses), real auction flags, bid
+counts, end times and seller data. If that gets resolved and you get real
+keys, nothing else needs to change -- see the status note at the top of this
+README.
 
 **In the meantime:** `EBAY_CLIENT_ID`/`EBAY_CLIENT_SECRET` are optional.
 Leave them unset (or as the `.env.example` placeholder text) and the
@@ -121,7 +340,7 @@ saved-search feature that emails you when new matching listings appear.
 You set that up once on eBay's site; this just reads those emails out of
 your own Gmail inbox over IMAP (same Gmail App Password already used for
 SMTP -- App Passwords work for IMAP too, no new credential needed) and
-feeds them into the same matching/flagging/report pipeline as the API
+feeds them into the same matching/valuation/report pipeline as the API
 path. Nothing about eBay's own systems is touched or automated against --
 eBay decides what to send and when; this only processes mail you already
 receive.
@@ -131,40 +350,46 @@ watchlist: 327 listings extracted, 96 correctly matched to watchlist
 players, zero observed player-name collisions (e.g. Caleb Williams vs.
 Caleb Wilson stayed correctly separated).
 
-**Truncated-title grades:** eBay truncates long titles in these emails,
-which can occasionally cut a grade number mid-digit (a "PSA 10" showing as
-"PSA 1…"). This never affects which comp bucket a listing lands in (raw
-vs. graded is unaffected either way), only the grade text shown in the
-report. For listings that actually clear the deal threshold (a handful a
-day, not the full batch), the scraper tries fetching the real title from
-eBay's own item page to recover the true grade
-(`ebay_email_alerts.fetch_full_title`). This hasn't been tested against
-eBay's real site (this project's sandbox can't reach ebay.com to check
-during development) -- if it works, the report shows the corrected grade
-automatically; if eBay blocks it, it fails safe: the listing still shows
-up, just with an explicit "(grade uncertain -- eBay truncated the title,
-actual grade may differ)" note instead of asserting a possibly-wrong
-number. No further escalation is attempted either way.
+**What is NOT validated:** listing-type detection (auction vs. Buy It Now),
+bid counts, time-left text, shipping-cost extraction, and Best Offer
+detection are all pulled best-effort out of the alert-email HTML and have
+**not** been checked against real emails. They fail safe rather than
+guessing: no evidence either way yields `unknown`, never a default of "fixed
+price", and unknown shipping is never treated as $0. The report says
+"unknown" out loud in both cases, and an `unknown` listing type is not
+eligible for the auction math. If you want to know how these behave on your
+actual mail, run `python -m scripts.test_ebay_alerts --raw` and read the
+output.
+
+**Truncated-title grades:** eBay truncates long titles in these emails, which
+can cut a grade number mid-digit (a "PSA 10" showing as "PSA 1…"). Since a
+grade is now part of the comp key, a wrong grade is a wrong valuation, so
+these are repaired **before** anything is valued: the scraper fetches the
+real title from eBay's own item page and re-derives identity from it
+(`ebay_email_alerts.fetch_full_title`), capped at 30 fetches per run so a
+template change can't turn into a burst of requests. This hasn't been tested
+against eBay's real site (this project's sandbox can't reach ebay.com to
+check during development) -- if it works, the corrected grade is used
+everywhere downstream; if eBay blocks it, it fails safe: the listing still
+shows up, with an explicit "grade uncertain" risk line instead of a possibly
+wrong number driving a buy decision. No further escalation is attempted
+either way.
 
 **One real tradeoff worth knowing:** eBay's saved-search alerts only cover
 *newly listed* items, not their full standing inventory, and there's no
-sold-comps feed on this path. So comps are built by accumulating every
-price this script observes in alert emails over time
-(`data/ebay_alert_price_history.json`, pruned after 180 days by default) --
-weaker than real sold data, same "not real sold data" caveat already
-labeled elsewhere in the report. How fast comps become usable depends on
-volume, not calendar time: a bucket needs `ebay.min_comps_required`
-observations (default 3) before it gets a comp at all, and every matched
-listing in a run counts toward that -- so a high-volume player can clear
-that bar on day one if a single alert batch contains enough listings for
-them, while a low-volume player may take longer to accumulate enough
-history.
+sold-comps feed on this path -- see
+[Known limitation](#known-limitation-every-comp-is-an-asking-price) above and
+[Search coverage](#search-coverage-why-almost-everything-you-see-is-a-cheap-raw-card)
+below.
 
-### Setup
+### Setting up the saved searches
 
 1. On eBay's site (not in this repo): for each watchlist player, search
    for their cards, then use eBay's "Save this search" option and turn on
-   email alerts for it. Repeat for every player you want covered.
+   email alerts for it. Repeat for every player you want covered. Then read
+   [Search coverage](#search-coverage-why-almost-everything-you-see-is-a-cheap-raw-card)
+   -- one search per player is not enough, and the daily report tells you
+   which extra ones to create.
 2. In `config/settings.json`, set `ebay_alerts.enabled` to `true`.
 3. Run the standalone check against your real inbox:
    ```bash
@@ -180,14 +405,14 @@ history.
 
 ### Config (`config/settings.json`'s `ebay_alerts` section)
 
-| Key | What it does |
-|---|---|
-| `enabled` | Turns this path on. Only takes effect when `EBAY_CLIENT_ID`/`SECRET` are absent (the Browse API path always wins if both are configured). |
-| `sender_contains` | IMAP filters alert emails to ones whose From address contains this (default `ebay.com`). If real alerts come from an address that doesn't match, alerts won't be found -- `test_ebay_alerts.py` will tell you if that's happening. |
-| `lookback_days` | How many days back to search each run (default 2 -- eBay sends these roughly daily). |
-| `mailbox` | IMAP folder searched (default `[Gmail]/All Mail`, not `INBOX` -- see "Keeping these emails out of your inbox" below for why). Only change this if your Gmail account's UI language gives this folder a different IMAP name. |
-| `price_history_path` | Where the self-building comp history is stored (default `data/ebay_alert_price_history.json`, gitignored). |
-| `price_history_max_age_days` | How long an observed price stays in the comp history before aging out (default 180). |
+| Key | What it does | Default |
+|---|---|---|
+| `enabled` | Turns this path on. Only takes effect when `EBAY_CLIENT_ID`/`SECRET` are absent (the Browse API path always wins if both are configured). | `true` |
+| `sender_contains` | IMAP filters alert emails to ones whose From address contains this. If real alerts come from an address that doesn't match, alerts won't be found -- `test_ebay_alerts.py` will tell you if that's happening. | `"ebay.com"` |
+| `lookback_days` | How many days back to search each run. eBay sends these roughly daily; 2 gives one day of slack. | `2` |
+| `mailbox` | IMAP folder searched -- All Mail, not `INBOX`, see "Keeping these emails out of your inbox" below. Only change this if your Gmail account's UI language gives this folder a different IMAP name. | `"[Gmail]/All Mail"` |
+| `price_history_path` | Where the self-building comp corpus is stored. Tracked in git, not ignored -- see "Running on a schedule". | `"data/ebay_alert_price_history.json"` |
+| `price_history_max_age_days` | How long an observed price stays in the corpus before aging out. Longer = deeper buckets but staler comps; the staleness gate is a separate control. | `180` |
 
 ### Keeping these emails out of your inbox
 
@@ -211,22 +436,56 @@ and the scraper still sees every one of them via All Mail. You can also
 freely archive or label-organize emails by hand after the fact for the
 same reason -- only genuine deletion breaks it.
 
-## Known limitation: eBay sold comps
+## Search coverage: why almost everything you see is a cheap raw card
 
-eBay's Browse API only returns **active** listings. Real historical sold
-prices come from eBay's **Marketplace Insights API**, which is a
-limited-release API -- a standard free developer account is not granted
-access to it by default; you have to apply for it separately in the eBay
-developer portal.
+Measured against the production corpus: **99.3% of everything CardPro has
+ever observed was a raw card, 67% of it was under $25, and the median
+observation was $10.64.** The graded market -- the liquid, high-value half of
+the hobby, and the only half where comps are dense enough to value anything
+precisely -- is effectively invisible.
 
-Until/unless that access is approved, this scraper falls back to using the
-median price of **currently active** listings for a player/card-type as a
-rough stand-in for "market value." That's a weaker signal than real sold
-comps (it reflects what sellers are asking, not what buyers actually paid),
-and any deal flagged using the fallback is labeled in the report as
-`[comp = active-listing proxy, not real sold data]` so you can tell the
-difference at a glance. Once/if you get Insights access, real sold comps
-are used automatically and this note stops appearing.
+That is a direct consequence of having **one saved search per player**.
+eBay's alert digest returns whatever is *newest* for a query, and what is
+newest for a bare player name is overwhelmingly cheap raw filler. More
+listings won't fix it, because the problem isn't the number of listings, it's
+which ones. The fix is several narrow queries per player, each pulling a
+different slice of the market.
+
+`src/search_terms.py` generates those queries, and the daily report prints
+the ones it sees no evidence of coverage for, each with the reason it exists:
+
+| Slice | Why |
+|---|---|
+| `<player> PSA 10` | Graded top-pop market -- densest comps, and ~99% missing from today's data |
+| `<player> PSA` | All graded copies, any grade -- a separate market from raw |
+| `<player> BGS SGC` | The other graders; their markets price differently from PSA |
+| `<player> rookie` | Rookie cards, where most of the money and liquidity is |
+| `<player> auto` | Autographs -- a different market from the base card |
+| `<player> /99` | Serial-numbered parallels; the print run is what makes them scarce |
+| `<player> refractor prizm` | Premium parallels from the two dominant modern lines |
+
+Plus sport-appropriate set slices (Prizm / Optic / Select / Contenders /
+Mosaic for football, Topps Chrome / Bowman Chrome / Heritage / Stadium Club
+for baseball, Young Guns / SP Authentic for hockey, and so on), and one
+precise query per acquisition target.
+
+**CardPro only generates the query strings. It never creates a saved search
+for you** -- that would mean automating against eBay's own UI, which this
+project doesn't do. Creating one is a two-minute copy/paste job on eBay's
+site: search the suggested string, hit "Save this search", turn on email
+alerts. The report exists to make that a copy/paste rather than a research
+project.
+
+Two things the generator deliberately does *not* produce: misspelling
+permutations (they multiply query count fast, eBay's own search already fuzzy
+matches most of them, and the recall gain is speculative) and every parallel
+name (parallel-level precision belongs on an acquisition target, where you've
+said you actually want that specific card).
+
+The coverage check is a heuristic and the report words it as one. eBay's
+alert emails don't reliably say which saved search produced a listing, so it
+can only say "there's no evidence of coverage here", never "you definitely
+have no such search."
 
 ## Why Craigslist isn't scraped
 
@@ -340,16 +599,21 @@ python -m src.main --dry-run
 ```
 
 This prints the report to your terminal instead of emailing it, and does
-**not** touch the dedupe file -- safe to run repeatedly while testing.
-Check `logs/scraper.log` for details if something looks off (e.g. a 403
-from eBay usually means the app doesn't have Marketplace Insights access
-yet -- see the limitation above, it's expected and handled).
+**not** touch the dedupe file or the comp corpus -- safe to run repeatedly
+while testing. Check `logs/scraper.log` for details if something looks off.
 
 Once a dry run looks right, run it for real:
 
 ```bash
 python -m src.main
 ```
+
+If the report says nothing qualified, read the SYSTEM HEALTH footer before
+assuming something broke -- it counts what was seen, what was valued, what
+could be valued at a flag-eligible level, and the reason every unreported
+listing was set aside. A run where no comp bucket anywhere is strong enough
+to declare a deal from says so explicitly, and points you at the search
+coverage section.
 
 ### 6. Running on a schedule
 
@@ -378,11 +642,11 @@ One-time setup:
 
 The runner is thrown away after each run, so the workflow commits
 `data/seen_listings.json` and `data/ebay_alert_price_history.json` (dedupe
-state and the self-building comp history) back to the repo as its last
-step -- otherwise both would reset to empty every single day. That means
-this data becomes part of the repo's git history going forward; it's just
-listing prices/dates/ids, nothing sensitive, but worth knowing if this repo
-is or becomes public.
+state and the self-building comp corpus) back to the repo as its last
+step -- otherwise both would reset to empty every single day. Neither file
+is gitignored, on purpose. That means this data becomes part of the repo's
+git history going forward; it's just listing prices/dates/ids, nothing
+sensitive, but worth knowing if this repo is or becomes public.
 
 If a scheduled run fails (e.g. secrets not set yet), check the **Actions**
 tab for the red X and the step's log -- same "send something, never fail
@@ -416,9 +680,9 @@ feel like it.
 
 ## Running tests
 
-The matching/comps/dedupe/report logic and the full daily-run orchestration
-(with eBay/email mocked out) are covered by a pytest suite that needs no
-real credentials:
+The identity/comps/economics/targets/reasons/dedupe/report logic and the full
+daily-run orchestration (with eBay/email mocked out) are covered by a pytest
+suite that needs no real credentials:
 
 ```bash
 pip install -r requirements-dev.txt
@@ -427,7 +691,33 @@ pytest
 
 This same suite runs automatically on every push via GitHub Actions
 (`.github/workflows/tests.yml`, against Python 3.9 and 3.12) -- no
-credentials needed there either, since everything external is mocked.
+credentials needed there either, since everything external is mocked. Every
+failure mode in the audit has a regression test; every real bug becomes one.
+
+## Checking the claims yourself: `replay_corpus`
+
+```bash
+python -m scripts.replay_corpus --legacy
+python -m scripts.replay_corpus --min-comps 5   # try a stricter sample gate
+```
+
+This replays every observation in `data/ebay_alert_price_history.json` as
+though it were a live listing, values it against the rest of the corpus
+(excluding itself, exactly as the real pipeline does), and prints the
+before/after: which comp levels were used, what confidence they landed at,
+which quality gates fired, and what each engine would have flagged. With
+`--legacy` it runs the v1 hierarchical/price-tier engine over the same data
+first, so the two sit side by side.
+
+**This is how every number in
+[What changed in 2.0](#what-changed-in-20-and-why-youll-see-fewer-deals) was
+measured, and it's how you re-check them.** It hits no network, sends no
+email, and writes nothing.
+
+Be honest about what it is: the corpus is asking prices, only as deep as the
+alert emails that produced it. This measures whether the *engine* behaves
+correctly, not whether the market values are right. No data source available
+to this project can tell us that yet.
 
 ## Configuring
 
@@ -439,16 +729,18 @@ credentials needed there either, since everything external is mocked.
 }
 ```
 
-Add or remove names freely, one per line in the `players` array. Matching
+Add or remove names freely, one per entry in the `players` array. Matching
 is case-insensitive and requires every word of the name to appear in the
 listing title (e.g. "Walter Payton" requires both "walter" and "payton"
 somewhere in the title) -- no code changes needed. The same list drives
-both the eBay searches and the Craigslist quick-check links.
+the eBay searches, the suggested saved searches, and the Craigslist
+quick-check links. A title matching two watchlist players is treated as a
+multi-player card and not valued: a dual auto is a different market from
+either player's single card, and no comp bucket represents it.
 
 Optionally tag any player as `young_core` in the same file's
-`player_tiers` object to get the `[YOUNG CORE]` report tag (see "Value vs.
-potential tags" above) -- players left out of `player_tiers` default to
-`legend`:
+`player_tiers` object to get the `[YOUNG CORE]` report tag -- players left
+out of `player_tiers` default to `legend`:
 
 ```json
 "player_tiers": {
@@ -456,97 +748,269 @@ potential tags" above) -- players left out of `player_tiers` default to
 }
 ```
 
-### Discount threshold + minimum savings -- `config/settings.json`
+`player_tiers` is purely a display tag. It does not affect matching, comps,
+or flagging math at all.
+
+The third key, `target_cards`, is [documented below](#acquisition-targets).
+
+### The deal gate -- `config/settings.json`
+
+| Key | What it does | Default | When you'd change it |
+|---|---|---|---|
+| `discount_threshold_pct` | Percent under the matched comp median a listing must be, measured on **total cost**. | `30` | Lower for more (weaker) deals, higher for fewer (stronger) ones. |
+| `min_savings_dollars` | Real dollars that must be saved, regardless of percent. | `10` | Raise it if the report feels cluttered with low-value listings; lower it (or `0`) to see everything that clears the percent gate. |
+
+A listing must clear **both**. `min_savings_dollars` is the knob that keeps
+trivial deals (50% off a $5 common) out of the report even when the percent
+alone would qualify.
+
+### Valuation quality gates -- `settings.json` → `valuation`
+
+These are the difference between a real valuation and a number that just
+restates the price. See [How a deal is decided](#how-a-deal-is-decided) for
+where each one applies.
+
+| Key | What it does | Default | When you'd change it |
+|---|---|---|---|
+| `min_comps_required` | How many comparable observations a bucket needs before it may be used at all. | `3` | Raise to 5+ once the corpus is deep enough -- fewer, better-supported valuations. Lowering below 3 is not advisable; a median of two asking prices isn't a market. |
+| `half_life_days` | Recency weighting: a comp this many days old counts half as much as one from today. | `30` | Shorten in a fast-moving market, lengthen for vintage where prices barely move month to month. |
+| `stale_after_days` | If the **newest** comp in a bucket is older than this, the bucket may not declare a deal. | `45` | Tighten if you only trust very recent data; loosen only if thin players are being blocked purely on age. |
+| `max_dispersion` | MAD/median above this means the comps disagree too much to trust a median. | `0.5` | Lower it to demand tighter agreement. Raise it and you start flagging off buckets that don't describe one market. |
+| `mad_threshold` | Outlier trim, in scaled median-absolute-deviations. Only applied when a bucket has 5+ points. | `3.5` | Lower to trim more aggressively (the classic "modified z-score" cutoff is 3.5). |
+| `require_flag_eligible_comp` | Only identity-and-grade-matched comp levels may declare a deal; broader levels are context and can never flag. **Leave this `true`** -- it is what stops the circular price-tier comparison that produced every false positive in v1. | `true` | Never, in practice. Setting it `false` really does let deals be declared off context-only comps, including the price-bracket level that is defined by price and therefore cannot be evidence about price. CardPro will do it, but it puts a warning at the top of the report's health footer every run while it is off. |
+
+### Resale economics -- `settings.json` → `economics`
+
+**These are assumptions, not facts.** Every one shows up in the report next
+to the profit figure it produced, so you can disagree with one and re-run.
+Tune them to how you actually sell. Percentages apply to the expected sale
+price only.
+
+| Key | What it does | Default | When you'd change it |
+|---|---|---|---|
+| `marketplace_fee_pct` | Marketplace final value fee. The default is eBay's standard trading-card rate for a seller without a Store subscription, at time of writing. | `13.25` | Verify against your own account -- Store subscribers and Top Rated sellers pay less. Leaving it high is the safe error: it understates profit. If you charge buyers for shipping, eBay fees that too, so fold the difference in here. |
+| `marketplace_fixed_fee` | Flat per-order fee. | `0.3` | Match your marketplace. |
+| `payment_fee_pct` | Separate payment-processing percentage. Zero because eBay's managed payments bundles processing into the fee above -- charging it again would double-count. | `0.0` | Set it if you sell somewhere that bills processing separately. |
+| `outbound_shipping` | What it costs **you** to mail the card out. Default assumes a bubble mailer with USPS Ground Advantage and tracking. | `5.0` | Lower it (~$1) if you ship raw commons in an eBay Standard Envelope with no real tracking. |
+| `supplies` | Penny sleeve, toploader, team bag, mailer -- per card, every time. | `1.0` | Adjust to what you actually pay in bulk. |
+| `sales_tax_pct` | Tax paid on **acquisition**. Zero means "not modelled", and the report says so out loud rather than letting you assume it was measured. | `0.0` | Set your own rate (e.g. `7.0`) to include it in total cost. |
+| `resale_haircut_pct` | The gap between the median comp and what you'd realistically get selling promptly. | `5.0` | Raise it if you sell fast and cheap, or for illiquid cards. |
+
+### Auctions -- `settings.json` → `auctions`
+
+An auction's current bid is not a price, so auctions never reach the deal
+gate. They get their own section and their own math.
+
+| Key | What it does | Default | When you'd change it |
+|---|---|---|---|
+| `required_margin_pct` | Max rational bid is the highest you could bid and still keep this much margin against estimated market value, after fees and shipping. | `25` | Raise it to bid more conservatively, lower it if you're happy on thinner margins. |
+| `ending_soon_hours` | What counts as urgent. **Only** used for ordering the auction section -- never to relax any quality gate. | `24` | Widen it if you check email less than daily. |
+
+### Immediate alerts -- `settings.json` → `alerts`
+
+The `ACT NOW` tier. Deliberately conservative: too many alerts destroy the
+product. An opportunity must clear **both** of these **and** have a
+flag-eligible comp to earn the top slot; everything else waits for the
+morning digest.
+
+| Key | What it does | Default | When you'd change it |
+|---|---|---|---|
+| `immediate_alert_min_savings_dollars` | Dollar savings required. | `150` | Lower only if `ACT NOW` is firing too rarely to be useful; raise it the first time it fires on something you'd have skipped. |
+| `immediate_alert_min_discount_pct` | Discount required. | `40` | Same reasoning. |
+
+### Everything else in `settings.json`
+
+| Key | What it does | Default | When you'd change it |
+|---|---|---|---|
+| `ebay.category_id` | eBay category to search within, for the dormant Browse API path. | `"212"` (Sports Trading Cards) | eBay renumbers categories occasionally -- re-check via `python -m scripts.lookup_ebay_category` if results look off-topic. |
+| `ebay.marketplace_id` | eBay site the API path queries. | `"EBAY_US"` | Only if you're buying on a non-US eBay. |
+| `ebay.active_listing_limit_per_player` | Max active listings pulled per player on the API path. | `50` | Raise for deeper coverage once API access exists. |
+| `ebay.sold_lookback_days` | How far back to pull sold comps on the API path. | `60` | Only relevant with Marketplace Insights access. |
+| `ebay.min_comps_required` | Minimum samples for the **legacy** API-path comp table. Also the fallback default for `valuation.min_comps_required` if the `valuation` section is missing entirely. | `3` | Tune `valuation.min_comps_required` instead -- that's the one the live engine reads. |
+| `craigslist.site` | Which Craigslist subdomain the quick-check links point at. | `"chicago"` | Your metro. |
+| `craigslist.category` | Craigslist search category for those links. | `"sss"` (all for sale) | Narrow it if `sss` is too noisy. |
+| `dedupe.seen_listings_path` | Where dedupe state lives. | `"data/seen_listings.json"` | Rarely. |
+| `dedupe.prune_after_days` | How long a listing stays in the "already seen" file after its last flag before it's forgotten. | `120` | Shorten if you want to be re-shown old listings sooner. |
+| `email.subject_prefix` | Prefix on every email subject, so Gmail filters can catch them. | `"[Card Deals]"` | Whatever your filters expect. |
+
+`ebay_alerts` is documented in
+[its own section above](#config-configsettingsjsons-ebay_alerts-section).
+
+## Acquisition targets
+
+A target is a specific card you've told CardPro to find below a price **you**
+set. It is deliberately separate from the player watchlist and from
+valuation, because they answer different questions:
+
+- player watchlist → "show me anything interesting about this player"
+- comp engine → "what is this card actually worth"
+- acquisition target → "I want THIS card at or below THIS price"
+
+**A target hit is not a claim that the card is underpriced.** A card can be a
+target hit and a bad deal at the same time (you're paying up for something
+you specifically want), or a great deal and not a target at all. They get
+separate report sections for exactly that reason.
+
+Add one to `config/watchlist.json` → `target_cards`. It ships empty on
+purpose -- these are your prices to set:
 
 ```json
-"discount_threshold_pct": 30,
-"min_savings_dollars": 10
+"target_cards": [
+  {
+    "label": "2024 Panini Prizm Caleb Williams Silver PSA 10",
+    "player": "Caleb Williams",
+    "year": 2024,
+    "set_name": "Prizm",
+    "parallel": "Silver",
+    "card_number": "301",
+    "grader": "PSA",
+    "grade": "10",
+    "buy_zone": 400,
+    "great_buy": 350,
+    "immediate_alert": 300
+  }
+]
 ```
 
-A listing must clear **both** to get flagged. `discount_threshold_pct`
-is the percent-under-comp-median (lower = more, weaker deals; higher =
-fewer, stronger ones). `min_savings_dollars` is the real dollar amount
-that must be saved, regardless of percent -- this is the knob that keeps
-trivial deals (a 50%-off $5 common) out of the report even when the
-percent alone would qualify. Raise it if the report still feels
-cluttered with low-value listings; lower it (or set to `0`) if you want
-to see everything that clears the percent threshold, no matter how small.
+`_target_cards_example` in the file holds that exact shape, ready to copy.
 
-### Other tunables in `config/settings.json`
+**Price bands.** All three are optional; specify at least one. A listing is
+assigned the strongest band its **total cost** (price + shipping + tax)
+clears:
 
-| Key | What it does |
+| Band | Meaning |
 |---|---|
-| `ebay.category_id` | eBay category to search within (defaults to `212`, "Sports Trading Cards"). eBay renumbers categories occasionally -- if results look off-topic, re-check the current ID via `python -m scripts.lookup_ebay_category`. |
-| `ebay.sold_lookback_days` | How far back to pull sold comps (default 60 days). |
-| `ebay.min_comps_required` | Minimum sold (or fallback) data points needed before trusting a median (default 3). Buckets below this are skipped entirely rather than flagged off a shaky number. |
-| `craigslist.site` | Which Craigslist subdomain the quick-check links point at (default `chicago`). |
-| `craigslist.category` | Craigslist search category for those links (default `sss`, all-for-sale). |
-| `dedupe.prune_after_days` | How long a listing stays in the "already seen" file after its last flag before it's forgotten (default 120). |
+| `buy_zone` | The price at which you'd be happy to own it. |
+| `great_buy` | Better than you expected to pay. |
+| `immediate_alert` | Drop-everything cheap. |
+
+A card that matches the target but sits above every band still shows up, as
+"above buy zone" -- knowing your target card is listed at all is useful
+information, not noise.
+
+**The matching rule, which is the whole point:** `player` is required, and
+every other field is optional and narrows the match. **A field you specify
+must match exactly. A field the listing couldn't identify never counts as a
+match.** Unknown is never treated as satisfying a target. Being told "your
+target card showed up" and finding it's a different parallel is exactly the
+failure this avoids -- so if you specify `"parallel": "Silver"`, a listing
+whose parallel CardPro couldn't read will not hit, even if it really is a
+Silver. Write broad targets (player + set + grade) when you'd rather see
+near-misses, narrow ones (down to the card number) when you only want the
+exact card.
+
+Targets also generate their own precise suggested saved search, since a card
+you've explicitly said you want is worth a dedicated query in a way that
+speculative parallel permutations are not.
+
+An entry missing `player` is skipped rather than crashing the run -- a typo
+in a personal config file shouldn't take down the daily scan.
 
 ## How dedupe works
 
-`data/seen_listings.json` (gitignored -- it's local run state, not code)
-tracks every eBay listing ID that's ever been emailed, along with the
-price it was flagged at. A listing is included in the report again only
-if:
+`data/seen_listings.json` tracks every eBay listing ID that's ever been
+emailed as an opportunity, along with the price it was flagged at. An
+opportunity is included in the report again only if:
 
 - it's never been flagged before, **or**
-- its price has dropped further since the last time it was flagged.
+- its price has dropped further since the last time it was flagged (these
+  show up under `PRICE DROPS`).
 
-(Craigslist links aren't deduped -- they're static search URLs, not
-individual listings, so the same links just appear in every email.)
+Auctions, target hits and needs-review entries are **not** deduped -- an
+auction that's still live needs to keep appearing until it closes.
 
-If you ever want to re-see everything (e.g. after changing the threshold),
-delete or edit `data/seen_listings.json`.
+(Craigslist links aren't deduped either -- they're static search URLs, not
+individual listings, so the same links appear in every email.)
+
+If you ever want to re-see everything (e.g. after changing a threshold),
+delete or edit `data/seen_listings.json`. Note it's a tracked file, not
+gitignored -- see "Running on a schedule" for why.
 
 ## Project layout
 
 ```
 config/
-  watchlist.json      -- editable player list
-  settings.json        -- threshold + API/site tuning
+  watchlist.json      -- players, tiers, acquisition targets
+  settings.json        -- deal gate, valuation gates, economics, auctions, alerts
 .github/workflows/
   tests.yml             -- CI: runs pytest on push/PR
   daily-scan.yml          -- runs the scraper on a schedule in GitHub's cloud (recommended over local cron)
 src/
-  card_identity.py         -- title -> year/set/parallel/card#/serial/auto/memorabilia/lot, each with confidence
-  config.py                 -- loads .env + config JSON
-  models.py                  -- Listing dataclass
-  matcher.py                  -- title -> player, graded/raw detection
-  ebay_client.py                -- eBay Browse API: OAuth, active search, sold comps
-  ebay_email_alerts.py           -- eBay-via-IMAP: reads saved-search alert emails
-  price_history.py                -- self-building, identity-tagged comp history for the alerts path
-  craigslist_links.py              -- builds quick-check search URLs (no scraping)
-  comps.py                          -- price-tier median comps + hierarchical (identity-aware) comp matching
-  dedupe.py                          -- seen-listings tracking
-  report.py                           -- ranked report text + Craigslist links
-  emailer.py                           -- Gmail SMTP send
-  main.py                               -- orchestrates the daily run
+  main.py                  -- orchestrates the daily run; one evaluation path for all sources
+  card_identity.py          -- title -> year/set/parallel/card#/print run/auto/memorabilia, each with
+                               confidence, plus negative signals (reprint/custom/digital/sealed/lot/...)
+  matcher.py                  -- title -> player(s); grade details (grader, grade, qualifier, auth-only slabs)
+  comps.py                     -- CompEngine: market-segmented, quality-gated valuation
+                                  (the legacy price-tier engine lives above it, deprecated, unable to flag)
+  economics.py                   -- fees, net proceeds, ROI, max rational bid, breakeven grade probability
+  targets.py                      -- acquisition targets and price bands
+  search_terms.py                  -- saved-search generation + coverage gaps
+  reasons.py                        -- the canonical vocabulary of "why this wasn't reported"
+  observability.py                   -- per-run data-quality counters for the SYSTEM HEALTH footer
+  price_history.py                    -- the self-building comp corpus
+  ebay_email_alerts.py                 -- IMAP fetch, HTML extraction, listing-type detection
+  ebay_client.py                        -- eBay Browse/Insights client (built, dormant)
+  craigslist_links.py                    -- builds quick-check search URLs (no scraping)
+  dedupe.py                               -- seen-listings tracking
+  report.py                                -- the decision-first sectioned email
+  emailer.py                                -- Gmail SMTP send
+  config.py                                  -- loads .env + config JSON
+  models.py                                   -- the Listing dataclass
 data/
   seen_listings.json -- dedupe state (tracked in git -- see "Running on a schedule")
-  ebay_alert_price_history.json -- self-built, identity-tagged comp history (alerts path)
+  ebay_alert_price_history.json -- the self-built comp corpus (also tracked)
 logs/
   scraper.log, cron.log (gitignored) -- run logs
 scripts/
-  install_cron.sh -- crontab installer helper (local-cron alternative)
-  uninstall_cron.sh -- removes the crontab entry
-  lookup_ebay_category.py -- verifies the eBay category ID with real credentials
-  test_email.py -- standalone Gmail send check (no eBay needed)
+  replay_corpus.py -- replays the stored corpus through the old and new engines, before/after
   test_ebay_alerts.py -- standalone check of the email-alerts path against your real inbox
+  test_email.py -- standalone Gmail send check (no eBay needed)
+  lookup_ebay_category.py -- verifies the eBay category ID with real credentials
+  install_cron.sh / uninstall_cron.sh -- crontab helpers (local-cron alternative)
 tests/
-  pytest suite covering matcher/comps/card_identity/dedupe/report/craigslist_links/
-  price_history/ebay_email_alerts + mocked full-run tests for both eBay paths
+  pytest suite covering card_identity/matcher/comps/economics/targets/reasons/
+  observability/dedupe/report/search_terms/craigslist_links/price_history/
+  ebay_email_alerts/config/models + mocked full-run tests for both eBay paths
 docs/
-  AUDIT_AND_ROADMAP.md -- architecture audit + prioritized improvement backlog
+  CARDPRO_2_AUDIT.md -- the current audit: scores, failure modes, roadmap, data-source matrix
+  PROJECT_STATUS.md -- what the system is and does, today
+  AUDIT_AND_ROADMAP.md -- the previous audit, kept for history
 ```
 
-## Explicitly out of scope (v1)
+## The non-negotiables
+
+These are not tunables. Nothing in `settings.json` relaxes them.
+
+1. **Never confuse an asking price with a sold price.** They are different
+   claims and the report always says which one it has.
+2. **Never treat a current bid as a price.** Auctions get their own section
+   and a max rational bid, never a discount claim.
+3. **Never compare different parallels or different grades** as if they were
+   the same card.
+4. **Never guess a missing attribute.** Unknown means unknown -- it never
+   matches, never satisfies a target, and never fills in a comp key.
+5. **Never a single black-box score.** Every number traces to a rule and a
+   data point you can go look at.
+6. **Never build tooling to defeat a site's anti-bot defenses**, regardless
+   of how low-stakes the ask.
+7. **Never buy anything automatically.** CardPro discovers and analyses. You
+   decide.
+
+Two more that follow from those: never go silent (you always get an email,
+even when the answer is "nothing"), and prefer being uncertain over being
+confidently wrong.
+
+## Explicitly out of scope
 
 - Facebook Marketplace scraping.
 - Automated Craigslist scraping -- see "Why Craigslist isn't scraped"
   above; it's quick-check links instead.
 - Fuzzy/ML-based title matching or comp modeling -- matching is
-  keyword-based and comps are plain medians on purpose, so you can see
-  exactly why something was (or wasn't) flagged.
-- Sub-bucketing comps by exact grade (e.g. PSA 9 vs PSA 10 priced
-  separately) -- grading is only split raw vs. graded for now.
+  keyword-based and comps are plain trimmed, recency-weighted medians on
+  purpose, so you can see exactly why something was (or wasn't) flagged.
+- Any prediction. Nothing here guesses what a card will sell for, guesses a
+  grade, or guesses whether shipping is free.
+- Seller-risk scoring, image/OCR slab reading, an LLM parsing layer, a
+  dashboard, portfolio tracking, and non-card collectibles -- all
+  deliberately deferred behind trustworthy valuation. See
+  [`docs/CARDPRO_2_AUDIT.md`](docs/CARDPRO_2_AUDIT.md) §7.
