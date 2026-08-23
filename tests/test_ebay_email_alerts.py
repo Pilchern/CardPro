@@ -1,8 +1,8 @@
+import re
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from pathlib import Path
 from unittest import mock
-
-import requests
 
 from src import ebay_email_alerts
 
@@ -246,28 +246,30 @@ def test_looks_truncated_false_for_complete_title():
     assert ebay_email_alerts.looks_truncated("1990 Fleer Frank Thomas PSA 10") is False
 
 
-def test_fetch_full_title_strips_ebay_suffix():
-    fake_resp = mock.Mock(status_code=200, text="<html><head><title>1990 Fleer Frank Thomas PSA 10 | eBay</title></head></html>")
-    with mock.patch.object(ebay_email_alerts.requests, "get", return_value=fake_resp):
-        title = ebay_email_alerts.fetch_full_title("https://www.ebay.com/itm/800530598774")
-    assert title == "1990 Fleer Frank Thomas PSA 10"
+def test_no_src_module_sends_a_user_agent_header():
+    """Principle #1: never build tooling to defeat a site's anti-bot
+    measures. A spoofed User-Agent exists for exactly one purpose -- making
+    an automated request look like a person in a browser -- so its presence
+    anywhere in src/ is the regression, whatever module it turns up in.
+    fetch_full_title() carried one until it was removed; this is the guard
+    that stops it (or an equivalent elsewhere) coming back.
+    """
+    src_dir = Path(__file__).resolve().parent.parent / "src"
+    pattern = re.compile(r"user[-_ ]?agent", re.IGNORECASE)
+    offenders = sorted(
+        path.name
+        for path in src_dir.rglob("*.py")
+        if pattern.search(path.read_text(encoding="utf-8"))
+    )
+    assert offenders == [], "spoofed browser identity found in: {}".format(", ".join(offenders))
 
 
-def test_fetch_full_title_returns_none_on_network_error():
-    with mock.patch.object(ebay_email_alerts.requests, "get", side_effect=requests.RequestException("boom")):
-        assert ebay_email_alerts.fetch_full_title("https://www.ebay.com/itm/1") is None
-
-
-def test_fetch_full_title_returns_none_on_non_200():
-    fake_resp = mock.Mock(status_code=403, text="blocked")
-    with mock.patch.object(ebay_email_alerts.requests, "get", return_value=fake_resp):
-        assert ebay_email_alerts.fetch_full_title("https://www.ebay.com/itm/1") is None
-
-
-def test_fetch_full_title_returns_none_when_no_title_tag():
-    fake_resp = mock.Mock(status_code=200, text="<html><body>no title here</body></html>")
-    with mock.patch.object(ebay_email_alerts.requests, "get", return_value=fake_resp):
-        assert ebay_email_alerts.fetch_full_title("https://www.ebay.com/itm/1") is None
+def test_truncated_title_is_not_repairable_by_any_module_function():
+    """The recovery path is gone on purpose, not by accident. Nothing in
+    this module fetches an eBay page any more; looks_truncated() reporting
+    the problem is the whole of the behaviour."""
+    assert not hasattr(ebay_email_alerts, "fetch_full_title")
+    assert not hasattr(ebay_email_alerts, "_FULL_TITLE_HEADERS")
 
 
 # --- listing-type detection -------------------------------------------------

@@ -60,6 +60,7 @@ class Reason:
     STALE_COMPS = "stale_comps"
     DISPERSED_COMPS = "dispersed_comps"
     CONTEXT_ONLY_LEVEL = "context_only_level"
+    CONCENTRATED_SAMPLE = "concentrated_sample"
     SHIPPING_UNKNOWN = "shipping_unknown"
 
     # -- economics: we know the card and its value, the math says no ------
@@ -126,6 +127,10 @@ REASON_LABELS: Dict[str, str] = {
     Reason.STALE_COMPS: "comps are stale (newest is older than the freshness window)",
     Reason.DISPERSED_COMPS: "comps disagree with each other too much to name one value",
     Reason.CONTEXT_ONLY_LEVEL: "only context-only comps (card family or price tier), which can never declare a deal",
+    Reason.CONCENTRATED_SAMPLE: (
+        "the comps all landed in too short a window to be independent -- several asks "
+        "captured on one morning is one snapshot, not several readings of a market"
+    ),
     Reason.SHIPPING_UNKNOWN: "shipping cost is unknown, so the real acquisition cost is unknown",
     # economics
     Reason.BELOW_DISCOUNT_THRESHOLD: "discount is below your threshold",
@@ -170,6 +175,7 @@ REASON_CATEGORIES: Dict[str, str] = {
     Reason.STALE_COMPS: CATEGORY_DATA_QUALITY,
     Reason.DISPERSED_COMPS: CATEGORY_DATA_QUALITY,
     Reason.CONTEXT_ONLY_LEVEL: CATEGORY_DATA_QUALITY,
+    Reason.CONCENTRATED_SAMPLE: CATEGORY_DATA_QUALITY,
     Reason.SHIPPING_UNKNOWN: CATEGORY_DATA_QUALITY,
     # economics
     Reason.BELOW_DISCOUNT_THRESHOLD: CATEGORY_ECONOMICS,

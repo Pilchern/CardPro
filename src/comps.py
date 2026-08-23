@@ -291,7 +291,16 @@ def lookup_hierarchical_comp(
 #  4. A listing is excluded from the comp that judges it (exclude_id). At
 #     n=3 a listing was supplying a third of its own median.
 #  5. Real statistics: MAD outlier trim, time-decay weighted median, plus
-#     staleness and dispersion gates that can block a flag and say why.
+#     staleness, dispersion and sample-span gates that can block a flag and
+#     say why.
+#  6. A bucket must be spread over calendar time, not just deep. The daily
+#     scan records every listing it sees each morning, so six asking prices
+#     captured in one run are one snapshot six listings deep, not six
+#     independent readings of a market. Measured: the live corpus holds 563
+#     observations on exactly 2 calendar dates. The staleness gate cannot
+#     catch this -- it only asks whether the NEWEST point is recent, so a
+#     bucket where everything landed this morning is maximally fresh and
+#     maximally un-independent. See the sample-span gate below.
 #
 # Deliberate non-goals here: no price prediction, no grade modelling, no
 # blended score, nothing the report cannot explain in one line. Every
@@ -493,6 +502,15 @@ class CompStatsV2:
     basis: str  # "sold" only if EVERY kept point is sold, else "asking"
     is_stale: bool
     is_dispersed: bool
+    # -- sample span -------------------------------------------------------
+    # How much CALENDAR TIME the kept points cover, which is a different
+    # question from how many of them there are and from how fresh the newest
+    # one is. These three trail the rest of the dataclass and carry neutral
+    # defaults so that hand-built stats (the report's fixtures, a debugging
+    # snippet) keep working; compute_comp_stats always sets all three.
+    distinct_dates: int = 1  # number of distinct calendar dates among the kept points
+    span_days: int = 1  # oldest..newest inclusive of both ends -- one day is 1, not 0
+    is_concentrated: bool = False  # too few dates / too short a span to be independent
 
 
 @dataclass
@@ -585,6 +603,81 @@ def trim_outliers(
     return kept, len(points) - len(kept)
 
 
+def _is_concentrated(
+    *,
+    basis: str,
+    distinct_dates: int,
+    span_days: int,
+    min_distinct_comp_dates: int,
+    min_comp_span_days: int,
+) -> bool:
+    """Is this bucket too concentrated in time to be independent evidence?
+
+    THE DEFECT. ``min_comps_required`` counts observations, not independent
+    readings. The daily scan records every listing it sees each morning, so a
+    bucket of six asking prices captured in one run is one snapshot six
+    listings deep. The engine used to hand that the same confidence as six
+    prices spread over six weeks. The staleness gate does not help: it asks
+    only whether the NEWEST point is recent, so an all-this-morning bucket is
+    maximally fresh and maximally un-independent. (The related problem of the
+    same listing recurring across overlapping alert-lookback windows is
+    already solved upstream -- price_history.deduped_observations collapses
+    repeat sightings by listing id. What is left is purely calendar spread.)
+
+    THE RULE is a conjunction of two different measures, because each one
+    plugs the other's hole:
+
+      * ``distinct_dates >= min_distinct_comp_dates`` -- how many separate
+        mornings contributed. This is the unit of independence: one scan is
+        one draw from the market, however many listings it returned.
+      * ``span_days >= min_comp_span_days`` -- how much calendar time those
+        mornings cover.
+
+    Neither alone is enough. A span rule alone passes a bucket of twenty
+    prices from one morning plus a single straggler a week later: span 8,
+    twenty-one points, still essentially one snapshot -- and it perversely
+    rewards keeping one old point around. A distinct-dates rule alone passes
+    three consecutive mornings, which is three draws from a market that has
+    not had time to move. Requiring both says what we actually mean: several
+    separate readings, taken far enough apart to be readings of a market
+    rather than of a moment.
+
+    On the case the two rules disagree about -- two observations a month
+    apart -- the distinct-dates rule is the one telling the truth. That is a
+    well-spread sample of two, and "two" is the problem; a span rule would
+    call it healthy. It is already caught by ``thin_sample`` at the current
+    minimum of 3, but only by luck, and this gate should not depend on that.
+
+    SOLD COMPS ARE EXEMPT, deliberately, and this is not a loophole.
+
+    Three sales on the same day are three completed transactions: three
+    separate buyers each agreed a price with a seller. They are independent
+    draws from the market in exactly the sense this gate is trying to
+    measure, and the fact that they happen to share a date says nothing about
+    them. Three asking prices on the same day are not: they may be one
+    seller's optimism listed three times, or one batch dumped by one
+    consignor into one morning's alert digest, and their shared date is the
+    whole reason to distrust them. A time-concentration rule designed for
+    asking prices would, applied to sold data, suppress the only real market
+    evidence the system has -- hand-entered sold comps are scarce by
+    construction (see src/sold_comps.py: twenty is a realistic ceiling), so a
+    gate that demands they arrive on three separate weeks would mean they
+    never count at all. That is the opposite of the intended effect.
+
+    Sold comps keep every other gate. Staleness still applies (a sale from
+    six months ago is old news), dispersion still applies, and thinness still
+    applies. Only the calendar-spread requirement is lifted.
+
+    ``basis`` is "sold" only when EVERY kept point is sold, which is the
+    existing all-or-nothing convention on CompStatsV2. A mixed bucket reads
+    as "asking" and is therefore gated -- correct, because the asking points
+    in it carry exactly the correlation this gate exists to catch.
+    """
+    if basis == BASIS_SOLD:
+        return False
+    return distinct_dates < min_distinct_comp_dates or span_days < min_comp_span_days
+
+
 def compute_comp_stats(
     points: Sequence[dict],
     *,
@@ -594,6 +687,8 @@ def compute_comp_stats(
     stale_after_days: int = 45,
     max_dispersion: float = 0.5,
     mad_threshold: float = 3.5,
+    min_distinct_comp_dates: int = 3,
+    min_comp_span_days: int = 7,
 ) -> Optional[CompStatsV2]:
     """Turn a bucket of observations into CompStatsV2, or None if nothing
     usable is left. Order matters and is the order of the audit's complaints:
@@ -633,6 +728,20 @@ def compute_comp_stats(
     age_newest, age_oldest = min(ages), max(ages)
     basis = BASIS_SOLD if all(p.get("basis", BASIS_ASKING) == BASIS_SOLD for p in kept) else BASIS_ASKING
 
+    # -- sample span ---------------------------------------------------------
+    # Both measures are always reported; only the gate is conditional. Counted
+    # over `kept`, i.e. after self-exclusion and the outlier trim, because the
+    # question is how spread out the points that produced THIS median are.
+    distinct_dates = len({p["_date"].date() for p in kept})
+    span_days = age_oldest - age_newest + 1  # inclusive of both ends
+    is_concentrated = _is_concentrated(
+        basis=basis,
+        distinct_dates=distinct_dates,
+        span_days=span_days,
+        min_distinct_comp_dates=min_distinct_comp_dates,
+        min_comp_span_days=min_comp_span_days,
+    )
+
     return CompStatsV2(
         median=median,
         mean=float(statistics.fmean(prices)),
@@ -648,6 +757,9 @@ def compute_comp_stats(
         basis=basis,
         is_stale=age_newest > stale_after_days,
         is_dispersed=dispersion > max_dispersion,
+        distinct_dates=distinct_dates,
+        span_days=span_days,
+        is_concentrated=is_concentrated,
     )
 
 
@@ -660,7 +772,8 @@ def assess_comp_match(stats: CompStatsV2, level: str, min_comps_required: int) -
       * asking-price data can never be "high"; it is what sellers hope for,
         not what buyers paid. 100% of today's corpus is asking, so "medium"
         is this project's honest ceiling until real sold data exists.
-      * thin (<5), stale, or dispersed each cost one more step.
+      * thin (<5), stale, dispersed, or concentrated in time each cost one
+        more step.
 
     The gates are separate from confidence on purpose: confidence says how
     much to trust the number, the gates say whether it may trigger a
@@ -676,6 +789,8 @@ def assess_comp_match(stats: CompStatsV2, level: str, min_comps_required: int) -
         confidence = _downgrade(confidence)
     if stats.is_dispersed:
         confidence = _downgrade(confidence)
+    if stats.is_concentrated:
+        confidence = _downgrade(confidence)
 
     reasons = []
     if not spec.flag_eligible:
@@ -686,6 +801,10 @@ def assess_comp_match(stats: CompStatsV2, level: str, min_comps_required: int) -
         reasons.append("stale_comps")
     if stats.is_dispersed:
         reasons.append("dispersed_comps")
+    if stats.is_concentrated:
+        # Listed last so it never displaces a more specific reason at the
+        # head of the tuple for callers that report only the first one.
+        reasons.append("concentrated_sample")
 
     return CompMatch(
         stats=stats,
@@ -728,6 +847,8 @@ class CompEngine:
         stale_after_days: int = 45,
         max_dispersion: float = 0.5,
         mad_threshold: float = 3.5,
+        min_distinct_comp_dates: int = 3,
+        min_comp_span_days: int = 7,
     ) -> None:
         self.min_comps_required = min_comps_required
         self.today = today
@@ -735,6 +856,20 @@ class CompEngine:
         self.stale_after_days = stale_after_days
         self.max_dispersion = max_dispersion
         self.mad_threshold = mad_threshold
+        # Sample-span gate; see _is_concentrated for the rule and the sold
+        # exemption. Defaults: at least 3 separate observation days covering
+        # at least a week. Three because two is what a scraper that has been
+        # running since yesterday produces -- the live corpus is 563
+        # observations on exactly 2 dates -- and because three is the
+        # smallest number of readings that can show a level rather than a
+        # single line between two points. A week because that is roughly one
+        # turnover of eBay's fixed-price/auction listing cycle, so a
+        # week-plus span means the listing pool refreshed at least once
+        # instead of one weekend's dump being counted several times. Both are
+        # cheap to satisfy for any card that genuinely trades, and impossible
+        # to satisfy by scanning harder on one morning, which is the point.
+        self.min_distinct_comp_dates = min_distinct_comp_dates
+        self.min_comp_span_days = min_comp_span_days
 
         self._buckets: Dict[str, Dict[tuple, List[dict]]] = {spec.name: {} for spec in LEVEL_SPECS}
         self._stats_cache: Dict[tuple, Optional[CompStatsV2]] = {}
@@ -885,5 +1020,7 @@ class CompEngine:
                 stale_after_days=self.stale_after_days,
                 max_dispersion=self.max_dispersion,
                 mad_threshold=self.mad_threshold,
+                min_distinct_comp_dates=self.min_distinct_comp_dates,
+                min_comp_span_days=self.min_comp_span_days,
             )
         return self._stats_cache[cache_key]

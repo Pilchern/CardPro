@@ -1,0 +1,20 @@
+{
+  "_comment": "SOLD comps you entered by hand -- the only real transaction data CardPro has. Everything else in the corpus is an ASKING price (what a seller hoped for), which is why the report says 'below the median ask' instead of 'below market'. Look a card up on 130point.com (free; shows eBay AND Goldin sold results including accepted Best Offers, which eBay's own completed-listings view hides), then add the sale here -- by hand, or with: python -m scripts.add_sold_comp --help. One sold comp outranks the entire asking-price hierarchy: it is the only kind of comp allowed to reach 'high' confidence, and the comp engine will trust it accordingly. That cuts both ways -- a WRONG entry here is worse than no entry at all, because it will be believed over everything else. Type the number you actually saw, for the exact card (same year, set, parallel, card number, grader AND grade -- a PSA 9 is a different market from a PSA 10), and leave a field out if you don't know it rather than guessing. Prices are the item price EXCLUDING shipping, matching how asking prices are recorded; put shipping in its own field if you want it on the record. This file is optional: if 'sales' stays empty, nothing breaks, you just keep getting asking-price comps.",
+  "_fields": "player (required) | year | set_name | parallel | card_number | grader + grade (both or neither) | qualifier (e.g. OC) | price (required, item price, no shipping) | shipping (optional) | date (required, YYYY-MM-DD, the date it SOLD) | source (130point | ebay | goldin | ...) | note (optional, anything you want to remember)",
+  "_example": {
+    "player": "Caleb Williams",
+    "year": 2024,
+    "set_name": "Prizm",
+    "parallel": "Silver",
+    "card_number": "301",
+    "grader": "PSA",
+    "grade": "10",
+    "qualifier": null,
+    "price": 348.0,
+    "shipping": 5.0,
+    "date": "2026-08-15",
+    "source": "130point",
+    "note": "accepted Best Offer, 3 similar sales same week"
+  },
+  "sales": []
+}

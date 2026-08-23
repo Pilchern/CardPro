@@ -132,13 +132,16 @@ The whole path, in order. Every step can only ever *narrow* what qualifies.
    details. Team names, award names and league names are masked before
    parallel matching, and a parallel must come from a known vocabulary --
    `White Sox` used to become parallel `White`.
-2. **Truncation repair, before anything is valued.** eBay truncates long
+2. **Truncated grades are refused, not repaired.** eBay truncates long
    titles in alert emails, and `PSA 1…` parses as PSA 1 when it's really
-   PSA 10. Candidates are re-fetched from the item page and re-parsed
-   *before* the comp lookup (capped at 30 fetches per run). This used to
-   happen after flagging, so the buy decision was made on a grade that could
-   be off by a factor of ten. If the fetch fails, the listing keeps the
-   truncated title and carries "grade uncertain" as a visible risk.
+   PSA 10. CardPro does **not** fetch the item page to resolve this: that
+   would be automated access to eBay's site, which principle 6 below rules
+   out for the same reason Craigslist is link-only. So a truncated title
+   that produced a grade is refused *before* the comp lookup — it can't be
+   valued, can't become a deal, and can't enter the comp corpus as a
+   mislabelled grade. It appears under NEEDS REVIEW with "grade uncertain"
+   as the stated reason. Raw cards are unaffected; there's no grade to get
+   wrong.
 3. **Market key.** Every card-level comp bucket is segmented by the market
    the card actually trades in: `raw`, or `graded + grader + grade +
    qualifier`. PSA 9 and BGS 9 are different markets. PSA 9 and PSA 10 are
@@ -362,18 +365,24 @@ actual mail, run `python -m scripts.test_ebay_alerts --raw` and read the
 output.
 
 **Truncated-title grades:** eBay truncates long titles in these emails, which
-can cut a grade number mid-digit (a "PSA 10" showing as "PSA 1…"). Since a
-grade is now part of the comp key, a wrong grade is a wrong valuation, so
-these are repaired **before** anything is valued: the scraper fetches the
-real title from eBay's own item page and re-derives identity from it
-(`ebay_email_alerts.fetch_full_title`), capped at 30 fetches per run so a
-template change can't turn into a burst of requests. This hasn't been tested
-against eBay's real site (this project's sandbox can't reach ebay.com to
-check during development) -- if it works, the corrected grade is used
-everywhere downstream; if eBay blocks it, it fails safe: the listing still
-shows up, with an explicit "grade uncertain" risk line instead of a possibly
-wrong number driving a buy decision. No further escalation is attempted
-either way.
+can cut a grade number mid-digit (a "PSA 10" showing as "PSA 1…"). Since the
+grade is part of the comp key, a wrong grade is a wrong valuation — and worse
+than a missing one, because it looks confident.
+
+CardPro used to fetch the real title from eBay's item page to fix this. It no
+longer does, and the reason is worth being explicit about: that request went
+out behind a spoofed Chrome `User-Agent`, whose only purpose is to make an
+automated request look like a person in a browser. That is exactly the
+behaviour principle 6 rules out, and the same repo refuses to scrape
+Craigslist on those grounds. eBay's User Agreement prohibits automated access
+to the site. The fetch is gone; no code under `src/` sends a `User-Agent`
+header, and a test asserts it stays that way.
+
+What happens instead: a listing whose title is truncated **and** which parsed
+a grade is refused before valuation. It gets no market value, never becomes
+an opportunity, never enters the comp corpus, and shows up under NEEDS REVIEW
+with the grade-uncertain reason stated. You still see the card and the link —
+you just don't see a number derived from a grade nobody could verify.
 
 **One real tradeoff worth knowing:** eBay's saved-search alerts only cover
 *newly listed* items, not their full standing inventory, and there's no

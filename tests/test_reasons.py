@@ -249,3 +249,28 @@ def test_every_reason_can_be_recorded_and_summarised():
         log.record(reason)
     assert log.total() == len(ALL_REASONS)
     assert len(log.summary_lines()) == len(ALL_REASONS)
+
+
+def test_concentrated_sample_is_a_registered_reason():
+    # The comp engine emits "concentrated_sample" as a blocked_reason. If it
+    # isn't registered here, main.BLOCKED_TO_REASON silently falls back to
+    # context_only_level and the report tells you the wrong thing about why a
+    # card was held back.
+    assert Reason.CONCENTRATED_SAMPLE == "concentrated_sample"
+    assert label(Reason.CONCENTRATED_SAMPLE)
+    assert category(Reason.CONCENTRATED_SAMPLE) == "data_quality"
+
+
+def test_every_comp_engine_blocked_reason_maps_to_a_real_reason():
+    """Guards the seam between comps.py and reasons.py: the engine invents
+    blocked_reason strings and main.py maps them. A new one added on the
+    engine side with no entry here would be reported as something else
+    entirely -- which is how a concentrated sample briefly read as a
+    context-only comp."""
+    from src import main as main_module
+
+    engine_reasons = {"context_only_level", "thin_sample", "stale_comps",
+                      "dispersed_comps", "concentrated_sample"}
+    for blocked in engine_reasons:
+        assert blocked in main_module.BLOCKED_TO_REASON, blocked
+        assert label(main_module.BLOCKED_TO_REASON[blocked])

@@ -222,6 +222,27 @@ def _ob(price, days_ago=0, obs_id=None, player="Caleb Williams", card_type="raw"
     return obs
 
 
+def _spread(prices, step_days=7, base_days_ago=0, **fields):
+    """The same prices, but on distinct, well-separated dates -- oldest first.
+
+    Same-day fixtures were never realistic and are no longer harmless. The
+    daily scan takes one snapshot per morning, so five prices all dated today
+    are one reading five listings deep, and the sample-span gate now says so
+    (see comps._is_concentrated). Any fixture that means "a healthy bucket"
+    has to look like one.
+
+    Oldest first is deliberate: the recency weighting leans the median toward
+    new points, so pairing the newest date with the highest price keeps the
+    weighted median where an unweighted one would have put it and stops these
+    fixtures from quietly testing the decay curve instead of what they claim.
+    """
+    n = len(prices)
+    return [
+        _ob(p, days_ago=base_days_ago + (n - 1 - i) * step_days, **fields)
+        for i, p in enumerate(prices)
+    ]
+
+
 #: A fully-identified raw card, so `exact` applies.
 _IDENTITY = {"year": 2024, "set_name": "Prizm", "parallel": "Silver", "card_number": "123"}
 
@@ -275,14 +296,14 @@ class TestLevelSpecs:
 
 class TestLevelSelection:
     def test_exact_match_wins_when_full_identity_lines_up(self):
-        engine = _engine([_ob(p, **_IDENTITY) for p in (95.0, 100.0, 105.0)])
+        engine = _engine(_spread((95.0, 100.0, 105.0), **_IDENTITY))
         match = engine.lookup(player="Caleb Williams", card_type="raw", price=40.0, **_IDENTITY)
         assert match.level == "exact"
         assert match.stats.median == 100.0
         assert match.flag_eligible is True
 
     def test_falls_through_to_same_card_when_card_number_differs(self):
-        obs = [_ob(p, year=2024, set_name="Prizm", parallel="Silver", card_number="999") for p in (95.0, 100.0, 105.0)]
+        obs = _spread((95.0, 100.0, 105.0), year=2024, set_name="Prizm", parallel="Silver", card_number="999")
         match = _engine(obs).lookup(player="Caleb Williams", card_type="raw", price=40.0, **_IDENTITY)
         assert match.level == "same_card"
         assert match.flag_eligible is True
@@ -531,15 +552,18 @@ class TestStatistics:
 
 class TestQualityGates:
     def test_stale_bucket_is_not_flag_eligible_and_says_so(self):
-        obs = [_ob(p, days_ago=100, **_IDENTITY) for p in (95.0, 100.0, 105.0)]
+        # Spread across three dates so staleness is the only thing wrong with
+        # it -- an all-on-one-day version would also trip the span gate and
+        # stop pinning what this test claims to pin.
+        obs = _spread((95.0, 100.0, 105.0), base_days_ago=100, **_IDENTITY)
         match = _engine(obs).lookup(player="Caleb Williams", card_type="raw", price=50.0, **_IDENTITY)
         assert match.level == "exact"
         assert match.stats.is_stale is True
         assert match.flag_eligible is False
-        assert "stale_comps" in match.blocked_reasons
+        assert match.blocked_reasons == ("stale_comps",)
 
     def test_stale_threshold_is_configurable(self):
-        obs = [_ob(p, days_ago=100, **_IDENTITY) for p in (95.0, 100.0, 105.0)]
+        obs = _spread((95.0, 100.0, 105.0), base_days_ago=100, **_IDENTITY)
         match = _engine(obs, stale_after_days=365).lookup(player="Caleb Williams", card_type="raw", price=50.0, **_IDENTITY)
         assert match.stats.is_stale is False
         assert match.flag_eligible is True
@@ -547,11 +571,11 @@ class TestQualityGates:
     def test_dispersed_bucket_is_not_flag_eligible_and_says_so(self):
         """$20 / $100 / $300 for 'the same card' means the identity match is
         wrong or the market is chaos. Either way the median means little."""
-        obs = [_ob(p, **_IDENTITY) for p in (20.0, 100.0, 300.0)]
+        obs = _spread((20.0, 100.0, 300.0), **_IDENTITY)
         match = _engine(obs).lookup(player="Caleb Williams", card_type="raw", price=15.0, **_IDENTITY)
         assert match.stats.is_dispersed is True
         assert match.flag_eligible is False
-        assert "dispersed_comps" in match.blocked_reasons
+        assert match.blocked_reasons == ("dispersed_comps",)
 
     def test_thin_sample_is_reported_as_a_blocked_reason(self):
         """lookup() will not return a level thinner than min_comps_required,
@@ -567,20 +591,266 @@ class TestQualityGates:
         assert "thin_sample" in match.blocked_reasons
 
     def test_a_clean_recent_exact_bucket_is_flag_eligible(self):
-        obs = [_ob(p, days_ago=i, obs_id="id%d" % i, **_IDENTITY) for i, p in enumerate((95.0, 98.0, 100.0, 102.0, 105.0))]
+        obs = _spread((95.0, 98.0, 100.0, 102.0, 105.0), step_days=3, **_IDENTITY)
         match = _engine(obs).lookup(player="Caleb Williams", card_type="raw", price=50.0, **_IDENTITY)
         assert match.flag_eligible is True
         assert match.blocked_reasons == ()
 
     def test_blocked_reasons_accumulate(self):
-        obs = [_ob(p, days_ago=100, **_IDENTITY) for p in (20.0, 100.0, 300.0)]
+        obs = _spread((20.0, 100.0, 300.0), base_days_ago=100, **_IDENTITY)
         match = _engine(obs).lookup(player="Caleb Williams", card_type="raw", price=15.0, **_IDENTITY)
         assert set(match.blocked_reasons) == {"stale_comps", "dispersed_comps"}
 
 
+class TestSampleSpan:
+    """`distinct_dates` and `span_days` -- how much calendar time a bucket
+    actually covers, as opposed to how many rows it has. Measured on the
+    kept points, i.e. after self-exclusion and the outlier trim."""
+
+    def _stats(self, points, **kwargs):
+        return comps.compute_comp_stats(points, today=TODAY, **kwargs)
+
+    def test_single_day_bucket_has_one_date_and_a_span_of_one(self):
+        """A one-day bucket spans one day, not zero -- span counts days
+        covered, and a morning's scan covers a day."""
+        stats = self._stats([_ob(p, obs_id="id%d" % i, **_IDENTITY) for i, p in enumerate((95.0, 100.0, 105.0))])
+        assert stats.sample_size == 3
+        assert stats.distinct_dates == 1
+        assert stats.span_days == 1
+
+    def test_two_adjacent_days_span_two(self):
+        points = [
+            _ob(95.0, days_ago=1, obs_id="a", **_IDENTITY),
+            _ob(100.0, days_ago=1, obs_id="b", **_IDENTITY),
+            _ob(105.0, days_ago=0, obs_id="c", **_IDENTITY),
+        ]
+        stats = self._stats(points)
+        assert (stats.distinct_dates, stats.span_days) == (2, 2)
+
+    def test_span_is_inclusive_of_both_ends(self):
+        points = [
+            _ob(95.0, days_ago=30, obs_id="a", **_IDENTITY),
+            _ob(100.0, days_ago=0, obs_id="b", **_IDENTITY),
+        ]
+        stats = self._stats(points)
+        assert (stats.distinct_dates, stats.span_days) == (2, 31)
+
+    def test_distinct_dates_counts_days_not_observations(self):
+        """The whole point of the field: six observations captured on two
+        mornings are two readings, and the number must say two."""
+        points = [_ob(90.0 + i, days_ago=1 if i < 3 else 0, obs_id="id%d" % i, **_IDENTITY) for i in range(6)]
+        stats = self._stats(points)
+        assert stats.sample_size == 6
+        assert stats.distinct_dates == 2
+        assert stats.span_days == 2
+
+    def test_repeated_dates_do_not_inflate_the_count(self):
+        points = [_ob(100.0, days_ago=5, obs_id="id%d" % i, **_IDENTITY) for i in range(4)]
+        stats = self._stats(points)
+        assert (stats.sample_size, stats.distinct_dates, stats.span_days) == (4, 1, 1)
+
+    def test_self_exclusion_can_shrink_the_span(self):
+        """The excluded listing is not evidence about itself, so it does not
+        get to make its own bucket look well spread either."""
+        points = [
+            _ob(100.0, days_ago=60, obs_id="self", **_IDENTITY),
+            _ob(95.0, days_ago=6, obs_id="a", **_IDENTITY),
+            _ob(100.0, days_ago=3, obs_id="b", **_IDENTITY),
+            _ob(105.0, days_ago=0, obs_id="c", **_IDENTITY),
+        ]
+        assert self._stats(points).span_days == 61
+        assert self._stats(points).distinct_dates == 4
+        trimmed = self._stats(points, exclude_id="self")
+        assert (trimmed.distinct_dates, trimmed.span_days) == (3, 7)
+
+    def test_a_trimmed_outlier_does_not_count_toward_the_span(self):
+        """A $2,499 listing thrown out of the median must not be left behind
+        as evidence that the median was measured over two months."""
+        points = _spread((95.0, 98.0, 100.0, 102.0, 105.0), step_days=3, **_IDENTITY)
+        points.append(_ob(2499.0, days_ago=60, obs_id="outlier", **_IDENTITY))
+        stats = self._stats(points)
+        assert stats.trimmed_count == 1
+        assert (stats.distinct_dates, stats.span_days) == (5, 13)
+
+
+class TestConcentrationGate:
+    """The sample-span gate. `min_comps_required` counts rows; the daily scan
+    writes every listing it sees each morning, so rows are not readings."""
+
+    def _same_morning(self, prices=(95.0, 98.0, 100.0, 102.0, 105.0), **fields):
+        return [_ob(p, obs_id="id%d" % i, **dict(_IDENTITY, **fields)) for i, p in enumerate(prices)]
+
+    def test_single_day_asking_bucket_is_not_flag_eligible(self):
+        """Five asking prices captured in one morning is one snapshot five
+        listings deep. Deep enough for min_comps_required, and no basis at
+        all for spending money."""
+        match = _engine(self._same_morning()).lookup(player="Caleb Williams", card_type="raw", price=50.0, **_IDENTITY)
+        assert match.level == "exact"
+        assert match.stats.sample_size == 5
+        assert (match.stats.distinct_dates, match.stats.span_days) == (1, 1)
+        assert match.stats.is_concentrated is True
+        assert match.flag_eligible is False
+        assert "concentrated_sample" in match.blocked_reasons
+
+    def test_the_staleness_gate_does_not_catch_it(self):
+        """Why this gate had to exist: everything landed this morning, so the
+        newest point is maximally fresh and the bucket is maximally
+        un-independent. is_stale is the wrong question."""
+        match = _engine(self._same_morning()).lookup(player="Caleb Williams", card_type="raw", price=50.0, **_IDENTITY)
+        assert match.stats.is_stale is False
+        assert match.stats.age_days_newest == 0
+        assert match.stats.is_concentrated is True
+
+    def test_the_same_prices_spread_over_time_are_flag_eligible(self):
+        """Same five numbers, same depth -- only the dates differ, and that
+        is the whole difference between one snapshot and five readings."""
+        obs = _spread((95.0, 98.0, 100.0, 102.0, 105.0), step_days=3, **_IDENTITY)
+        match = _engine(obs).lookup(player="Caleb Williams", card_type="raw", price=50.0, **_IDENTITY)
+        assert (match.stats.distinct_dates, match.stats.span_days) == (5, 13)
+        assert match.stats.is_concentrated is False
+        assert match.flag_eligible is True
+        assert match.blocked_reasons == ()
+
+    def test_three_consecutive_mornings_are_still_too_narrow(self):
+        """Three distinct dates, but three days is not a market moving -- it
+        is one weekend's listings. This is the case a distinct-dates rule
+        alone would wave through."""
+        obs = _spread((95.0, 100.0, 105.0), step_days=1, **_IDENTITY)
+        match = _engine(obs).lookup(player="Caleb Williams", card_type="raw", price=50.0, **_IDENTITY)
+        assert match.stats.distinct_dates == 3
+        assert match.stats.span_days == 3
+        assert match.flag_eligible is False
+        assert "concentrated_sample" in match.blocked_reasons
+
+    def test_one_straggler_does_not_rescue_a_single_morning(self):
+        """Five prices this morning plus one from a month ago spans 31 days,
+        so a span rule alone would call it healthy. It is two readings, and
+        one of them is a single point."""
+        obs = self._same_morning()
+        obs.append(_ob(100.0, days_ago=30, obs_id="straggler", **_IDENTITY))
+        match = _engine(obs).lookup(player="Caleb Williams", card_type="raw", price=50.0, **_IDENTITY)
+        assert match.stats.sample_size == 6
+        assert match.stats.span_days == 31  # a span rule alone would pass this
+        assert match.stats.distinct_dates == 2
+        assert match.flag_eligible is False
+        assert "concentrated_sample" in match.blocked_reasons
+
+    def test_concentration_costs_one_step_of_confidence(self):
+        concentrated = _engine(self._same_morning()).lookup(
+            player="Caleb Williams", card_type="raw", price=50.0, **_IDENTITY
+        )
+        spread = _engine(_spread((95.0, 98.0, 100.0, 102.0, 105.0), step_days=3, **_IDENTITY)).lookup(
+            player="Caleb Williams", card_type="raw", price=50.0, **_IDENTITY
+        )
+        assert spread.confidence == "medium"  # exact/high, minus one for asking basis
+        assert concentrated.confidence == "low"  # ...minus one more for the span
+
+    def test_both_thresholds_are_configurable(self):
+        obs = self._same_morning()
+        relaxed = _engine(obs, min_distinct_comp_dates=1, min_comp_span_days=1).lookup(
+            player="Caleb Williams", card_type="raw", price=50.0, **_IDENTITY
+        )
+        assert relaxed.stats.is_concentrated is False
+        assert relaxed.flag_eligible is True
+
+    def test_raising_the_date_requirement_blocks_a_spread_bucket(self):
+        obs = _spread((95.0, 98.0, 100.0, 102.0, 105.0), step_days=3, **_IDENTITY)
+        match = _engine(obs, min_distinct_comp_dates=6).lookup(
+            player="Caleb Williams", card_type="raw", price=50.0, **_IDENTITY
+        )
+        assert match.stats.distinct_dates == 5
+        assert match.stats.is_concentrated is True
+
+    def test_raising_the_span_requirement_blocks_a_spread_bucket(self):
+        obs = _spread((95.0, 98.0, 100.0, 102.0, 105.0), step_days=3, **_IDENTITY)
+        match = _engine(obs, min_comp_span_days=30).lookup(
+            player="Caleb Williams", card_type="raw", price=50.0, **_IDENTITY
+        )
+        assert match.stats.span_days == 13
+        assert match.stats.is_concentrated is True
+
+    # -- sold comps are exempt ------------------------------------------------
+
+    def test_three_sold_comps_on_one_day_are_three_real_transactions(self):
+        """The exemption. Three sales on one day are three buyers who each
+        agreed a price -- independent evidence that happens to share a date.
+        Three asking prices on one day may be one seller's optimism."""
+        obs = [_ob(p, obs_id="s%d" % i, basis="sold", **_IDENTITY) for i, p in enumerate((95.0, 100.0, 105.0))]
+        match = _engine(obs).lookup(player="Caleb Williams", card_type="raw", price=50.0, **_IDENTITY)
+        assert match.stats.basis == "sold"
+        assert (match.stats.distinct_dates, match.stats.span_days) == (1, 1)
+        assert match.stats.is_concentrated is False
+        assert match.flag_eligible is True
+        assert "concentrated_sample" not in match.blocked_reasons
+
+    def test_sold_comps_on_one_day_keep_high_confidence(self):
+        obs = [_ob(p, obs_id="s%d" % i, basis="sold", **_IDENTITY)
+               for i, p in enumerate((95.0, 98.0, 100.0, 102.0, 105.0))]
+        match = _engine(obs).lookup(player="Caleb Williams", card_type="raw", price=50.0, **_IDENTITY)
+        assert match.confidence == "high"
+        assert match.flag_eligible is True
+
+    def test_one_asking_price_removes_the_exemption(self):
+        """basis is "sold" only when every kept point is sold. A mixed bucket
+        reads as asking, and the asking points in it carry exactly the
+        correlation this gate exists to catch."""
+        obs = [_ob(p, obs_id="s%d" % i, basis="sold", **_IDENTITY)
+               for i, p in enumerate((95.0, 98.0, 100.0, 102.0, 105.0))]
+        obs[0]["basis"] = "asking"
+        match = _engine(obs).lookup(player="Caleb Williams", card_type="raw", price=50.0, **_IDENTITY)
+        assert match.stats.basis == "asking"
+        assert match.stats.is_concentrated is True
+        assert match.flag_eligible is False
+        assert "concentrated_sample" in match.blocked_reasons
+
+    def test_sold_comps_are_still_subject_to_every_other_gate(self):
+        """Only the calendar-spread requirement is lifted. A sale from four
+        months ago is still old news."""
+        obs = [_ob(p, days_ago=120, obs_id="s%d" % i, basis="sold", **_IDENTITY)
+               for i, p in enumerate((95.0, 100.0, 105.0))]
+        match = _engine(obs).lookup(player="Caleb Williams", card_type="raw", price=50.0, **_IDENTITY)
+        assert match.stats.is_concentrated is False
+        assert match.stats.is_stale is True
+        assert match.blocked_reasons == ("stale_comps",)
+
+    # -- composition with the other gates -------------------------------------
+
+    def test_every_gate_at_once_reports_every_reason(self):
+        """Two prices, wildly apart, from one morning four months ago.
+        Checked through assess_comp_match because lookup() will not return a
+        bucket thinner than min_comps_required."""
+        points = [
+            _ob(20.0, days_ago=120, obs_id="a", **_IDENTITY),
+            _ob(300.0, days_ago=120, obs_id="b", **_IDENTITY),
+        ]
+        stats = comps.compute_comp_stats(points, today=TODAY)
+        match = comps.assess_comp_match(stats, "exact", min_comps_required=3)
+        assert set(match.blocked_reasons) == {
+            "thin_sample", "stale_comps", "dispersed_comps", "concentrated_sample",
+        }
+        assert match.flag_eligible is False
+        assert match.confidence == "low"
+
+    def test_a_context_only_level_reports_concentration_too(self):
+        obs = [_ob(p, obs_id="id%d" % i) for i, p in enumerate((40.0, 44.0, 50.0))]
+        match = _engine(obs).lookup(player="Caleb Williams", card_type="raw", price=26.0)
+        assert match.level == "price_tier"
+        assert set(match.blocked_reasons) == {"context_only_level", "concentrated_sample"}
+
+    def test_concentrated_sample_is_never_the_first_reason_listed(self):
+        """main.py reports blocked_reasons[0] as the rejection reason, so the
+        span gate must not displace a more specific one."""
+        obs = [_ob(p, obs_id="id%d" % i) for i, p in enumerate((40.0, 44.0, 50.0))]
+        match = _engine(obs).lookup(player="Caleb Williams", card_type="raw", price=26.0)
+        assert match.blocked_reasons[0] == "context_only_level"
+        assert match.blocked_reasons[-1] == "concentrated_sample"
+
+
 class TestConfidence:
     def _five(self, basis, **extra):
-        return [_ob(p, obs_id="id%d" % i, basis=basis, **dict(_IDENTITY, **extra)) for i, p in enumerate((95.0, 98.0, 100.0, 102.0, 105.0))]
+        """Five points on five separate dates -- a bucket whose confidence is
+        decided by basis and depth, with nothing else wrong with it."""
+        return _spread((95.0, 98.0, 100.0, 102.0, 105.0), step_days=3, basis=basis, **dict(_IDENTITY, **extra))
 
     def test_asking_basis_can_never_reach_high(self):
         """Asking prices are what sellers hope for. 100% of this project's
@@ -590,7 +860,7 @@ class TestConfidence:
         assert match.confidence == "medium"
 
     def test_missing_basis_defaults_to_asking(self):
-        obs = [_ob(p, obs_id="id%d" % i, **_IDENTITY) for i, p in enumerate((95.0, 98.0, 100.0, 102.0, 105.0))]
+        obs = _spread((95.0, 98.0, 100.0, 102.0, 105.0), step_days=3, **_IDENTITY)
         match = _engine(obs).lookup(player="Caleb Williams", card_type="raw", price=50.0, **_IDENTITY)
         assert match.stats.basis == "asking"
         assert match.confidence != "high"
@@ -703,6 +973,27 @@ class TestRealProductionCorpus:
     def test_no_corpus_comp_reaches_high_confidence(self):
         """Every price in this corpus is an asking price."""
         assert not [obs["id"] for obs, match in self._matches() if match.confidence == "high"]
+
+    def test_the_corpus_is_two_calendar_days_of_scanning(self):
+        """The premise of the next test, asserted rather than assumed: 563
+        observations, 2 dates. Depth without spread."""
+        dates = {obs.get("date") for obs in self._observations()}
+        assert len(dates) <= 2
+
+    def test_the_two_day_corpus_produces_no_flag_eligible_match(self):
+        """Now true for a second, independent reason. Even a bucket that got
+        past the identity, market, self-exclusion, staleness and dispersion
+        gates cannot get past this one, because every observation in the
+        corpus was captured on one of two consecutive mornings."""
+        assert [obs["id"] for obs, match in self._matches() if match.flag_eligible] == []
+
+    def test_every_corpus_bucket_is_time_concentrated(self):
+        """Not just blocked -- blocked by this gate specifically."""
+        matches = list(self._matches())
+        assert matches
+        assert all(match.stats.is_concentrated for _, match in matches)
+        assert all(match.stats.distinct_dates <= 2 for _, match in matches)
+        assert all("concentrated_sample" in match.blocked_reasons for _, match in matches)
 
     def test_coverage_is_reportable_for_the_real_corpus(self):
         engine = comps.CompEngine(self._observations(), min_comps_required=3, today=TODAY)

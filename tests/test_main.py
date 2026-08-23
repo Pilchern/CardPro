@@ -243,55 +243,114 @@ def observation(price, listing_id, date="2026-08-20", **overrides):
 def engine_for(observations, min_comps=3):
     return comps.CompEngine(observations, min_comps_required=min_comps, today=TODAY)
 
+# Comps spread over several separate mornings. A bucket captured in one scan
+# is one snapshot however deep it is, and the engine (correctly) refuses to
+# declare a deal from it -- so a fixture meant to produce a real opportunity
+# has to span real calendar time.
+SPREAD_DATES = ("2026-07-28", "2026-08-03", "2026-08-08", "2026-08-13", "2026-08-17", "2026-08-20")
+
+
+def spread_observations(price, **overrides):
+    return [
+        observation(price, "o%d" % index, date=date, **overrides)
+        for index, date in enumerate(SPREAD_DATES)
+    ]
+
 
 EXACT_TITLE = "2024 Panini Prizm Caleb Williams Silver #301 PSA 10"
 
 
-# --- Failure mode #5: truncated grades were comped before being repaired ---
+# --- Failure mode #5: a truncated grade must never be treated as a real one ---
+#
+# eBay truncates long titles in its alert emails, so a PSA 10 can arrive as
+# "PSA 1...", which parses as PSA 1. CardPro does NOT fetch the item page to
+# recover the real title -- that would be automated access to eBay's site,
+# which principle #1 forbids. The grade is therefore unknown, and a listing
+# whose grade is unknown is not allowed to be valued off a grade-matched comp.
 
 
-class TestTruncatedTitleRepair:
-    def test_repair_happens_and_rewrites_identity(self):
-        listing = make_listing("2024 Panini Prizm Caleb Williams Silver #301 PSA 1…", 250.0)
+TRUNCATED_TITLE = "2024 Panini Prizm Caleb Williams Silver #301 PSA 1\u2026"
+
+
+
+class TestTruncatedTitles:
+    def test_truncated_titles_are_marked_uncertain_not_repaired(self):
+        listing = make_listing(TRUNCATED_TITLE, 250.0)
         assert listing.grade == "1"  # the whole problem: a PSA 10 parsed as PSA 1
+        main_module.mark_truncated_titles([listing])
+        assert listing.title_truncated is True
+        # The title is left exactly as eBay sent it. There is no recovery
+        # step, so nothing rewrites identity behind your back either.
+        assert listing.title == TRUNCATED_TITLE
+        assert listing.grade == "1"
 
-        stats = observability.RunStats()
-        with mock.patch.object(
-            main_module.ebay_email_alerts, "fetch_full_title", return_value=EXACT_TITLE
-        ):
-            main_module.repair_truncated_titles([listing], stats)
-
-        assert listing.grade == "10"
+    def test_untruncated_titles_are_left_alone(self):
+        listing = make_listing(EXACT_TITLE, 250.0)
+        main_module.mark_truncated_titles([listing])
         assert listing.title_truncated is False
-        assert listing.card_identity.card_number.value == "301"
 
-    def test_failed_repair_marks_the_grade_uncertain_rather_than_asserting_it(self):
-        listing = make_listing("2024 Panini Prizm Caleb Williams Silver #301 PSA 1…", 250.0)
-        stats = observability.RunStats()
-        with mock.patch.object(main_module.ebay_email_alerts, "fetch_full_title", return_value=None):
-            main_module.repair_truncated_titles([listing], stats)
+    def test_marking_makes_no_network_call_of_any_kind(self):
+        """The point of the change: no HTTP request leaves the process for a
+        truncated title, by any route."""
+        listing = make_listing(TRUNCATED_TITLE, 250.0)
+        with mock.patch("socket.socket", side_effect=AssertionError("network access attempted")):
+            main_module.mark_truncated_titles([listing])
         assert listing.title_truncated is True
 
-    def test_untruncated_titles_are_never_fetched(self):
-        listing = make_listing(EXACT_TITLE, 250.0)
+    def test_truncated_graded_listing_never_becomes_an_opportunity(self):
+        # Comps for PSA 1 at $400 -- the grade the truncated title *parses*
+        # as. Without the gate this $100 listing reads as a 75%-off deal on a
+        # card that is probably a PSA 10, i.e. a wrong grade producing a
+        # confident wrong answer.
+        psa1_comps = spread_observations(400.0, grade="1")
+        listing = make_listing(TRUNCATED_TITLE, 100.0, listing_id="T1", listing_type="fixed_price")
         stats = observability.RunStats()
-        with mock.patch.object(main_module.ebay_email_alerts, "fetch_full_title") as fetch:
-            main_module.repair_truncated_titles([listing], stats)
-        fetch.assert_not_called()
 
-    def test_repairs_are_capped_and_warn(self):
-        listings = [
-            make_listing("2024 Prizm Caleb Williams PSA 1…", 10.0, listing_id="L%d" % i) for i in range(6)
-        ]
+        main_module.mark_truncated_titles([listing])
+        main_module.evaluate_listings([listing], engine_for(psa1_comps), fake_cfg(), stats)
+
+        assert listing.is_opportunity is False
+        assert listing.rejection_reason == reasons.Reason.GRADE_UNCERTAIN
+        # Rejected BEFORE the comp lookup, so no market value derived from
+        # the wrong grade is attached for the report to print.
+        assert listing.comp_match is None
+        assert listing.market_value is None
+        # Stated, not silently dropped -- it lands in NEEDS REVIEW.
+        assert stats.rejections.counts()[reasons.Reason.GRADE_UNCERTAIN] == 1
+
+    def test_the_same_listing_untruncated_would_have_been_a_deal(self):
+        """Proves the rejection above comes from the uncertain grade and not
+        from some unrelated part of the pipeline."""
+        psa1_comps = spread_observations(400.0, grade="1")
+        listing = make_listing(
+            "2024 Panini Prizm Caleb Williams Silver #301 PSA 1", 100.0,
+            listing_id="T2", listing_type="fixed_price",
+        )
         stats = observability.RunStats()
-        with mock.patch.object(
-            main_module.ebay_email_alerts, "fetch_full_title", return_value=EXACT_TITLE
-        ) as fetch:
-            main_module.repair_truncated_titles(listings, stats, limit=2)
-        assert fetch.call_count == 2
-        assert stats.warnings
-        # the ones we didn't get to are marked uncertain, not silently trusted
-        assert all(listing.title_truncated for listing in listings[2:])
+        main_module.mark_truncated_titles([listing])
+        assert listing.title_truncated is False
+
+        main_module.evaluate_listings([listing], engine_for(psa1_comps), fake_cfg(), stats)
+        assert listing.is_opportunity is True
+
+    def test_truncated_raw_listing_is_unaffected(self):
+        # No grader, no grade -- there is no grade to get wrong, so a
+        # truncated raw card is valued normally and can still be a deal.
+        raw_comps = spread_observations(400.0, card_type="raw", grader=None, grade=None)
+        listing = make_listing(
+            "2024 Panini Prizm Caleb Williams Silver #301 Rookie Card\u2026", 100.0,
+            listing_id="R1", listing_type="fixed_price",
+        )
+        assert listing.card_type == "raw"
+        assert listing.grade is None
+        stats = observability.RunStats()
+
+        main_module.mark_truncated_titles([listing])
+        assert listing.title_truncated is True  # still surfaced as a risk
+
+        main_module.evaluate_listings([listing], engine_for(raw_comps), fake_cfg(), stats)
+        assert listing.rejection_reason != reasons.Reason.GRADE_UNCERTAIN
+        assert listing.is_opportunity is True
 
 
 # --- An auction's current bid must never enter the comp corpus ---
@@ -349,7 +408,7 @@ class TestEvaluateListings:
         assert listing.rejection_reason == reasons.Reason.NO_COMP_AT_ANY_LEVEL
 
     def test_exclusion_does_not_break_a_healthy_bucket(self):
-        observations = [observation(400.0, "o%d" % i) for i in range(6)] + [observation(100.0, "L1")]
+        observations = spread_observations(400.0) + [observation(100.0, "L1")]
         listing = make_listing(EXACT_TITLE, 100.0, listing_id="L1", listing_type="fixed_price")
         stats = observability.RunStats()
         main_module.evaluate_listings([listing], engine_for(observations), fake_cfg(), stats)
@@ -424,14 +483,14 @@ class TestEvaluateListings:
         assert psa9.rejection_reason == reasons.Reason.NO_COMP_AT_ANY_LEVEL
 
     def test_below_threshold_records_the_specific_reason(self):
-        observations = [observation(300.0, "o%d" % i) for i in range(6)]
+        observations = spread_observations(300.0)
         listing = make_listing(EXACT_TITLE, 280.0, listing_id="L2", listing_type="fixed_price")
         stats = observability.RunStats()
         main_module.evaluate_listings([listing], engine_for(observations), fake_cfg(), stats)
         assert listing.rejection_reason == reasons.Reason.BELOW_DISCOUNT_THRESHOLD
 
     def test_below_min_savings_records_the_specific_reason(self):
-        observations = [observation(20.0, "o%d" % i) for i in range(6)]
+        observations = spread_observations(20.0)
         listing = make_listing(EXACT_TITLE, 12.0, listing_id="L3", listing_type="fixed_price")
         stats = observability.RunStats()
         main_module.evaluate_listings([listing], engine_for(observations), fake_cfg(), stats)
@@ -632,7 +691,7 @@ class TestCheapCards:
             set_name="Prizm", parallel="Silver", card_number="301",
         )
         fields.update(identity)
-        return [observation(median, "o%d" % i, **fields) for i in range(6)]
+        return spread_observations(median, **fields)
 
     def test_a_cheap_card_with_a_real_attribute_can_now_be_an_opportunity(self):
         listing = make_listing(
@@ -720,3 +779,47 @@ class TestCheapCards:
         main_module.evaluate_listings([listing], engine_for(self._cheap_comps()), cfg, stats)
         assert listing.is_cheap is False
         assert listing.is_opportunity is True  # 67% off clears the ordinary 30% bar
+
+
+class TestSoldCompsWiring:
+    """Hand-entered sold prices are the only real transactions in the corpus.
+    They must actually reach the engine, and they must outrank asking prices
+    -- see src/sold_comps.py."""
+
+    def test_sold_comps_are_loaded_into_the_corpus(self, tmp_path, monkeypatch):
+        from src import sold_comps
+
+        path = tmp_path / "sold_comps.json"
+        path.write_text(json.dumps({"sales": [
+            {"player": "Caleb Williams", "year": 2024, "set_name": "Prizm", "parallel": "Silver",
+             "card_number": "301", "grader": "PSA", "grade": "10", "price": 400.0,
+             "date": "2026-08-0%d" % d, "source": "130point"}
+            for d in (1, 5, 9)
+        ]}))
+        loaded = sold_comps.load(path)
+        assert len(loaded) == 3
+        assert all(o["basis"] == comps.BASIS_SOLD for o in loaded)
+
+    def test_a_sold_comp_can_reach_high_confidence_where_asking_never_can(self):
+        from src import sold_comps
+
+        sales = [
+            {"player": "Caleb Williams", "year": 2024, "set_name": "Prizm", "parallel": "Silver",
+             "card_number": "301", "grader": "PSA", "grade": "10", "price": p, "date": d,
+             "source": "130point"}
+            for p, d in [(400.0, "2026-08-01"), (405.0, "2026-08-08"), (395.0, "2026-08-15"),
+                         (402.0, "2026-08-18"), (398.0, "2026-08-20")]
+        ]
+        engine = engine_for(sold_comps.parse_sales(sales))
+        match = engine.lookup(
+            player="Caleb Williams", card_type="graded", price=250.0, grader="PSA", grade="10",
+            year=2024, set_name="Prizm", parallel="Silver", card_number="301",
+        )
+        assert match.stats.basis == comps.BASIS_SOLD
+        assert match.confidence == "high"
+        assert match.flag_eligible is True
+
+    def test_missing_sold_comps_file_is_the_normal_case(self, tmp_path):
+        from src import sold_comps
+
+        assert sold_comps.load(tmp_path / "nope.json") == []

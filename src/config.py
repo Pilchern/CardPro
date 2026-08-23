@@ -66,7 +66,13 @@ class Config:
     valuation_stale_after_days: int
     valuation_max_dispersion: float
     valuation_mad_threshold: float
+    valuation_min_distinct_comp_dates: int
+    valuation_min_comp_span_days: int
     require_flag_eligible_comp: bool
+
+    # Hand-entered sold prices -- the only real market data available. See
+    # config/settings.json's "sold_comps" comment and src/sold_comps.py.
+    sold_comps_path: Path
 
     # Resale assumptions (NOT facts -- surfaced in the report alongside the
     # numbers they produce). See src/economics.py.
@@ -126,6 +132,7 @@ def load_config() -> Config:
     auctions = _section(settings, "auctions")
     alerts = _section(settings, "alerts")
     cheap = _section(settings, "cheap_cards")
+    sold = _section(settings, "sold_comps")
 
     # Treat the unfilled-in placeholder from .env.example the same as "not set".
     ebay_client_id = os.environ.get("EBAY_CLIENT_ID") or None
@@ -167,6 +174,9 @@ def load_config() -> Config:
         valuation_stale_after_days=int(valuation.get("stale_after_days", 45)),
         valuation_max_dispersion=float(valuation.get("max_dispersion", 0.5)),
         valuation_mad_threshold=float(valuation.get("mad_threshold", 3.5)),
+        valuation_min_distinct_comp_dates=int(valuation.get("min_distinct_comp_dates", 3)),
+        valuation_min_comp_span_days=int(valuation.get("min_comp_span_days", 7)),
+        sold_comps_path=ROOT_DIR / sold.get("path", "config/sold_comps.json"),
         require_flag_eligible_comp=bool(valuation.get("require_flag_eligible_comp", True)),
         fee_marketplace_pct=float(economics.get("marketplace_fee_pct", 13.25)),
         fee_marketplace_fixed=float(economics.get("marketplace_fixed_fee", 0.30)),
