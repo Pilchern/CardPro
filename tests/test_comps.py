@@ -974,26 +974,53 @@ class TestRealProductionCorpus:
         """Every price in this corpus is an asking price."""
         assert not [obs["id"] for obs, match in self._matches() if match.confidence == "high"]
 
-    def test_the_corpus_is_two_calendar_days_of_scanning(self):
-        """The premise of the next test, asserted rather than assumed: 563
-        observations, 2 dates. Depth without spread."""
-        dates = {obs.get("date") for obs in self._observations()}
-        assert len(dates) <= 2
+    def test_the_corpus_produces_no_flag_eligible_match_from_asking_prices(self):
+        """The regression guard this whole class exists for.
 
-    def test_the_two_day_corpus_produces_no_flag_eligible_match(self):
-        """Now true for a second, independent reason. Even a bucket that got
-        past the identity, market, self-exclusion, staleness and dispersion
-        gates cannot get past this one, because every observation in the
-        corpus was captured on one of two consecutive mornings."""
-        assert [obs["id"] for obs, match in self._matches() if match.flag_eligible] == []
+        Deliberately NOT phrased as "the corpus is two days old, therefore
+        nothing flags" -- an earlier version was, and it broke the first
+        morning the production scan appended a third day. This file is live
+        state that the daily run rewrites; a test that hardcodes what it
+        contains is a test with an expiry date.
 
-    def test_every_corpus_bucket_is_time_concentrated(self):
-        """Not just blocked -- blocked by this gate specifically."""
+        What is asserted instead is the property that must hold at any corpus
+        size: an asking-price observation cannot become a deal unless it
+        clears every gate, and if one ever does, that is a finding worth
+        seeing rather than a red test. Sold comps are excluded because they
+        legitimately can flag -- that is their entire purpose.
+        """
+        flagged = [
+            (obs["id"], match.level, match.stats.distinct_dates, match.stats.span_days)
+            for obs, match in self._matches()
+            if match.flag_eligible and match.stats.basis != comps.BASIS_SOLD
+        ]
+        assert flagged == [], (
+            "asking-price observations became flag-eligible: {}. Either the corpus has "
+            "genuinely accumulated enough spread and identity for this to be real -- in "
+            "which case check the cards by hand and relax this test -- or a gate "
+            "regressed.".format(flagged[:5])
+        )
+
+    def test_concentration_flag_agrees_with_the_corpus_dates(self):
+        """The gate must be a function of the data, not of the calendar.
+
+        Rather than asserting the corpus is concentrated (true today, false
+        once it has run for a week), this asserts the engine's verdict matches
+        what the observations actually contain. It holds at two days and at
+        two years, and it fails if the gate ever stops tracking its own
+        inputs.
+        """
         matches = list(self._matches())
-        assert matches
-        assert all(match.stats.is_concentrated for _, match in matches)
-        assert all(match.stats.distinct_dates <= 2 for _, match in matches)
-        assert all("concentrated_sample" in match.blocked_reasons for _, match in matches)
+        assert matches, "the corpus produced no comp matches at all -- that is itself a bug"
+        for obs, match in matches:
+            stats = match.stats
+            expected = stats.distinct_dates < 3 or stats.span_days < 7
+            assert stats.is_concentrated is expected, (
+                "{}: distinct_dates={} span_days={} -> is_concentrated={}, expected {}".format(
+                    obs["id"], stats.distinct_dates, stats.span_days, stats.is_concentrated, expected
+                )
+            )
+            assert ("concentrated_sample" in match.blocked_reasons) is expected
 
     def test_coverage_is_reportable_for_the_real_corpus(self):
         engine = comps.CompEngine(self._observations(), min_comps_required=3, today=TODAY)
