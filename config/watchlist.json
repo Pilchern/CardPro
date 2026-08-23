@@ -1,15 +1,9 @@
 {
   "_comment": "Edit this list any time -- one player/name per entry. Names are matched case-insensitively against listing titles (first AND last name must both appear). Re-run is all that's needed, no code changes.",
+  "_scope_note": "CURRENT AND UP-AND-COMING PLAYERS ONLY (set Aug 2026). The eight retired players originally here -- Jordan, Payton, Banks, Sandberg, Butkus, Pippen, Thomas, Sayers -- were removed on purpose: the interest is in active players, not vintage. Don't re-add a retired name without deciding that deliberately. Historical observations for those players remain in data/ebay_alert_price_history.json and are simply never looked up again, since comps are only built for players on this list.",
+
   "_current_era_note": "Bears (Williams/Odunze/Burden/Loveland) are stable, ascending, and safe long-term watchlist bets as of Aug 2026. Bulls are mid-rebuild after a full roster purge at the Feb 2026 trade deadline -- Giddey and Buzelis are the two players reporting says the team is building around, and Wilson is their fresh #4-overall 2026 rookie. Revisit this trio periodically since a rebuilding team's roster moves fastest. Added Aug 2026: Bedard (Blackhawks) is an established young star with a large, liquid card market. White Sox/Cubs additions are scoped to players who've actually debuted in MLB with a real card market -- Murakami and Crow-Armstrong are the headline names, Teel and Montgomery are the next tier down. Deliberately skipped un-debuted minor-league prospects (e.g. Cholowsky, Ballesteros) since there's no real market data yet to judge a 'deal' against.",
   "players": [
-    "Michael Jordan",
-    "Walter Payton",
-    "Ernie Banks",
-    "Ryne Sandberg",
-    "Dick Butkus",
-    "Scottie Pippen",
-    "Frank Thomas",
-    "Gale Sayers",
     "Caleb Williams",
     "Rome Odunze",
     "Luther Burden",
@@ -37,20 +31,5 @@
     "Kyle Teel": "young_core",
     "Colson Montgomery": "young_core",
     "Pete Crow-Armstrong": "young_core"
-  },
-  "_target_cards_comment": "Acquisition targets: specific cards you want, with YOUR price thresholds. Separate from the player watchlist and from valuation -- a target hit says 'the card you asked for is available at your price', not 'this is underpriced'. Copy the shape from _target_cards_example below. Only `player` and at least one threshold are required; every other field narrows the match, and a field you specify must match exactly (a listing whose parallel/grade CardPro couldn't identify never counts as a hit -- unknown is never treated as a match). Left empty on purpose: these are your prices to set, not ours to guess.",
-  "_target_cards_example": {
-    "label": "2024 Panini Prizm Caleb Williams Silver PSA 10",
-    "player": "Caleb Williams",
-    "year": 2024,
-    "set_name": "Prizm",
-    "parallel": "Silver",
-    "card_number": "301",
-    "grader": "PSA",
-    "grade": "10",
-    "buy_zone": 400,
-    "great_buy": 350,
-    "immediate_alert": 300
-  },
-  "target_cards": []
+  }
 }

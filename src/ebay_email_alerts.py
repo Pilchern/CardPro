@@ -37,7 +37,6 @@ from email.message import Message
 from typing import Optional
 from urllib.parse import unquote
 
-import requests
 from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
@@ -87,13 +86,13 @@ LISTING_TYPE_UNKNOWN = "unknown"
 
 TRUNCATION_MARKERS = ("…", "...")  # eBay truncates long titles in these emails with an ellipsis
 
-_FULL_TITLE_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
-    )
-}
-_TITLE_SUFFIXES_TO_STRIP = (" | eBay", " for sale online | eBay", " | eBay US")
+# NOTE: an earlier version fetched the eBay item page to recover a truncated
+# title, sending a spoofed desktop-Chrome User-Agent. That is automated
+# access to eBay dressed up as a browser -- against eBay's User Agreement
+# (which names automated means and LLM-driven bots explicitly since Feb
+# 2026) and against this project's own rule about not working around a
+# marketplace's anti-automation measures. Removed; a truncated grade is
+# reported as uncertain, which is what the fallback already did._TITLE_SUFFIXES_TO_STRIP = (" | eBay", " for sale online | eBay", " | eBay US")
 
 
 def fetch_alert_messages(
@@ -357,46 +356,6 @@ def _extract_shipping(text: str) -> Optional[float]:
 
 def looks_truncated(title: str) -> bool:
     return title.rstrip().endswith(TRUNCATION_MARKERS)
-
-
-def fetch_full_title(url: str, timeout: int = 10) -> Optional[str]:
-    """Best-effort fetch of the real (non-truncated) title from an eBay
-    item page -- eBay's alert emails truncate long titles, which can cut a
-    grade number mid-digit (a "PSA 10" showing as "PSA 1…"). Uses the
-    page's <title> element rather than guessing eBay's CSS class names,
-    since document titles are a far more stable target across redesigns.
-
-    Returns None on ANY failure (network error, non-200, no <title>) --
-    callers MUST treat that as "keep the truncated title," not an error.
-    This has not been tested against eBay's real item pages (this
-    project's sandbox can't reach ebay.com to check) -- if it turns out
-    eBay blocks plain requests here the way Craigslist did, this will
-    reliably return None and the caller's fallback (marking the grade as
-    uncertain rather than asserting a possibly-wrong number) takes over
-    with no further escalation attempted.
-
-    Only call this for listings that already cleared the deal threshold
-    (a handful a day) -- not the full raw batch -- to keep this occasional
-    rather than high-volume.
-    """
-    try:
-        resp = requests.get(url, headers=_FULL_TITLE_HEADERS, timeout=timeout)
-    except requests.RequestException:
-        logger.warning("Couldn't fetch full title for %s (request failed)", url)
-        return None
-    if resp.status_code != 200:
-        logger.warning("Couldn't fetch full title for %s (HTTP %s)", url, resp.status_code)
-        return None
-
-    soup = BeautifulSoup(resp.text, "html.parser")
-    if not soup.title or not soup.title.string:
-        return None
-    title = soup.title.get_text(strip=True)
-    for suffix in _TITLE_SUFFIXES_TO_STRIP:
-        if title.endswith(suffix):
-            title = title[: -len(suffix)]
-            break
-    return title.strip() or None
 
 
 def fetch_alert_listings(

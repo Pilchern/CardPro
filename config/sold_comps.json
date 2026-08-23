@@ -1,0 +1,34 @@
+{
+  "_comment": "Hand-entered SOLD prices. This is the only real market data CardPro has -- every other number in the system is an asking price. A sold comp always beats the ask-based comps for the same card, and is the only thing that lets the report legitimately say 'below market' rather than 'below the median ask'.",
+
+  "_why_by_hand": "There is no free, automatable, sanctioned sold-price feed: eBay's Marketplace Insights API is Limited Release and closed to new users, eBay's User Agreement forbids scraping, Terapeak is free but has no export, and the paid catalogues are out of scope. See docs/AUDIT_2026-08.md section 6. The saving grace is that the list of cards you genuinely care about is short -- twenty entries covering your real targets buys a trustworthy number exactly where money gets spent.",
+
+  "_where_to_look": [
+    "eBay -> search the card -> filter Sold Items (90 days)",
+    "eBay Seller Hub -> Product Research / Terapeak (3 years, free with any seller account)",
+    "PSA Auction Prices Realized, psacard.com/auctionprices (free, PSA-graded, includes auction houses)",
+    "130point.com/sales (free, and shows accepted Best Offer prices eBay hides)"
+  ],
+
+  "_matching": "An entry matches a listing only on FULL identity including grade -- a PSA 10, a PSA 9 and a raw copy are different markets and never each other's comps. Leave grader/grade null for a raw card. Fields are matched case-insensitively, so capitalisation doesn't have to be consistent.",
+
+  "_recency": "Sales older than max_age_days are ignored rather than adjusted -- an old sale is a fact about a different market, and CardPro has no trend model to age it forward with. Re-check your target cards a few times a year.",
+  "max_age_days": 180,
+
+  "_adding": "Run `python -m scripts.add_sold_comp` for a guided prompt, or edit this file directly. Confidence follows sample size: 5+ sales high, 3+ medium, otherwise low.",
+
+  "_example_comment": "Delete the example below and add your own. It is real in shape but the numbers are illustrative, not observed.",
+  "comps": [
+    {
+      "player": "Caleb Williams",
+      "year": 2024,
+      "set_name": "Prizm",
+      "parallel": "Silver",
+      "card_number": "301",
+      "grader": "PSA",
+      "grade": "10",
+      "_note": "EXAMPLE ONLY -- replace with sales you actually looked up.",
+      "sales": []
+    }
+  ]
+}

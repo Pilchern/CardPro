@@ -56,6 +56,7 @@ from src import (
     reasons,
     report,
     search_terms,
+    sold_comps,
     targets,
 )
 from src.config import ROOT_DIR, load_config
@@ -67,12 +68,6 @@ LOG_PATH = ROOT_DIR / "logs" / "scraper.log"
 # so a script that runs once a day forever doesn't grow the log unbounded.
 LOG_MAX_BYTES = 2_000_000
 LOG_BACKUP_COUNT = 5
-
-# Repairing a truncated title costs one HTTP request to the item page. This
-# caps how many we'll do per run so a template change that suddenly makes
-# every title look truncated turns into a logged warning, not hundreds of
-# requests at eBay.
-MAX_TITLE_REPAIRS_PER_RUN = 30
 
 # Which negative signal maps to which rejection reason. Signals that aren't
 # here (currently only "damaged") are surfaced as risks rather than blocks --
@@ -278,60 +273,38 @@ def fetch_ebay_sold_observations(cfg, players, token) -> list:
 # --------------------------------------------------------------------------
 
 
-def repair_truncated_titles(listings, stats, limit: int = MAX_TITLE_REPAIRS_PER_RUN) -> None:
+def mark_truncated_titles(listings, stats) -> None:
     """eBay's alert emails truncate long titles, and a truncated grade parses
-    as the wrong grade ("PSA 1..." -> PSA 1, when it's really PSA 10). Fetch
-    the real title from the item page and re-derive identity from it.
+    as the wrong grade ("PSA 1..." -> PSA 1, when it's really PSA 10). Those
+    listings are marked so valuation and the report treat the grade as
+    uncertain instead of asserting it.
 
-    This runs before valuation on purpose: the old code repaired titles only
-    after a listing had already been flagged, so the comp lookup and the deal
-    decision were both made against a grade that could be off by a factor of
-    ten. See docs/CARDPRO_2_AUDIT.md failure mode #5.
+    This runs before valuation on purpose: the old code handled truncation
+    only after a listing had already been flagged, so the comp lookup and the
+    deal decision were both made against a grade that could be off by a
+    factor of ten. See docs/CARDPRO_2_AUDIT.md failure mode #5.
 
-    Fails safe in every direction: any fetch failure leaves the truncated
-    title in place and marks `title_truncated`, which the report shows as a
-    risk. Capped at `limit` fetches per run so a template change can't turn
-    into a burst of requests.
+    It used to FETCH the real title from the eBay item page, sending a
+    spoofed desktop-Chrome User-Agent. That is automated access to eBay
+    dressed up as a browser: eBay's User Agreement prohibits "any robot,
+    spider, scraper... or other automated means", naming LLM-driven bots
+    explicitly since February 2026, and this project's own rules forbid
+    working around a marketplace's anti-automation measures. Removed.
+
+    The truncated title is all we legitimately have, so uncertainty is the
+    honest answer -- which is exactly what the old code already did whenever
+    the fetch failed.
     """
     logger = logging.getLogger("main")
-    attempted = repaired = 0
+    flagged = 0
     for listing in listings:
         if not ebay_email_alerts.looks_truncated(listing.title):
             continue
-        if attempted >= limit:
-            listing.title_truncated = True
-            continue
-        attempted += 1
-        full_title = ebay_email_alerts.fetch_full_title(listing.url)
-        if not full_title:
-            listing.title_truncated = True
-            continue
-
-        repaired += 1
-        listing.title = full_title
-        identity = card_identity.extract_card_identity(full_title)
-        grade_info = matcher.detect_grade_details(full_title)
-        listing.card_identity = identity
-        listing.card_type = grade_info.card_type
-        listing.grader = grade_info.grader
-        listing.grade = grade_info.grade
-        listing.is_rookie_card = matcher.detect_rookie_card(full_title)
-        listing.negative_signals = tuple(identity.negative_signals.value or ())
-        listing.title_truncated = False
-
-    if attempted:
-        logger.info("Truncated titles: %d/%d repaired before valuation", repaired, attempted)
-    if attempted >= limit:
-        stats.warn(
-            "Hit the {}-per-run cap on truncated-title repairs. If that keeps happening, "
-            "eBay probably changed their email template.".format(limit)
-        )
-
-
-# --------------------------------------------------------------------------
-# Observations
-# --------------------------------------------------------------------------
-
+        listing.title_truncated = True
+        flagged += 1
+    if flagged:
+        logger.info("%d listing(s) have a truncated title; grade reported as uncertain", flagged)
+    stats.titles_truncated = flagged
 
 def listings_as_observations(listings, today_str: str) -> list:
     """Today's asking prices as comp observations, for a source that has no
@@ -726,7 +699,7 @@ def run(args: argparse.Namespace) -> None:
 
         # Repair truncated titles FIRST -- a wrong grade here becomes a wrong
         # valuation everywhere downstream.
-        repair_truncated_titles(listings, stats)
+        mark_truncated_titles(listings, stats)
 
         history = price_history.load(cfg.ebay_alert_price_history_path)
         recorded = record_observations(listings, history, today_str)
@@ -740,8 +713,26 @@ def run(args: argparse.Namespace) -> None:
             "sending Craigslist links only"
         )
 
+    # Hand-entered sold prices join the same corpus, marked basis="sold" --
+    # see src/sold_comps.py. They need no separate valuation path: CompEngine
+    # already segments by market, self-excludes, trims and weights, and only
+    # calls a comp "sold" when every kept point is. They are also the only
+    # thing that lifts the confidence ceiling comps.py imposes on
+    # asking-price data.
+    sold_observations = sold_comps.load_observations(cfg.sold_comps_path)
+    if sold_observations:
+        logger.info(
+            "Loaded %d hand-entered SOLD observation(s) from %s",
+            len(sold_observations), cfg.sold_comps_path.name,
+        )
+    else:
+        logger.info(
+            "No hand-entered sold comps -- every figure in today's report is relative to "
+            "ASKING prices. See config/sold_comps.json."
+        )
+
     engine = comps.CompEngine(
-        observations,
+        list(observations) + sold_observations,
         min_comps_required=cfg.valuation_min_comps_required,
         today=today,
         half_life_days=cfg.valuation_half_life_days,

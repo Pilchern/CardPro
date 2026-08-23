@@ -51,6 +51,11 @@ class Config:
     ebay_alerts_mailbox: str  # IMAP folder searched -- defaults to All Mail, see ebay_email_alerts.DEFAULT_MAILBOX
     ebay_alert_price_history_path: Path
     ebay_alert_price_history_max_age_days: int
+    # Hand-entered sold prices -- the only real market data in the system,
+    # and the only thing that lifts comps.py's asking-price confidence
+    # ceiling. See src/sold_comps.py.
+    sold_comps_path: Path
+
 
     seen_listings_path: Path
     prune_after_days: int
@@ -159,6 +164,7 @@ def load_config() -> Config:
         ebay_alerts_mailbox=settings["ebay_alerts"].get("mailbox", DEFAULT_MAILBOX),
         ebay_alert_price_history_path=ROOT_DIR / settings["ebay_alerts"]["price_history_path"],
         ebay_alert_price_history_max_age_days=int(settings["ebay_alerts"]["price_history_max_age_days"]),
+        sold_comps_path=CONFIG_DIR / "sold_comps.json",
         seen_listings_path=ROOT_DIR / settings["dedupe"]["seen_listings_path"],
         prune_after_days=int(settings["dedupe"]["prune_after_days"]),
         email_subject_prefix=settings["email"]["subject_prefix"],

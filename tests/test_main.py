@@ -250,52 +250,47 @@ EXACT_TITLE = "2024 Panini Prizm Caleb Williams Silver #301 PSA 10"
 # --- Failure mode #5: truncated grades were comped before being repaired ---
 
 
-class TestTruncatedTitleRepair:
-    def test_repair_happens_and_rewrites_identity(self):
-        listing = make_listing("2024 Panini Prizm Caleb Williams Silver #301 PSA 1…", 250.0)
-        assert listing.grade == "1"  # the whole problem: a PSA 10 parsed as PSA 1
+class TestTruncatedTitleMarking:
+    """A truncated title can cut a grade mid-digit, turning a PSA 10 into a
+    PSA 1 -- opposite ends of the market. The real title cannot be recovered
+    (fetching the eBay item page is prohibited by its User Agreement), so it
+    is reported as uncertain rather than asserted."""
 
-        stats = observability.RunStats()
-        with mock.patch.object(
-            main_module.ebay_email_alerts, "fetch_full_title", return_value=EXACT_TITLE
-        ):
-            main_module.repair_truncated_titles([listing], stats)
+    def _listing(self, title):
+        from src.models import Listing
 
-        assert listing.grade == "10"
-        assert listing.title_truncated is False
-        assert listing.card_identity.card_number.value == "301"
+        return Listing(
+            id="1", source="ebay-alert", title=title, price=350.0,
+            url="https://www.ebay.com/itm/1", player="Frank Thomas",
+            card_type="graded", grader="PSA", grade="1",
+        )
 
-    def test_failed_repair_marks_the_grade_uncertain_rather_than_asserting_it(self):
-        listing = make_listing("2024 Panini Prizm Caleb Williams Silver #301 PSA 1…", 250.0)
-        stats = observability.RunStats()
-        with mock.patch.object(main_module.ebay_email_alerts, "fetch_full_title", return_value=None):
-            main_module.repair_truncated_titles([listing], stats)
+    def test_a_truncated_title_is_marked_uncertain(self):
+        from src import main, observability
+
+        listing = self._listing("1990 Fleer Frank Thomas PSA 1\u2026")
+        main.mark_truncated_titles([listing], observability.RunStats())
+
         assert listing.title_truncated is True
+        assert listing.grade == "1"  # left as parsed, never overwritten with a guess
 
-    def test_untruncated_titles_are_never_fetched(self):
-        listing = make_listing(EXACT_TITLE, 250.0)
+    def test_a_complete_title_is_left_alone(self):
+        from src import main, observability
+
+        listing = self._listing("1990 Fleer Frank Thomas PSA 10")
+        main.mark_truncated_titles([listing], observability.RunStats())
+
+        assert listing.title_truncated is False
+
+    def test_the_count_is_recorded_for_the_run(self):
+        from src import main, observability
+
         stats = observability.RunStats()
-        with mock.patch.object(main_module.ebay_email_alerts, "fetch_full_title") as fetch:
-            main_module.repair_truncated_titles([listing], stats)
-        fetch.assert_not_called()
+        main.mark_truncated_titles(
+            [self._listing("a PSA 1\u2026"), self._listing("b PSA 10")], stats
+        )
 
-    def test_repairs_are_capped_and_warn(self):
-        listings = [
-            make_listing("2024 Prizm Caleb Williams PSA 1…", 10.0, listing_id="L%d" % i) for i in range(6)
-        ]
-        stats = observability.RunStats()
-        with mock.patch.object(
-            main_module.ebay_email_alerts, "fetch_full_title", return_value=EXACT_TITLE
-        ) as fetch:
-            main_module.repair_truncated_titles(listings, stats, limit=2)
-        assert fetch.call_count == 2
-        assert stats.warnings
-        # the ones we didn't get to are marked uncertain, not silently trusted
-        assert all(listing.title_truncated for listing in listings[2:])
-
-
-# --- An auction's current bid must never enter the comp corpus ---
-
+        assert stats.titles_truncated == 1
 
 class TestRecordObservations:
     def test_auctions_are_not_recorded_as_comps(self):

@@ -59,6 +59,12 @@ class RunStats:
     listing_type_unknown: int = 0
     shipping_known: int = 0
     shipping_unknown: int = 0
+    # eBay truncates long titles in its alert emails, which can cut a grade
+    # mid-digit ("PSA 1..." for a PSA 10). The real title can't be fetched
+    # (eBay's User Agreement prohibits it), so these are reported with the
+    # grade marked uncertain -- worth counting, because a rise means the
+    # email template changed.
+    titles_truncated: int = 0
 
     # outcomes
     opportunities_reported: int = 0
