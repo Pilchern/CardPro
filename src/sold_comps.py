@@ -1,39 +1,43 @@
 """Hand-entered SOLD prices -- the only real market data this project has.
 
-Everything else in CardPro is an asking price. Nobody sells us a sold-price
-feed we can legitimately automate: eBay's Marketplace Insights API is
+Everything else in CardPro is an asking price. No free, automatable,
+sanctioned sold-price feed exists: eBay's Marketplace Insights API is
 Limited Release and closed to new users, its User Agreement forbids
 scraping, Terapeak is free but has no export, and the paid catalogues are
-out of scope. See docs/AUDIT_2026-08.md §6.
+out of scope.
 
-What remains is you, looking up a card once and typing what it sold for.
+What remains is you looking a card up once and typing what it sold for.
 That sounds weak until you notice the shape of the problem: the list of
 cards you genuinely care about is short. Twenty entries covering your real
-target cards buys a trustworthy number exactly where money gets spent,
-which no amount of asking-price statistics can.
+targets buys trustworthy numbers exactly where money gets spent, which no
+amount of asking-price statistics can.
 
-So a sold comp always WINS over the ask-based hierarchy -- one real sale is
-better evidence than fifty asks. When one exists for a card, the report is
-allowed to say "below market", because for that card we actually know.
-Everywhere else it says "below the median ask", because we don't.
+HOW THIS INTEGRATES. These sales get no valuation path of their own. They
+load as comps.CompEngine observations marked basis="sold", and the engine
+does the rest -- it already segments by market (grader + grade +
+qualifier), excludes a listing from its own comp, trims outliers, weights
+by recency, and reports a bucket's basis as "sold" only when EVERY kept
+point is sold. Adding a parallel valuation path here would duplicate all of
+that and drift from it.
+
+That single field also lifts a real ceiling. comps.py downgrades confidence
+for asking-price data, noting that "medium" is this project's honest
+ceiling until real sold data exists. These observations are that data.
 
 Free places to look a card up, none of which we automate:
-  eBay -> filter Sold Items          (90 days)
+  eBay -> filter Sold Items           (90 days)
   eBay Seller Hub -> Product Research (3 years, free with a seller account)
   PSA Auction Prices Realized         (free, PSA-graded, incl. auction houses)
   130point.com                        (free, shows accepted Best Offer prices)
 
-Entries are matched on full card identity INCLUDING grade, because a PSA 10,
-a PSA 9 and a raw copy are different markets -- never each other's comps.
+Enter them with scripts/import_sold_comps (paste a page) or
+scripts/add_sold_comp (one sale, by flags).
 """
 from __future__ import annotations
 
 import json
 import logging
-import statistics
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
 
 from src.comps import BASIS_SOLD
 
