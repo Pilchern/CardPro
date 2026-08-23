@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import traceback
 import sys
 from collections import defaultdict
 from datetime import date, datetime, timezone
@@ -833,7 +834,12 @@ def run(args: argparse.Namespace) -> None:
     logger.info("Done")
 
 
-def _notify_failure() -> None:
+_TRACE = ""
+
+
+def _notify_failure(trace: str = "") -> None:
+    global _TRACE
+    _TRACE = (trace or traceback.format_exc() or "").strip()[:12000]
     """Best-effort failure email so a crashed run doesn't fail silently --
     "never go silent" applies to errors too, not just quiet days."""
     logger = logging.getLogger("main")
@@ -844,11 +850,14 @@ def _notify_failure() -> None:
         return
     try:
         emailer.send_email(
-            subject=f"{cfg.email_subject_prefix} Scan FAILED -- check logs/scraper.log",
+            subject=f"{cfg.email_subject_prefix} Scan FAILED -- traceback below",
             body=(
                 "Today's card deal scan crashed with an unhandled error and did not "
-                "complete. See logs/scraper.log on the machine that ran it for the "
-                "full traceback."
+                "complete. The traceback follows -- it travels in this email because "
+                "it may be the only copy that survives. This runs on GitHub "
+                "Actions, where logs/scraper.log lives on a runner that is "
+                "destroyed when the job ends.\n\n"
+                + (_TRACE or "(no traceback available)")
             ),
             gmail_address=cfg.gmail_address,
             gmail_app_password=cfg.gmail_app_password,
@@ -873,7 +882,7 @@ def main() -> None:
     except Exception:
         logger.exception("Card deal scan failed with an unhandled error")
         if not args.dry_run:
-            _notify_failure()
+            _notify_failure(traceback.format_exc())
         raise
 
 
