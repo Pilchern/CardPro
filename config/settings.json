@@ -59,9 +59,19 @@
     "ending_soon_hours": 24
   },
   "alerts": {
-    "_comment": "Immediate-alert tier. Deliberately conservative: too many alerts destroy the product. An opportunity must clear BOTH of these AND have a flag-eligible comp to earn an out-of-band alert; everything else waits for the morning digest.",
-    "immediate_alert_min_savings_dollars": 150,
+    "_comment": "Immediate-alert tier. Deliberately conservative: too many alerts destroy the product. An opportunity must clear BOTH of these AND have a flag-eligible comp to earn an out-of-band alert; everything else waits for the morning digest. The dollar figure is 25, not the 150 it was: with focus.price_ceiling at $40 a card cannot save $150 without being worth $190, so a $150 bar meant ACT NOW could never fire on the cards this report is now built around, and an alert tier that cannot fire is not conservative, it is off. Retune this whenever you move focus.price_ceiling -- the two numbers only make sense together.",
+    "immediate_alert_min_savings_dollars": 25,
     "immediate_alert_min_discount_pct": 40
+  },
+  "focus": {
+    "_comment": "What reaches the email, and how long it may be. Separate from the deal gate on purpose: the gate decides whether a card is underpriced, this decides whether it is what you shop for. price_ceiling is the cheap end you actually buy and bid at; a dearer card is not called bad, it just has to be exceptional (exceptional_min_discount_pct AND exceptional_min_savings_dollars, off a flag-eligible comp) to take a slot from the cheap ones. Cards on your target list ignore the ceiling -- you named those and set their price yourself. require_auction_bidding_room drops auctions already bid past your max rational bid: you cannot win those at a price that works, and they cost the same space as a live one (auctions with no market value have no ceiling to be past, so they stay). max_listings caps the whole email; max_per_section is the first-pass share each section gets before the leftovers are handed out, which is what stops a 40-opportunity morning from printing zero auctions. Nothing dropped here is dropped silently -- the counts and the setting that would bring each group back are printed in the report footer. Set enabled=false for the old everything-every-day report.",
+    "enabled": true,
+    "price_ceiling": 40.0,
+    "exceptional_min_discount_pct": 50,
+    "exceptional_min_savings_dollars": 100,
+    "require_auction_bidding_room": true,
+    "max_listings": 40,
+    "max_per_section": 10
   },
   "cheap_cards": {
     "_comment": "Rules that apply only below price_ceiling. Cheap cards need their own gate because 48% of everything CardPro observes is under $10 and most of it is commodity -- base veterans, junk-wax commons, team cards. A 60%-off base common is still a base common. So a cheap card must clear a HIGHER percentage bar (min_discount_pct) and, if require_desirable_attribute is on, must actually have something that makes a copy scarce: rookie, autograph, patch/relic, serial numbering, a non-base parallel, or a grade. Anything cheap with none of those is rejected as common_card and counted in the report footer, not silently dropped. Set enabled=false to apply the ordinary rules at every price.",

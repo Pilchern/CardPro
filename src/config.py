@@ -9,7 +9,7 @@ from typing import Optional
 
 from dotenv import load_dotenv
 
-from src import targets
+from src import focus, targets
 from src.ebay_email_alerts import DEFAULT_MAILBOX
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -99,6 +99,12 @@ class Config:
     cheap_min_savings_dollars: float
     cheap_require_desirable_attribute: bool
 
+    # What reaches the email and how long it may be -- the price ceiling you
+    # shop under, the exception that lets a genuinely exceptional dearer card
+    # through, and the cap on how many listings print. See src/focus.py and
+    # config/settings.json's "focus" comment.
+    focus_rules: focus.FocusRules
+
 
 def _section(settings: dict, name: str) -> dict:
     """A settings section, or {} when absent.
@@ -133,6 +139,7 @@ def load_config() -> Config:
     alerts = _section(settings, "alerts")
     cheap = _section(settings, "cheap_cards")
     sold = _section(settings, "sold_comps")
+    focus_settings = _section(settings, "focus")
 
     # Treat the unfilled-in placeholder from .env.example the same as "not set".
     ebay_client_id = os.environ.get("EBAY_CLIENT_ID") or None
@@ -194,4 +201,28 @@ def load_config() -> Config:
         cheap_min_discount_pct=float(cheap.get("min_discount_pct", 50.0)),
         cheap_min_savings_dollars=float(cheap.get("min_savings_dollars", 3.0)),
         cheap_require_desirable_attribute=bool(cheap.get("require_desirable_attribute", True)),
+        # A config file written before focus existed has no "focus" section,
+        # and must not silently acquire a $40 ceiling and a length cap on
+        # upgrade -- so the fallback here is focus.OFF (everything, as
+        # before), not focus.FocusRules(). The shipped settings.json turns
+        # it on explicitly.
+        focus_rules=(
+            focus.FocusRules(
+                enabled=bool(focus_settings.get("enabled", True)),
+                price_ceiling=float(focus_settings.get("price_ceiling", 40.0)),
+                exceptional_min_discount_pct=float(
+                    focus_settings.get("exceptional_min_discount_pct", 50.0)
+                ),
+                exceptional_min_savings_dollars=float(
+                    focus_settings.get("exceptional_min_savings_dollars", 100.0)
+                ),
+                require_auction_bidding_room=bool(
+                    focus_settings.get("require_auction_bidding_room", True)
+                ),
+                max_listings=int(focus_settings.get("max_listings", 40)),
+                max_per_section=int(focus_settings.get("max_per_section", 10)),
+            )
+            if focus_settings
+            else focus.OFF
+        ),
     )

@@ -22,6 +22,7 @@ checked first.
 - [How a deal is decided](#how-a-deal-is-decided)
 - [Comps: what may and may not declare a deal](#comps-what-may-and-may-not-declare-a-deal)
 - [Cheap, underpriced, flippable, collectible, target](#cheap-underpriced-flippable-collectible-target)
+- [Focus: what reaches the email, and how long it is](#focus-what-reaches-the-email-and-how-long-it-is)
 - [Known limitation: every comp is an asking price](#known-limitation-every-comp-is-an-asking-price)
 - [eBay account declined](#ebay-account-declined)
 - [eBay via saved-search email alerts](#ebay-via-saved-search-email-alerts)
@@ -80,7 +81,7 @@ more than one that says "95% under market" about a common.
    *that card in that grade* -- see
    [How a deal is decided](#how-a-deal-is-decided).
 4. Flags a fixed-price listing only if it clears **both** gates: 30%+
-   (configurable) below its matched comp median, AND at least $10
+   (configurable) below its matched comp median, AND at least $3
    (configurable) in real dollar savings, measured against **total cost**
    (price + shipping + any tax you configure). Percent alone lets trivial
    deals through (50% off a $5 common is still just $2.50), so both
@@ -90,7 +91,14 @@ more than one that says "95% under market" about a common.
    the number it produced.
 6. Drops anything already emailed in a prior run, unless its price has
    dropped further.
-7. Emails a **sectioned, decision-first report**, each section omitted when
+7. Applies your **focus**: the email is built around the cheap end you
+   actually buy and bid at (cards at or under `$40` by default, plus
+   anything genuinely exceptional above it), auctions already bid past your
+   max rational bid are dropped, and the whole thing is capped at a
+   readable number of listings. Everything it leaves out is counted in the
+   footer with the setting that would show it -- see
+   [Focus](#focus-what-reaches-the-email-and-how-long-it-is).
+8. Emails a **sectioned, decision-first report**, each section omitted when
    empty:
 
    `ACT NOW` · `TOP OPPORTUNITIES` · `TARGET CARD HITS` ·
@@ -187,6 +195,15 @@ The whole path, in order. Every step can only ever *narrow* what qualifies.
    price has dropped further. Auctions, target hits and needs-review entries
    pass through undeduped -- hiding a still-live auction is the opposite of
    useful.
+10. **Focus.** Last, and the only step that is about *you* rather than
+    about the card: the email is built around the cheap end you actually
+    buy and bid at, and it is capped in length. A card above the ceiling
+    has to be exceptional to take a slot, an auction already bid past your
+    max rational bid is dropped, and what is left is trimmed to a readable
+    number of listings. Nothing here changes a valuation or a verdict --
+    everything it removes is counted in the report footer, with the setting
+    that would bring it back. See
+    [Focus](#focus-what-reaches-the-email-and-how-long-it-is).
 
 ## Comps: what may and may not declare a deal
 
@@ -265,6 +282,75 @@ Entries are still ranked within a section by dollar saved; you apply your own
 judgment about how much a `[YOUNG CORE] [ROOKIE CARD]` tag should move
 something up your list. Edit `player_tiers` any time your read on a player
 changes.
+
+## Focus: what reaches the email, and how long it is
+
+Finding is not the same job as reporting, and CardPro used to conflate
+them: everything that survived the pipeline got printed, at full length, in
+whatever quantity the morning produced. Replaying a real August corpus
+through the report produced a **4,255-line email**. The information was
+right and the document was unreadable, which in practice means the
+information was not delivered.
+
+`settings.json` -> `focus` is the editorial layer. It removes; it never
+promotes, never re-values anything, and never changes a verdict.
+
+**The price ceiling.** You buy at the cheap end and bid to win, so the
+email is built around cards at or under `price_ceiling` (shipping
+included -- the ceiling is what leaves your account, not what the listing
+advertises). A dearer card is not being called a bad card; it is being
+called not-what-you-shop-for. To take a slot from the cheap ones it has to
+be exceptional: `exceptional_min_discount_pct` **and**
+`exceptional_min_savings_dollars`, **and** a flag-eligible comp. All three,
+because each alone has a known failure mode -- percent alone flags a $900
+card off a price-bracket bucket, dollars alone flags every expensive card
+with a mild discount, and without the comp gate the whole exception runs
+off valuations the engine itself refuses to declare deals from.
+
+**Targets are exempt.** A card on your target list is one you named, at a
+price you set. A second price opinion from `focus` would be your config
+arguing with itself.
+
+**Bidding room.** An auction whose current bid already sits above your max
+rational bid is not a card you can win at a price that works. It is
+dropped, and counted, with its own sentence in the footer. An auction with
+no market value has no rational ceiling to be past, so it stays -- "we
+could not judge this" must never look the same as "we judged it and it
+failed".
+
+**Length.** `max_listings` caps the email. Slots are handed out in two
+passes over a priority order that puts auctions above the fixed-price
+also-rans: first every section takes up to `max_per_section`, then the
+leftovers go to whoever still has cards. The first pass is the point -- a
+straight top-down cap means a 40-opportunity morning prints zero auctions,
+and "the day was so good you saw none of the thing you bid on" is a bug
+wearing a ranking's clothes. `LOW CONFIDENCE / NEEDS REVIEW` never takes
+leftovers: it says of itself that it is not a recommendation, and on a
+quiet day it is also the biggest section CardPro produces.
+
+**Nothing is dropped silently.** Every group removed is counted in the
+thresholds footer, with the setting that would bring it back:
+
+```
+107 listings above your $40.00 focus ceiling left out -- none was 50%+ off
+with $100.00+ saved off a comp CardPro will stand behind. Raise
+focus.price_ceiling to see them. 172 listings matched your focus but were
+trimmed for length -- at most 40 listings print, and at most 10 from any
+one section.
+```
+
+| Key | What it does | Default | When you'd change it |
+|---|---|---|---|
+| `enabled` | Master switch. `false` restores the old everything-every-day report. | `true` | Turn it off for a day when you want the raw firehose. |
+| `price_ceiling` | Total cost (price + known shipping) at or under which a card is email material. | `40.0` | Raise it as your budget per card rises. Move `alerts.immediate_alert_min_savings_dollars` with it -- see below. |
+| `exceptional_min_discount_pct` | Discount a dearer card needs to get in anyway. | `50` | Lower it if you're happy seeing more expensive cards; raise it to make the exception near-impossible. |
+| `exceptional_min_savings_dollars` | Dollars a dearer card must save to get in anyway. **Both** this and the percentage, plus a flag-eligible comp. | `100` | Same reasoning. |
+| `require_auction_bidding_room` | Drop auctions already bid past your max rational bid. | `true` | Set `false` if you want to watch auctions you can't profitably win. |
+| `max_listings` | Hard cap on distinct listings in one email. | `40` | 25 for a phone-sized digest, 60+ if you read it at a desk. |
+| `max_per_section` | Each section's first-pass share, and the hard cap for `NEEDS REVIEW`. | `10` | Raise it if one section keeps getting cut short; `0` disables the per-section pass entirely (pure top-down). |
+
+On that same August corpus, this takes the email from **4,255 lines to
+215** without changing a single valuation.
 
 ## Known limitation: every comp is an asking price
 
@@ -767,7 +853,7 @@ The third key, `target_cards`, is [documented below](#acquisition-targets).
 | Key | What it does | Default | When you'd change it |
 |---|---|---|---|
 | `discount_threshold_pct` | Percent under the matched comp median a listing must be, measured on **total cost**. | `30` | Lower for more (weaker) deals, higher for fewer (stronger) ones. |
-| `min_savings_dollars` | Real dollars that must be saved, regardless of percent. | `10` | Raise it if the report feels cluttered with low-value listings; lower it (or `0`) to see everything that clears the percent gate. |
+| `min_savings_dollars` | Real dollars that must be saved, regardless of percent. | `3` | Raise it if the report feels cluttered with low-value listings; lower it (or `0`) to see everything that clears the percent gate. |
 
 A listing must clear **both**. `min_savings_dollars` is the knob that keeps
 trivial deals (50% off a $5 common) out of the report even when the percent
@@ -815,6 +901,12 @@ gate. They get their own section and their own math.
 | `required_margin_pct` | Max rational bid is the highest you could bid and still keep this much margin against estimated market value, after fees and shipping. | `25` | Raise it to bid more conservatively, lower it if you're happy on thinner margins. |
 | `ending_soon_hours` | What counts as urgent. **Only** used for ordering the auction section -- never to relax any quality gate. | `24` | Widen it if you check email less than daily. |
 
+### Focus -- `settings.json` → `focus`
+
+Which findings reach the email, and how long it may be. Documented in full
+in [Focus](#focus-what-reaches-the-email-and-how-long-it-is), including the
+table of every key.
+
 ### Immediate alerts -- `settings.json` → `alerts`
 
 The `ACT NOW` tier. Deliberately conservative: too many alerts destroy the
@@ -824,8 +916,8 @@ morning digest.
 
 | Key | What it does | Default | When you'd change it |
 |---|---|---|---|
-| `immediate_alert_min_savings_dollars` | Dollar savings required. | `150` | Lower only if `ACT NOW` is firing too rarely to be useful; raise it the first time it fires on something you'd have skipped. |
-| `immediate_alert_min_discount_pct` | Discount required. | `40` | Same reasoning. |
+| `immediate_alert_min_savings_dollars` | Dollar savings required. | `25` | Keep it in step with `focus.price_ceiling`: a $40 card cannot save $150 without being worth $190, so the old `150` meant `ACT NOW` could never fire on the cards the report is now built around, and an alert tier that cannot fire is not conservative -- it is off. Raise both together. |
+| `immediate_alert_min_discount_pct` | Discount required. | `40` | Lower only if `ACT NOW` is firing too rarely to be useful; raise it the first time it fires on something you'd have skipped. |
 
 ### Everything else in `settings.json`
 
@@ -940,7 +1032,7 @@ gitignored -- see "Running on a schedule" for why.
 ```
 config/
   watchlist.json      -- players, tiers, acquisition targets
-  settings.json        -- deal gate, valuation gates, economics, auctions, alerts
+  settings.json        -- deal gate, valuation gates, economics, auctions, alerts, focus
 .github/workflows/
   tests.yml             -- CI: runs pytest on push/PR
   daily-scan.yml          -- runs the scraper on a schedule in GitHub's cloud (recommended over local cron)
@@ -961,6 +1053,7 @@ src/
   ebay_client.py                        -- eBay Browse/Insights client (built, dormant)
   craigslist_links.py                    -- builds quick-check search URLs (no scraping)
   dedupe.py                               -- seen-listings tracking
+  focus.py                                 -- what reaches the email: price ceiling, bidding room, length cap
   report.py                                -- the decision-first sectioned email
   emailer.py                                -- Gmail SMTP send
   config.py                                  -- loads .env + config JSON
@@ -978,7 +1071,7 @@ scripts/
   install_cron.sh / uninstall_cron.sh -- crontab helpers (local-cron alternative)
 tests/
   pytest suite covering card_identity/matcher/comps/economics/targets/reasons/
-  observability/dedupe/report/search_terms/craigslist_links/price_history/
+  observability/dedupe/report/focus/search_terms/craigslist_links/price_history/
   ebay_email_alerts/config/models + mocked full-run tests for both eBay paths
 docs/
   CARDPRO_2_AUDIT.md -- the current audit: scores, failure modes, roadmap, data-source matrix

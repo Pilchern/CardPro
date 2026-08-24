@@ -280,3 +280,41 @@ def test_cheap_card_defaults_keep_the_junk_filter_on(tmp_path, monkeypatch):
     assert cfg.cheap_price_ceiling == 10.0
     assert cfg.cheap_min_discount_pct == 50.0
     assert cfg.cheap_require_desirable_attribute is True
+
+
+def test_focus_settings_load(tmp_path, monkeypatch):
+    cfg = _load_with(
+        tmp_path,
+        monkeypatch,
+        settings_extra={
+            "focus": {
+                "enabled": True,
+                "price_ceiling": 25.0,
+                "exceptional_min_discount_pct": 65,
+                "exceptional_min_savings_dollars": 200,
+                "require_auction_bidding_room": False,
+                "max_listings": 30,
+                "max_per_section": 8,
+            }
+        },
+    )
+    assert cfg.focus_rules.enabled is True
+    assert cfg.focus_rules.price_ceiling == 25.0
+    assert cfg.focus_rules.exceptional_min_discount_pct == 65
+    assert cfg.focus_rules.exceptional_min_savings_dollars == 200
+    assert cfg.focus_rules.require_auction_bidding_room is False
+    assert cfg.focus_rules.max_listings == 30
+    assert cfg.focus_rules.max_per_section == 8
+
+
+def test_focus_absent_means_the_old_unfiltered_report(tmp_path, monkeypatch):
+    # The one section whose missing-default is "off". Every other gate
+    # defaults to its safe value; this one hides cards, and a config written
+    # before focus existed must not start hiding them on upgrade.
+    cfg = _load_with(tmp_path, monkeypatch)
+    assert cfg.focus_rules.enabled is False
+
+
+def test_focus_can_be_switched_off_explicitly(tmp_path, monkeypatch):
+    cfg = _load_with(tmp_path, monkeypatch, settings_extra={"focus": {"enabled": False}})
+    assert cfg.focus_rules.enabled is False
