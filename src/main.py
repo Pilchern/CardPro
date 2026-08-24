@@ -817,6 +817,7 @@ def run(args: argparse.Namespace) -> None:
         immediate_min_savings=cfg.immediate_alert_min_savings_dollars,
         immediate_min_discount_pct=cfg.immediate_alert_min_discount_pct,
         ending_soon_hours=cfg.auction_ending_soon_hours,
+        focus_rules=cfg.focus_rules,
     )
     subject = f"{cfg.email_subject_prefix} {subject}"
 

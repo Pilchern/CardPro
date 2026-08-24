@@ -53,7 +53,7 @@ from collections import OrderedDict
 from datetime import date
 from typing import Optional
 
-from src import desirability, reasons
+from src import desirability, focus, reasons
 from src.card_identity import NEGATIVE_SIGNAL_LABELS, CardIdentity
 from src.models import Listing
 
@@ -102,6 +102,39 @@ SECTION_ORDER = (
     SECTION_NEEDS_REVIEW,
     SECTION_PRICE_DROPS,
 )
+
+#: The order sections claim slots from the email's length budget. NOT the
+#: same list as SECTION_ORDER, which is render order, and the difference is
+#: deliberate: you bid on cheap auctions, so an auction you could still win
+#: is worth more of a capped email than a fixed-price near-miss, even
+#: though the auctions section prints below TOP OPPORTUNITIES. NEEDS REVIEW
+#: goes last because it says of itself that it is not a recommendation --
+#: when something has to be cut, the not-a-recommendation section is what
+#: gets cut. Every section key must appear here; focus.trim appends any
+#: that don't, but silently, and a section that fell off this list would
+#: quietly become the lowest priority in the report.
+BUDGET_ORDER = (
+    SECTION_ACT_NOW,
+    SECTION_TOP_OPPORTUNITIES,
+    SECTION_TARGET_HITS,
+    SECTION_AUCTIONS,
+    SECTION_OFFERS,
+    SECTION_INVESTMENT,
+    SECTION_WATCH,
+    SECTION_PRICE_DROPS,
+    SECTION_NEEDS_REVIEW,
+)
+
+#: Sections that never take a second helping from the length budget.
+#: NEEDS REVIEW says of itself that it is not a recommendation, and on a
+#: quiet day it is also comfortably the largest thing CardPro produces --
+#: on a real August corpus it was 289 listings, every one of them a
+#: could-not-value. Letting it absorb the leftover slots turns a
+#: 40-listing email into 40 blocks of "we could not value this", which is
+#: the long email this cap exists to stop. It keeps its first-pass share
+#: and the rest of the day's budget goes unspent rather than to
+#: not-recommendations.
+BUDGET_NO_LEFTOVERS = (SECTION_NEEDS_REVIEW,)
 
 SECTION_TITLES = {
     SECTION_ACT_NOW: "\U0001f6a8 ACT NOW",
@@ -1253,7 +1286,7 @@ def _subject(sections, date_short: str) -> str:
 
 
 def _empty_state_block(threshold_pct: float, min_savings_dollars: float, stats,
-                       has_other_content: bool) -> str:
+                       has_other_content: bool, focused: bool = False) -> str:
     """The empty state is the most important state in this report.
 
     After the CardPro 2.0 comp fixes, zero-opportunity days are expected
@@ -1293,12 +1326,33 @@ def _empty_state_block(threshold_pct: float, min_savings_dollars: float, stats,
                 )
             )
     lines.append("")
-    if has_other_content:
+    # With focus on, this is a sample and must not be described as the
+    # whole: "everything CardPro did see" above a capped list would be the
+    # report claiming completeness it deliberately gave up.
+    if has_other_content and focused:
+        lines.append(
+            textwrap.fill(
+                "The best of what CardPro did see is still below -- auctions, listings it "
+                "could not value, and price drops, as far as your focus limits allow. The "
+                "footer counts what did not fit and names the setting that would show it.",
+                width=_WRAP_WIDTH,
+            )
+        )
+    elif has_other_content:
         lines.append(
             textwrap.fill(
                 "Everything CardPro did see is still below -- auctions, listings it could not "
                 "value, and price drops are shown so that nothing disappears without being "
                 "counted.",
+                width=_WRAP_WIDTH,
+            )
+        )
+    elif focused:
+        lines.append(
+            textwrap.fill(
+                "Nothing inside your focus reached the report either -- no auctions, no "
+                "unvalued listings, no price drops. Anything outside it is counted in the "
+                "footer, and the counts in SYSTEM HEALTH below are the proof it looked.",
                 width=_WRAP_WIDTH,
             )
         )
@@ -1545,6 +1599,84 @@ def _search_coverage_section(search_suggestions) -> str:
     return "\n".join(lines)
 
 
+def _focus_line(rules) -> str:
+    """The one line under the counts that says why the email is short.
+
+    Without it a focused report is indistinguishable from a quiet market,
+    and "CardPro found nothing" and "CardPro found plenty and showed you
+    the cheap end of it" are very different mornings.
+    """
+    if not rules.enabled:
+        return ""
+    parts = ["Focus: cards at or under {}".format(_money(rules.price_ceiling))]
+    if rules.require_auction_bidding_room:
+        parts.append("auctions still under your max bid")
+    if rules.max_listings > 0:
+        parts.append("top {} listings".format(rules.max_listings))
+    line = ", ".join(parts)
+    line += ". Anything dearer needed {:.0f}%+ off and {}+ saved to get in.".format(
+        rules.exceptional_min_discount_pct, _money(rules.exceptional_min_savings_dollars)
+    )
+    return textwrap.fill(line, width=_WRAP_WIDTH)
+
+
+def _focus_footer(selection, trimmed: int, rules) -> str:
+    """What focus removed, in plain numbers, with the setting that would
+    bring it back. A cap you cannot see the effect of is a cap you stop
+    trusting -- and the fix for "I think it hid something good" has to be a
+    number you can change, not a rebuild.
+    """
+    if not rules.enabled:
+        return ""
+    parts = []
+    above = selection.omitted.get(focus.ABOVE_CEILING, 0)
+    if above:
+        parts.append(
+            " {} above your {} focus ceiling left out -- none was {:.0f}%+ off with {}+ saved "
+            "off a comp CardPro will stand behind. Raise focus.price_ceiling to see them.".format(
+                _plural(above, "listing", "listings"),
+                _money(rules.price_ceiling),
+                rules.exceptional_min_discount_pct,
+                _money(rules.exceptional_min_savings_dollars),
+            )
+        )
+    no_room = selection.omitted.get(focus.NO_BIDDING_ROOM, 0)
+    if no_room:
+        parts.append(
+            " {} left out: the current bid is already above the most you could pay and keep "
+            "your margin, so there is no bid left to make.".format(
+                _plural(no_room, "auction was", "auctions were")
+            )
+        )
+    unknown = selection.omitted.get(focus.PRICE_UNKNOWN, 0)
+    if unknown:
+        parts.append(
+            " {} left out with no readable price -- nothing could be said about cost or "
+            "value.".format(_plural(unknown, "listing was", "listings were"))
+        )
+    if trimmed:
+        # Deliberately does not say "trimmed to N listings": the email holds
+        # at most max_listings, but a day whose only content is
+        # not-recommendations stops at their per-section share and spends
+        # nothing like the full budget. Quoting the cap as if it were the
+        # count would be a number the reader can see is wrong.
+        sentence = " {} matched your focus but {} trimmed for length -- at most {} print".format(
+            _plural(trimmed, "listing", "listings"),
+            "was" if trimmed == 1 else "were",
+            _plural(rules.max_listings, "listing"),
+        )
+        if rules.max_per_section > 0:
+            sentence += ", and at most {} from any one section".format(
+                _plural(rules.max_per_section, "listing")
+            )
+        sentence += (
+            ". The cut comes off the bottom of a section, so nothing above it moved; raise "
+            "focus.max_listings or focus.max_per_section to see more."
+        )
+        parts.append(sentence)
+    return "".join(parts)
+
+
 def _join_blocks(blocks) -> str:
     return "\n\n".join(block for block in blocks if block)
 
@@ -1567,6 +1699,7 @@ def build_report(
     immediate_min_savings: float = DEFAULT_IMMEDIATE_MIN_SAVINGS,
     immediate_min_discount_pct: float = DEFAULT_IMMEDIATE_MIN_DISCOUNT_PCT,
     ending_soon_hours: float = DEFAULT_ENDING_SOON_HOURS,
+    focus_rules: Optional[focus.FocusRules] = None,
 ) -> tuple:
     """Returns ``(subject, body)`` -- a plain-text email, no HTML.
 
@@ -1577,7 +1710,15 @@ def build_report(
 
     ``stats`` is an ``observability.RunStats``; ``search_suggestions`` is
     ``{player: [search_terms.SuggestedSearch, ...]}``.
+
+    ``focus_rules`` (a ``focus.FocusRules``) decides what is email material
+    and how long the email may be -- the price ceiling, the exception for a
+    genuinely exceptional expensive card, and the cap on how many listings
+    print. It defaults to ``focus.OFF``, which shows everything, so the
+    length cap is something a caller opts into rather than something that
+    silently starts hiding cards.
     """
+    focus_rules = focus_rules or focus.OFF
     date_long = "{} {}, {}".format(run_date.strftime("%B"), run_date.day, run_date.year)
     date_full = "{}, {}".format(run_date.strftime("%A"), date_long)
     date_short = "{} {}".format(run_date.strftime("%b"), run_date.day)
@@ -1603,15 +1744,22 @@ def build_report(
         )
         return subject, "CARDPRO DAILY -- {}\n\n".format(date_full) + body + footer
 
+    selection = focus.select(deals, focus_rules)
     sections = classify_sections(
-        deals,
+        selection.kept,
         threshold_pct=threshold_pct,
         immediate_min_savings=immediate_min_savings,
         immediate_min_discount_pct=immediate_min_discount_pct,
         ending_soon_hours=ending_soon_hours,
     )
+    sections, trimmed = focus.trim(
+        sections, BUDGET_ORDER, focus_rules, no_leftovers=BUDGET_NO_LEFTOVERS
+    )
 
     header = "CARDPRO DAILY -- {}\n{}".format(date_full, _summary_line(sections))
+    focus_line = _focus_line(focus_rules)
+    if focus_line:
+        header += "\n" + focus_line
 
     decision_sections = (
         SECTION_ACT_NOW,
@@ -1625,7 +1773,10 @@ def build_report(
     if not has_decision_content:
         has_other_content = any(sections[key] for key in SECTION_ORDER)
         blocks.append(
-            _empty_state_block(threshold_pct, min_savings_dollars, stats, has_other_content)
+            _empty_state_block(
+                threshold_pct, min_savings_dollars, stats, has_other_content,
+                focused=focus_rules.enabled,
+            )
         )
     for key in SECTION_ORDER:
         if sections[key]:
@@ -1636,7 +1787,13 @@ def build_report(
             )
 
     shown = {deal.id for key in SECTION_ORDER for deal in sections[key]}
-    not_shown = len({deal.id for deal in deals}) - len(shown)
+    # Everything CardPro saw is accounted for in exactly one of these
+    # buckets: printed, left out by focus, trimmed for length, or reviewed
+    # and simply not close. A shorter email is only worth having if you can
+    # tell which of those happened.
+    not_shown = (
+        len({deal.id for deal in deals}) - len(shown) - selection.omitted_total - trimmed
+    )
     thresholds = (
         "Thresholds: an opportunity needs {:.0f}%+ under market AND at least {} saved; "
         "ACT NOW additionally needs {} saved and {:.0f}%+ off.".format(
@@ -1661,6 +1818,7 @@ def build_report(
             " {} reviewed and fitted no section -- they had a usable comp and were simply not "
             "close.".format(_plural(not_shown, "other listing was", "other listings were"))
         )
+    thresholds += _focus_footer(selection, trimmed, focus_rules)
     blocks.append(textwrap.fill(thresholds, width=_WRAP_WIDTH))
     blocks.append(_assumptions_footer(sections))
 

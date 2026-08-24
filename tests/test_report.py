@@ -13,7 +13,7 @@ Two things are being protected here, and they are different:
 """
 from datetime import date
 
-from src import desirability, reasons, report
+from src import desirability, focus, reasons, report
 from src.card_identity import CardIdentity, Field
 from src.comps import CompMatch, CompStatsV2
 from src.models import Listing
@@ -1428,3 +1428,177 @@ def test_assumptions_footer_returns_when_a_flippable_card_is_present():
     )
     body = body_of([cheap, flippable])
     assert "ECONOMICS ASSUMPTIONS" in body
+
+
+# ---------------------------------------------------------------------------
+# focus: what reaches the email, and how long it is
+# ---------------------------------------------------------------------------
+
+
+FOCUS = focus.FocusRules(
+    price_ceiling=40.0,
+    exceptional_min_discount_pct=50.0,
+    exceptional_min_savings_dollars=100.0,
+    max_listings=6,
+    max_per_section=2,
+)
+
+
+def make_cheap(**overrides) -> Listing:
+    """A $20 card against a $60 comp -- the shape the report is now built
+    around, and small enough that nothing about it can be mistaken for the
+    old $200-slab fixture."""
+    defaults = dict(
+        title="Kyle Teel 2024 Bowman Chrome Refractor RC #BCP-1",
+        price=20.0,
+        card_type="raw",
+        grader=None,
+        grade=None,
+        market_value=60.0,
+        comp_median=60.0,
+        pct_under_market=66.7,
+        dollar_savings=40.0,
+    )
+    defaults.update(overrides)
+    return make_listing(**defaults)
+
+
+def test_budget_order_covers_every_section():
+    """A section left off BUDGET_ORDER would silently become the lowest
+    priority in the email -- focus.trim appends unknown keys, and it would
+    do it without complaining."""
+    assert sorted(report.BUDGET_ORDER) == sorted(report.SECTION_ORDER)
+
+
+def test_focus_line_says_why_the_email_is_short():
+    """Otherwise a focused report and a dead market look identical."""
+    body = body_of([make_cheap()], focus_rules=FOCUS)
+    text = flat(body)
+    assert "Focus: cards at or under $40.00" in text
+    assert "top 6 listings" in text
+
+
+def test_no_focus_line_when_focus_is_off():
+    assert "Focus: cards at or under" not in body_of([make_cheap()])
+
+
+def test_dear_card_is_left_out_and_the_footer_says_so():
+    dear = make_listing(id="dear", url="http://example.com/dear", price=400.0,
+                        market_value=600.0, pct_under_market=33.3, dollar_savings=200.0)
+    body = body_of([make_cheap(id="cheap", url="http://example.com/cheap"), dear], focus_rules=FOCUS)
+    assert "http://example.com/dear" not in body
+    assert "http://example.com/cheap" in body
+    assert "1 listing above your $40.00 focus ceiling left out" in flat(body)
+
+
+def test_exceptional_dear_card_still_gets_in():
+    """The ceiling is about what you shop for, not a claim that expensive
+    cards are bad. A genuinely exceptional one is still worth your
+    morning."""
+    dear = make_listing(id="dear", url="http://example.com/dear", price=400.0,
+                        market_value=1000.0, pct_under_market=60.0, dollar_savings=600.0)
+    body = body_of([dear], focus_rules=FOCUS)
+    assert "http://example.com/dear" in body
+    assert "focus ceiling left out" not in body
+
+
+def test_auction_bid_past_its_max_is_left_out_with_its_own_sentence():
+    auction = make_listing(
+        id="gone", url="http://example.com/gone", price=90.0, listing_type="auction",
+        max_rational_bid=45.0,
+        market_value=80.0, pct_under_market=-12.5, dollar_savings=-10.0, is_opportunity=False,
+    )
+    body = body_of([make_cheap(id="cheap", url="http://example.com/cheap"), auction], focus_rules=FOCUS)
+    assert "http://example.com/gone" not in body
+    assert "the current bid is already above the most you could pay" in flat(body)
+
+
+def test_email_is_capped_and_says_what_it_trimmed():
+    deals = [make_cheap(id=str(i), url="http://example.com/{}".format(i)) for i in range(20)]
+    body = body_of(deals, focus_rules=FOCUS)
+    shown = sum(1 for i in range(20) if "http://example.com/{}  ".format(i) in body)
+    assert shown == FOCUS.max_listings
+    assert "14 listings matched your focus but were trimmed" in flat(body)
+
+
+def test_a_flood_of_opportunities_cannot_starve_the_auctions():
+    """The reason trim runs two passes. You bid on cheap auctions; a good
+    day for Buy It Nows must not be the reason you see none."""
+    deals = [
+        make_cheap(id="opp-{}".format(i), url="http://example.com/opp-{}".format(i))
+        for i in range(10)
+    ]
+    deals.append(
+        make_cheap(
+            id="auction", url="http://example.com/auction", listing_type="auction",
+            price=12.0, max_rational_bid=35.0, bid_count=3, time_left_text="4h 10m",
+            is_opportunity=False,
+        )
+    )
+    body = body_of(deals, focus_rules=FOCUS)
+    assert "http://example.com/auction" in body
+
+
+def test_focus_omissions_are_not_counted_as_reviewed_and_not_close():
+    """The footer's four buckets -- printed, out of focus, trimmed, not
+    close -- have to add up. A card left out for being expensive must not
+    also be described as having been "simply not close"."""
+    dear = make_listing(id="dear", url="http://example.com/dear", price=400.0,
+                        market_value=600.0, pct_under_market=33.3, dollar_savings=200.0)
+    body = flat(body_of([make_cheap(id="cheap", url="http://example.com/cheap"), dear], focus_rules=FOCUS))
+    assert "other listing was reviewed and fitted no section" not in body
+    assert "other listings were reviewed and fitted no section" not in body
+
+
+def test_target_hit_above_the_ceiling_survives_focus():
+    deal = make_listing(id="target", url="http://example.com/target", price=900.0, market_value=950.0,
+                        pct_under_market=5.3, dollar_savings=50.0,
+                        target_hit=make_target_hit(), is_opportunity=False)
+    body = body_of([deal], focus_rules=FOCUS)
+    assert "http://example.com/target" in body
+
+
+def test_needs_review_cannot_take_over_a_quiet_day():
+    """The real shape of the long email: on a corpus day where nothing could
+    be valued, every one of 289 listings was a NEEDS REVIEW block. That
+    section is capped at its share and never takes the leftovers -- a page
+    of "we could not value this" is not what the cap is for."""
+    deals = [
+        make_cheap(
+            id=str(i), url="http://example.com/{}".format(i),
+            comp_match=make_match(level="price_tier", flag_eligible=False),
+            is_opportunity=False,
+        )
+        for i in range(30)
+    ]
+    body = body_of(deals, focus_rules=FOCUS)
+    shown = sum(1 for i in range(30) if "http://example.com/{}  ".format(i) in body)
+    assert shown == FOCUS.max_per_section
+    assert "LOW CONFIDENCE / NEEDS REVIEW" in body
+
+
+def test_needs_review_is_capped_but_opportunities_are_not():
+    """Same budget, different section: TOP OPPORTUNITIES does take the
+    leftovers, because a day with 20 real opportunities is a day worth
+    reading 6 of."""
+    deals = [make_cheap(id=str(i), url="http://example.com/{}".format(i)) for i in range(30)]
+    body = body_of(deals, focus_rules=FOCUS)
+    shown = sum(1 for i in range(30) if "http://example.com/{}  ".format(i) in body)
+    assert shown == FOCUS.max_listings
+
+
+def test_empty_state_does_not_claim_completeness_under_focus():
+    """"Everything CardPro did see is still below" above a capped list is
+    the report claiming a completeness it deliberately gave up."""
+    deals = [
+        make_cheap(
+            id=str(i), url="http://example.com/{}".format(i),
+            comp_match=make_match(level="price_tier", flag_eligible=False),
+            is_opportunity=False,
+        )
+        for i in range(30)
+    ]
+    focused = flat(body_of(deals, focus_rules=FOCUS))
+    assert "Everything CardPro did see" not in focused
+    assert "The best of what CardPro did see" in focused
+    assert "Everything CardPro did see" in flat(body_of(deals))

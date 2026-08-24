@@ -125,6 +125,11 @@ eBay saved-search alert email
       cheap (<$10)  ≥50% under market AND ≥$3 saved AND at least one attribute
                     that makes a copy scarce -- otherwise rejected as common_card
   → dedupe: new listings and genuine price drops only
+  → focus: the email is the cheap end you actually bid at -- cards at or under
+      $40 all-in, plus anything exceptional above it (50%+ AND $100+ AND a
+      flag-eligible comp); auctions already bid past your max rational bid are
+      dropped; the rest is capped at 40 listings, 10 per section. Removes only,
+      re-values nothing, and every group it removed is counted in the footer
   → decision-first sectioned report, emailed via Gmail SMTP
 ```
 
@@ -192,6 +197,13 @@ the link.
 Auctions get their own block that never calls a current bid a price, and
 shows the maximum bid that still preserves your margin.
 
+The report is **focused and capped** (`settings.json` → `focus`). Replaying
+a real August corpus produced a 4,255-line email; the same day under focus
+is 215 lines, with no valuation changed. Length is not a cosmetic problem --
+an email nobody finishes has not delivered its information. What focus
+removed is counted in the thresholds footer, each group with the setting
+that would bring it back.
+
 ---
 
 ## 7. Infrastructure
@@ -240,7 +252,8 @@ shows the maximum bid that still preserves your margin.
 | `settings.json` → `valuation` | Comp quality gates: minimum sample, recency half-life, staleness window, dispersion ceiling, outlier threshold, and whether context-only levels may flag (leave this `true`) |
 | `settings.json` → `economics` | Your real selling costs: fees, outbound shipping, supplies, tax, resale haircut |
 | `settings.json` → `auctions` | Required margin for max-rational-bid, and what counts as ending soon |
-| `settings.json` → `alerts` | How exceptional something must be to earn an ACT NOW slot |
+| `settings.json` → `alerts` | How exceptional something must be to earn an ACT NOW slot. Keep the dollar figure in step with `focus.price_ceiling` -- a $40 card cannot save $150 |
+| `settings.json` → `focus` | What reaches the email and how long it is: the price ceiling you shop under, the exception for an exceptional dearer card, whether auctions bid past your maximum are dropped, and the caps on total and per-section length |
 
 ---
 
@@ -266,7 +279,7 @@ shows the maximum bid that still preserves your margin.
 ```
 config/
   watchlist.json            -- players, tiers, acquisition targets
-  settings.json             -- thresholds, valuation gates, economics, auctions, alerts
+  settings.json             -- thresholds, valuation gates, economics, auctions, alerts, focus
 src/
   main.py                   -- orchestration; one evaluation path for all sources
   card_identity.py          -- structured identity + negative signals
@@ -283,6 +296,7 @@ src/
   ebay_client.py            -- eBay Browse/Insights client (dormant)
   craigslist_links.py       -- ready-to-click search links
   dedupe.py                 -- seen-listings tracking
+  focus.py                  -- what reaches the email: price ceiling, bidding room, length cap
   report.py                 -- the decision-first email
   emailer.py                -- Gmail SMTP
   config.py                 -- .env + JSON config loader
