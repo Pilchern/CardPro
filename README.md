@@ -78,8 +78,9 @@ more than one that says "95% under market" about a common.
    pick-your-card, lot). Anything it can't read stays **unknown**; nothing
    is ever guessed.
 3. Records every non-auction, non-blocked asking price into a self-building
-   comp corpus, then values each listing against comparable observations of
-   *that card in that grade* -- see
+   comp corpus -- **one row per listing**, kept at its first-seen date and
+   its latest price -- then values each listing against comparable
+   observations of *that card in that grade* -- see
    [How a deal is decided](#how-a-deal-is-decided).
 4. Flags a fixed-price listing only if it clears **both** gates: 30%+
    (configurable) below its matched comp median, AND at least $3
@@ -106,8 +107,10 @@ more than one that says "95% under market" about a common.
    `INVESTMENT WATCHLIST` · `AUCTIONS ENDING SOON` · `OFFER OPPORTUNITIES` ·
    `WATCH` · `LOW CONFIDENCE / NEEDS REVIEW` · `PRICE DROPS`
 
-   followed by the Craigslist quick-check links, suggested saved searches
-   you don't appear to have yet, and a **SYSTEM HEALTH** footer.
+   followed by a **SYSTEM HEALTH** footer, the
+   [sold comps worth adding](#sold-comps-worth-adding-and-why-nothing-flags-today),
+   the Craigslist quick-check links, and suggested saved searches you don't
+   appear to have yet.
 
    Within a section, entries are still ranked by **dollar amount saved**,
    not percent (a $250-off $999 card matters more than a 90%-off $10 one).
@@ -123,9 +126,12 @@ more than one that says "95% under market" about a common.
 
    If nothing qualifies you still get a short "nothing today" email (with
    the Craigslist links and the health footer attached), not silence. If the
-   run crashes outright (network blip, eBay issue, etc.), you get a short
-   "Scan FAILED" email instead of nothing at all -- same "not silence"
-   principle applied to errors, not just the zero-deals case.
+   run crashes outright (network blip, eBay issue, a state file that won't
+   parse), you get a "Scan FAILED" email carrying the traceback instead of
+   nothing at all -- same "not silence" principle applied to errors, not
+   just the zero-deals case. The traceback travels in the email because the
+   log file it used to point at lives on a runner GitHub deletes minutes
+   later.
 
 Every listing exits the pipeline with either a slot in the report or exactly
 one recorded reason, counted in the footer (`src/reasons.py`). Nothing is
@@ -387,8 +393,14 @@ high-volume player can clear the bar quickly, while a thin one may never.
 Note that with identity-and-grade-matched buckets this is a much higher bar
 than it was in 1.0, which is exactly the point.
 
-The highest-value next step is importing real sold comps by hand (130point is
-free and includes accepted Best Offers; Card Ladder is the paid option). See
+The highest-value next step is entering real sold comps by hand (130point is
+free and includes accepted Best Offers; Card Ladder is the paid option). That
+path is built -- `src/sold_comps.py` loads them, `python -m
+scripts.add_sold_comp` records one, and the report's footer ranks which
+lookups would unlock the most listings -- but nothing has been entered yet,
+so the sentence above still holds in full. See
+[Sold comps worth adding](#sold-comps-worth-adding-and-why-nothing-flags-today)
+for how to pick which ones, and
 [`docs/CARDPRO_2_AUDIT.md`](docs/CARDPRO_2_AUDIT.md) §6 for the full
 data-source matrix and cost analysis.
 
@@ -534,9 +546,10 @@ same reason -- only genuine deletion breaks it.
 
 ## Search coverage: why almost everything you see is a cheap raw card
 
-Measured against the production corpus: **99.3% of everything CardPro has
-ever observed was a raw card, 67% of it was under $25, and the median
-observation was $10.64.** The graded market -- the liquid, high-value half of
+Measured against the stored corpus on 2026-08-26 (907 distinct listings):
+**98.8% of everything CardPro has observed was a raw card -- 11 graded
+listings in total -- 48% of it was under $25, and the median observation was
+$29.99.** The graded market -- the liquid, high-value half of
 the hobby, and the only half where comps are dense enough to value anything
 precisely -- is effectively invisible.
 
@@ -552,7 +565,7 @@ the ones it sees no evidence of coverage for, each with the reason it exists:
 
 | Slice | Why |
 |---|---|
-| `<player> PSA 10` | Graded top-pop market -- densest comps, and ~99% missing from today's data |
+| `<player> PSA 10` | Graded top-pop market -- densest comps, and ~99% missing from today's data (1.2% of observations have a grader at all) |
 | `<player> PSA` | All graded copies, any grade -- a separate market from raw |
 | `<player> BGS SGC` | The other graders; their markets price differently from PSA |
 | `<player> rookie` | Rookie cards, where most of the money and liquidity is |
@@ -736,11 +749,33 @@ One-time setup:
 3. To trigger a run immediately instead of waiting for the schedule: repo
    **Actions tab -> Daily Card Deal Scan -> Run workflow**.
 
+What the job does, in order: installs `requirements-dev.txt`, **runs the
+test suite**, runs the scan, then persists state. The test step is a gate,
+not a formality -- the scan reads your inbox and emails you conclusions, and
+running it on code that doesn't pass its own tests produces a report that
+looks exactly like a good one and isn't. Two seconds of pytest against that
+is a trade worth making, and a failure there means no report today and a red
+job you get told about.
+
+The job also has a `concurrency` group and a 15-minute timeout. The group
+stops a manual dispatch racing the 13:00 cron run: two jobs checked out at
+the same commit means the second push is rejected, and by then the email has
+gone out and the day's observations exist only on a runner about to be
+deleted. `cancel-in-progress` stays `false` -- killing a run mid-flight is
+the one thing worse than making it wait. The timeout catches a stalled
+socket that somehow escapes the client-side timeouts, so it ends as a failed
+job you hear about rather than six hours of silence.
+
 The runner is thrown away after each run, so the workflow commits
 `data/seen_listings.json` and `data/ebay_alert_price_history.json` (dedupe
 state and the self-building comp corpus) back to the repo as its last
-step -- otherwise both would reset to empty every single day. Neither file
-is gitignored, on purpose. That means this data becomes part of the repo's
+step -- otherwise both would reset to empty every single day. That step
+fails loudly rather than quietly: `git add` errors are no longer swallowed
+(they used to leave the step printing "No state changes" and the job green
+having persisted nothing), and the push rebases and retries up to four times,
+because a rejected push means the day's observations are gone for good --
+past the IMAP lookback window there is nothing to re-read. Neither file is
+gitignored, on purpose. That means this data becomes part of the repo's
 git history going forward; it's just listing prices/dates/ids, nothing
 sensitive, but worth knowing if this repo is or becomes public.
 
@@ -769,10 +804,48 @@ your Mac's cron may need Full Disk Access under System Settings > Privacy
 
 **Note on logs:** `logs/scraper.log` (the script's own detailed log) is
 capped at ~2MB with 5 rotated backups, so it won't grow unbounded over
-months of daily runs. `logs/cron.log` (cron's redirected stdout/stderr,
+months of daily runs. `.gitignore` covers the rotated files as well as the
+live one (`logs/*.log*`) -- `scraper.log.1` through `.5` carry every title,
+every price and your email address, and the old `logs/*.log` pattern missed
+all five of them. `logs/cron.log` (cron's redirected stdout/stderr,
 just a few lines a day) isn't rotated -- it's tiny enough not to matter,
 but nothing stops you from truncating it (`> logs/cron.log`) whenever you
 feel like it.
+
+### When something goes wrong
+
+The rule for all of these is the same: a failure must not be able to look
+like a quiet day.
+
+- **A state file that won't parse raises.** `data/ebay_alert_price_history.json`
+  and `data/seen_listings.json` used to fall back to "start fresh" with a
+  warning saying the old file was left in place. That was true for about
+  thirty seconds -- until the save at the end of the run replaced it with the
+  day's observations and the workflow committed the wipe, losing the corpus
+  with the only evidence a log line on a deleted runner. Both now raise
+  (`price_history.CorruptCorpus`, `dedupe.CorruptSeenListings`), so the run
+  aborts, you get the traceback by email, and there is nothing staged to
+  commit. Repair or move the file and re-run.
+- **An empty corpus never overwrites a full one.** Nothing in the pipeline
+  legitimately empties the corpus, so `price_history.save()` refuses that
+  write. A *shrink* still goes through -- that is what pruning looks like,
+  and second-guessing it here would mean writing the retention policy down
+  twice.
+- **IMAP and SMTP have socket timeouts** (60s and 30s). Without them a server
+  that accepts the connection and then stalls raises nothing at all, so the
+  failure-email handler never fires -- the one path in this system that
+  produced no report *and* no failure email.
+- **A mailbox that can't be read is not an empty mailbox.** An IMAP SEARCH
+  error raises instead of rendering as "Emails scanned: 0, Listings parsed:
+  0" directly above prose telling you those counts are proof it looked. A
+  single message that fails to fetch doesn't lose the run, but it is counted
+  and reported in the health footer rather than skipped in silence.
+- **The template canary reaches you.** If alert emails arrive and zero
+  listings come out of them, eBay almost certainly changed their email
+  template and every number under it is fabricated. That warning is now a
+  `!!` line in the SYSTEM HEALTH footer, telling you to run
+  `python -m scripts.test_ebay_alerts --raw`. It used to go only to the log
+  file, on a runner that no longer exists by the time you read the email.
 
 ## Running tests
 
@@ -787,8 +860,10 @@ pytest
 
 This same suite runs automatically on every push via GitHub Actions
 (`.github/workflows/tests.yml`, against Python 3.9 and 3.12) -- no
-credentials needed there either, since everything external is mocked. Every
-failure mode in the audit has a regression test; every real bug becomes one.
+credentials needed there either, since everything external is mocked -- and
+it gates the daily scan itself, which will not send an email if the tests
+don't pass. Every failure mode in the audit has a regression test; every
+real bug becomes one.
 
 ## Checking the claims yourself: `replay_corpus`
 
@@ -820,6 +895,121 @@ Be honest about what it is: the corpus is asking prices, only as deep as the
 alert emails that produced it. This measures whether the *engine* behaves
 correctly, not whether the market values are right. No data source available
 to this project can tell us that yet.
+
+## Sold comps worth adding, and why nothing flags today
+
+The engine flags nothing on the current corpus. Three different things could
+cause that -- the gates are too strict, the identities never resolve, or the
+resolved ones are too lonely to form a bucket -- and until August 26 nothing
+in the project told you which. Two pieces of output now do.
+
+### The identity KPI (`replay_corpus`)
+
+`python -m scripts.replay_corpus` prints this against
+`data/ebay_alert_price_history.json`. Real output, 907 distinct listings
+observed 2026-08-21 to 2026-08-26, all of them asking prices:
+
+```
+--- identity coverage (KPI: CARDPRO_2_AUDIT.md section 8) ---
+  observations: 907
+  field resolved:
+    year           734   80.9%
+    set_name       154   17.0%
+    parallel        45    5.0%
+    card_number    162   17.9%
+    grader          11    1.2%
+  complete key for level:
+    exact            4    0.4%
+    same_card        7    0.8%
+    same_set       134   14.8%
+  first blocker for a flag-eligible (same_card) key:
+    set_name         600   66.2%
+    year             173   19.1%
+    parallel         127   14.0%
+    (key complete)     7    0.8%
+  same_card: 7 distinct keys, 0 observations (0.0%) in a bucket with >3 members
+  exact: 4 distinct keys, 0 observations (0.0%) in a bucket with >3 members
+```
+
+Read it as two questions kept deliberately apart:
+
+1. **Can a flag-eligible key be built at all?** For 99.2% of the corpus, no.
+   The `first blocker` list is the useful half: each blocked listing is
+   attributed to the *narrowest single field* that stops it, not to every
+   field it happens to be missing. That is what makes it a work queue rather
+   than a tally -- a listing missing both set and parallel is one problem,
+   and fixing parallel extraction alone would move none of the 600 listings
+   that never got as far as a set name.
+2. **Does a built key land somewhere useful?** No: of the 7 observations with
+   a complete `same_card` key, none is in a bucket holding more than
+   `valuation.min_comps_required` other listings. A complete key nothing else
+   shares values nothing. So even perfect extraction on those 7 changes
+   today's report by zero listings.
+
+The engine block underneath says the same thing from the other end: 0 `exact`
+buckets, 0 `same_card`, 8 `same_set`, 74 `price_tier`, every valuation at
+`low` confidence, and the sample-span gate (`concentrated_sample`) firing on
+all 866 of them -- unavoidable while the corpus spans five days and
+`valuation.min_comp_span_days` is 7.
+
+**None of that is a threshold that wants relaxing.** The work is title
+parsing, set name first, and then time.
+
+### The sold-comp suggestions (report footer)
+
+Every price CardPro has is an asking price, which is why no comp reaches
+"high" confidence
+([Known limitation](#known-limitation-every-comp-is-an-asking-price)). The
+one fix that needs no paid data and no scraping is you looking a card up on
+130point and typing the number in -- and since that tops out around twenty
+entries, those twenty have to be the right ones. Left to pick by hand you
+would enter comps for whatever card caught your eye, which is uncorrelated
+with what the engine is stuck on.
+
+`src/comp_requests.py` picks instead. It ranks the card identities the most
+of today's listings are waiting on, drops the ones that already have enough
+sales on file, and hands back a query to paste into 130point. The report's
+footer prints the top five with the command that records the answer.
+
+Next to it, it prints the number of listings that could not be identified
+precisely enough for *any* sold comp to match. That is the honest
+counterweight: when it dwarfs the suggestions, data entry is not the
+bottleneck. Replaying the stored corpus as listings, that is exactly what it
+says today:
+
+```
+Sold comps worth adding (130point.com -> python -m scripts.add_sold_comp):
+  (900 listing(s) could not be identified precisely enough for any sold comp to match -- those need better title parsing, not more data.)
+```
+
+900 of 907. No suggestion clears the two-listing minimum, because the seven
+identities that resolved are seven *different* cards. Forcing one line per
+resolved identity shows what a suggestion looks like when the extractor is
+doing better:
+
+```
+  Kyle Teel (2026 Topps Chrome Red White Blue raw) -- 1 listing waiting, 3 sales still needed
+      search: "2026 Topps Chrome Kyle Teel Red White Blue"
+      example: https://www.ebay.com/itm/178427169565
+```
+
+Then:
+
+```bash
+python -m scripts.add_sold_comp --player "Kyle Teel" --year 2026 \
+    --set "Topps Chrome" --parallel "Red White Blue" \
+    --price <what it sold for> --date <when it sold> --source 130point
+```
+
+Entries land in `config/sold_comps.json` (`settings.json` -> `sold_comps.path`),
+are validated before writing rather than repaired, and are the only comps in
+the system carrying `basis: sold`. Three caveats stated up front, because
+they are in the module docstrings too: "would unlock" means "would give these
+listings a comp level allowed to declare a deal", not "would find a deal";
+ranking by listings-per-lookup optimises your effort, not your portfolio, so
+a lookup for a card you actually want beats five for cards you don't; and a
+*wrong* entry is worse than no entry, because the engine trusts sold data
+more than anything else it has.
 
 ## Configuring
 

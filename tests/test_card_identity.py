@@ -610,3 +610,47 @@ class TestCardNumbersWithoutAHash:
     def test_the_hashed_form_still_wins_and_its_idioms_still_lose(self):
         assert extract("2024 Panini Prizm Caleb Williams #301 PSA 10").card_number.value == "301"
         assert extract("Michael Jordan card #2 of 10").card_number.value is None
+
+
+class TestIsBase:
+    """"This is the base card" and "we could not read the parallel" are
+    different facts, and parallel=None was both of them. Splitting them apart
+    is the largest available gain in comp coverage -- and the easiest way to
+    rebuild the pooling failure the engine exists to prevent, so the guard
+    errs toward unknown everywhere it can."""
+
+    def test_a_plain_card_from_a_known_set_is_base(self):
+        assert extract("2024 Panini Prizm Caleb Williams #301 RC").is_base.value is True
+
+    def test_a_card_with_a_parallel_is_not_base(self):
+        identity = extract("2024 Panini Prizm Caleb Williams Silver Prizm #301")
+        assert identity.is_base.value is False
+        assert identity.is_base.confidence == "high"
+
+    def test_a_numbered_card_is_never_base(self):
+        # The parallels that would badly distort a base median are almost all
+        # serial-numbered, which is why this is the guard that matters most.
+        assert extract("2024 Panini Prizm Caleb Williams #301 RC /99").is_base.value is None
+        assert extract("2024 Panini Prizm Caleb Williams #301 RC 23/99").is_base.value is None
+
+    def test_a_short_print_token_blocks_the_assertion(self):
+        for title in [
+            "2024 Panini Prizm Caleb Williams #301 SSP",
+            "2024 Panini Prizm Caleb Williams #301 SP",
+            "2024 Panini Prizm Caleb Williams #301 Variation",
+            "2024 Bowman Chrome 1st Caleb Wilson BCP-83",
+        ]:
+            assert extract(title).is_base.value is None, title
+
+    def test_an_unknown_set_cannot_be_base(self):
+        # Base of WHAT. Without a set there is no base card to be.
+        assert extract("Caleb Williams rookie card").is_base.value is None
+
+    def test_a_truncated_title_is_never_base(self):
+        # The parallel may be in the part eBay cut off.
+        assert extract("2024 Panini Prizm Caleb Williams RC #301 Mint Cond…").is_base.value is None
+        assert extract("2024 Panini Prizm Caleb Williams RC #301 Mint Cond...").is_base.value is None
+
+    def test_asserting_base_is_never_high_confidence(self):
+        # It is a closed-world inference, not something the title states.
+        assert extract("2024 Panini Prizm Caleb Williams #301 RC").is_base.confidence == "medium"

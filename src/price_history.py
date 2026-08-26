@@ -136,6 +136,7 @@ def record(
     qualifier: Optional[str] = None,
     print_run: Optional[int] = None,
     manufacturer: Optional[str] = None,
+    is_base: Optional[bool] = None,
     basis: str = "asking",
 ) -> None:
     """Appends one price observation to the corpus.
@@ -199,6 +200,11 @@ def record(
         # Topps "Instant" from a Panini "Instant", which currently share a
         # bucket. CompEngine._prepare ignores keys it does not know.
         "manufacturer": manufacturer,
+        # Recorded, not yet keyed on -- see card_identity._extract_is_base.
+        # True means "the title says this is the base card"; None means
+        # unknown, which is what parallel=None has always meant and is
+        # exactly the ambiguity this field exists to split apart.
+        "is_base": is_base,
         "basis": basis,
     }
     if listing_id:

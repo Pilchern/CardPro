@@ -383,6 +383,7 @@ def record_observations(listings, history, today_str: str) -> int:
             qualifier=grade_info.qualifier,
             print_run=identity.print_run.value if identity else None,
             manufacturer=identity.manufacturer.value if identity else None,
+            is_base=identity.is_base.value if identity else None,
             basis=comps.BASIS_ASKING,
         )
         recorded += 1

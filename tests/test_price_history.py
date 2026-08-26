@@ -21,6 +21,7 @@ def _obs(price, date, listing_id="", **identity_overrides):
         "qualifier": None,
         "print_run": None,
         "manufacturer": None,
+        "is_base": None,
         "basis": "asking",
     }
     obs.update(identity_overrides)

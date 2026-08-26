@@ -132,6 +132,55 @@ def _first_missing(obs, fields):
     return None
 
 
+def report_base_ceiling(observations, min_comps):
+    """What treating an unread parallel as "base" would be worth.
+
+    ``parallel=None`` currently means both "this is a base card" and "there
+    may be a parallel we could not read", and the engine refuses to match on
+    it -- correctly, because it cannot tell them apart. The cost is that base
+    cards, which are the bulk of any alert feed, can never reach a level that
+    declares a deal. card_identity now records an `is_base` field under a
+    closed-world guard, but nothing keys on it yet.
+
+    This sizes that decision on real data instead of arguing it. It is an
+    UPPER BOUND and deliberately optimistic: it assumes every observation
+    with a known set and no readable parallel really is a base card, which
+    the guard would not. If the number here is small, the question is settled
+    and the field should stay out of the bucket key.
+    """
+    fields = LEVEL_REQUIREMENTS["same_card"]
+    buckets = collections.Counter()
+    keyed = []
+    candidates = 0
+    for obs in observations:
+        parallel = obs.get("parallel")
+        assumed_base = parallel is None or str(parallel).strip() == ""
+        if assumed_base:
+            candidates += 1
+        if _first_missing(obs, ("year", "set_name")) is not None:
+            continue
+        market = comps.market_key(
+            obs.get("card_type"), obs.get("grader"), obs.get("grade"), obs.get("qualifier")
+        )
+        if market is None:
+            continue
+        key = (obs["player"], market, str(obs["year"]), str(obs["set_name"]),
+               "BASE" if assumed_base else str(parallel))
+        buckets[key] += 1
+        keyed.append(key)
+    usable = sum(1 for key in keyed if buckets[key] > min_comps)
+    total = len(observations) or 1
+    print("--- upper bound: what asserting \"base\" would unlock ---")
+    print("  observations with no readable parallel: {} ({:.1%})".format(candidates, candidates / total))
+    print(
+        "  same_card if every one of those were base: {} distinct keys, "
+        "{} observations ({:.1%}) in a bucket with >{} members".format(
+            len(buckets), usable, usable / total, min_comps
+        )
+    )
+    print("  (optimistic by construction -- the real guard asserts base far less often)")
+
+
 def report_identity_coverage(observations, min_comps):
     """The identity KPI from docs/CARDPRO_2_AUDIT.md section 8.
 
@@ -196,6 +245,7 @@ def report_identity_coverage(observations, min_comps):
             f"{usable} observations ({usable / total:.1%}) in a bucket with "
             f">{min_comps} members"
         )
+    report_base_ceiling(observations, min_comps)
     print()
 
 

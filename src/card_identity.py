@@ -461,6 +461,11 @@ class CardIdentity:
     is_lot: Field = dataclass_field(default_factory=lambda: Field(False, "high"))
     # value is a tuple of canonical signal names from NEGATIVE_SIGNAL_VOCABULARY
     negative_signals: Field = dataclass_field(default_factory=lambda: Field((), "none"))
+    # True when the title says, as clearly as a title can, that this is the
+    # BASE card of its set -- as distinct from parallel=None, which means
+    # "we could not read a parallel". See _extract_is_base for why the two
+    # have to be separated and why this does not yet key a comp bucket.
+    is_base: Field = dataclass_field(default_factory=lambda: Field(None, "none"))
 
 
 def mask_for_set_lookup(title: str) -> str:
@@ -587,6 +592,70 @@ def _canonical_set(set_field: Field, manufacturer: Optional[str]) -> Field:
     if name == set_field.value:
         return set_field
     return Field(value=name, confidence=set_field.confidence, source=set_field.source)
+
+
+#: Tokens that mean "there is something special about this card that the
+#: parallel vocabulary may not have caught". Any of them, and base is not
+#: asserted. "1st" is here because Bowman "1st Chrome" and "1st Bowman" are
+#: distinct printings; "variation" and "SP" because they are the hobby's own
+#: word for "this is not the base card".
+NOT_BASE_TOKENS = [
+    "sp", "ssp", "variation", "variant", "short print", "shortprint",
+    "insert", "die cut", "die-cut", "case hit", "1st", "1of1", "one of one",
+    "parallel", "numbered", "exclusive", "exclusives", "premium",
+]
+_NOT_BASE_RE = re.compile(
+    r"\b(" + "|".join(re.escape(t) for t in NOT_BASE_TOKENS) + r")\b", re.IGNORECASE
+)
+
+
+def _extract_is_base(
+    title: str,
+    parallel: Field,
+    set_name: Field,
+    serial_number: Field,
+    print_run: Field,
+) -> Field:
+    """Whether this is the base card of its set -- True, or unknown.
+
+    THE PROBLEM THIS EXISTS TO NAME. ``parallel=None`` currently means two
+    different things: "this is a base card, there is no parallel" and "there
+    may be a parallel and we could not read it". ``comps._key_exact`` and
+    ``_key_same_card`` both refuse a None parallel, and they are right to --
+    they cannot tell those apart, and pooling an unread parallel with base
+    copies is the same-card-different-parallel error the engine exists to
+    prevent. But the consequence is that base cards, which are the bulk of
+    any alert feed, are structurally incapable of reaching a level that can
+    declare a deal. Measured on the live corpus, resolving this is the single
+    largest available gain in comp coverage.
+
+    THIS FIELD DOES NOT YET KEY A COMP BUCKET, deliberately. It is recorded
+    so the size of that gain can be measured on real data (see
+    scripts/replay_corpus.py) before anything is valued off it. What would
+    justify promoting it: replaying a corpus several weeks wide and confirming
+    that the buckets it creates contain what they claim to.
+
+    The guard is closed-world and errs toward unknown. Base is asserted only
+    when the title is complete, names a set we recognise, carries no serial
+    or print run, no parallel word was found, and no token suggests a special
+    printing. The residual risk is a parallel named with a word absent from
+    the vocabulary entirely -- and the reason that risk is tolerable rather
+    than fatal is structural: the parallels that would badly distort a base
+    median are almost all serial-numbered, and a serial number is exactly
+    what this refuses to look past.
+    """
+    if parallel.value is not None:
+        return Field(value=False, confidence="high", source="title")
+    if not set_name.value:
+        return Field(value=None, confidence="none", source="title")
+    if title.rstrip().endswith(("\u2026", "...")):
+        # eBay truncated it. The parallel may be in the part we cannot see.
+        return Field(value=None, confidence="none", source="title")
+    if serial_number.value is not None or print_run.value is not None:
+        return Field(value=None, confidence="none", source="title")
+    if _NOT_BASE_RE.search(title):
+        return Field(value=None, confidence="none", source="title")
+    return Field(value=True, confidence="medium", source="title")
 
 
 def _extract_card_number(title: str) -> Field:
@@ -751,15 +820,17 @@ def extract_card_identity(title: str) -> CardIdentity:
     is_memorabilia = is_patch or bool(_find_keyword(masked, MEMORABILIA_KEYWORDS))
 
     manufacturer_field = _leftmost_keyword_field(masked, MANUFACTURERS)
+    set_field = _canonical_set(
+        _keyword_field(mask_for_set_lookup(title), SET_KEYWORDS),
+        manufacturer_field.value,
+    )
+    parallel_field = _extract_parallel(masked)
     return CardIdentity(
         year=year_field,
         season=season_field,
         manufacturer=manufacturer_field,
-        set_name=_canonical_set(
-            _keyword_field(mask_for_set_lookup(title), SET_KEYWORDS),
-            manufacturer_field.value,
-        ),
-        parallel=_extract_parallel(masked),
+        set_name=set_field,
+        parallel=parallel_field,
         card_number=_extract_card_number(title),
         serial_number=serial_field,
         print_run=print_run_field,
@@ -768,4 +839,5 @@ def extract_card_identity(title: str) -> CardIdentity:
         is_patch=Field(is_patch, "high", "title"),
         is_lot=Field(is_lot, lot_confidence, "title"),
         negative_signals=_extract_negative_signals(title, is_lot),
+        is_base=_extract_is_base(title, parallel_field, set_field, serial_field, print_run_field),
     )
