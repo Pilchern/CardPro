@@ -763,7 +763,7 @@ def test_blocked_reasons_are_not_repeated_when_already_described():
     risks = [line for line in flat(body).split("Risks")[1].split("Title")[0].split("; ")]
     assert any(item.strip().startswith("thin sample (n=3)") for item in risks)
     assert flat(body).count("thin sample (n=3)") == 1
-    assert "too few comparable sales to trust a median" not in flat(body)
+    assert "too few comparable observations to trust a median" not in flat(body)
 
 
 def test_context_only_blocked_reason_is_surfaced_in_english():
@@ -1087,7 +1087,7 @@ def test_empty_state_lists_the_top_rejection_reasons_from_run_stats():
 
     _, body = report.build_report([], 30, RUN_DATE, stats=stats)
     assert "Top reasons listings did not qualify:" in body
-    assert "12 x no comparable sales at any level" in body
+    assert "12 x no comparable listing at any level" in body
     assert "3 x discount is below your threshold" in body
     assert "Looked at 40 listings matched to your watchlist; 12 had no comp at any level." in flat(body)
 
@@ -1154,7 +1154,9 @@ def test_system_health_footer_rendered_from_run_stats():
     body = body_of([make_listing()], stats=stats)
     assert "SYSTEM HEALTH" in body
     for line in stats.health_lines():
-        assert line in body
+        # Compared flattened: the footer wraps like every other block, and
+        # where textwrap breaks a line is a layout decision, not a contract.
+        assert flat(line) in flat(body)
 
 
 def test_no_system_health_footer_when_no_stats_passed():
@@ -1632,7 +1634,7 @@ class TestSoldCompRequestsSection:
         assert report._sold_comp_requests_section([], 0) == ""
 
     def test_names_the_card_the_market_and_the_cost_of_the_ask(self):
-        text = report._sold_comp_requests_section([a_request()], 0)
+        text = flat(report._sold_comp_requests_section([a_request()], 0))
         assert "Caleb Williams (2024 Prizm Silver Prizm PSA 10)" in text
         assert "6 listings waiting" in text
         assert "2 sales still needed" in text
@@ -1676,3 +1678,138 @@ class TestSoldCompRequestsSection:
 
     def test_a_caller_that_does_not_compute_them_gets_no_section(self):
         assert "Sold comps worth adding" not in report.build_report([], 30, RUN_DATE)[1]
+
+
+# ---------------------------------------------------------------------------
+# A number that cannot be stood behind is not printed
+#
+# The pipeline fills in market_value, dollar_savings and economics BEFORE it
+# checks flag-eligibility, and a target hit reaches a headline section
+# regardless of claims. So a context-only comp arrived at the renderer fully
+# furnished with a discount and an ROI -- an $18 card inside a bucket defined
+# as "$25-$100", median $44, reported as 51% off with a 39% return. That is
+# the audit's failure mode #1 reprinted, and the fix is not a softer
+# adjective on the number.
+# ---------------------------------------------------------------------------
+
+
+def context_only_deal(**overrides):
+    deal = make_listing(**overrides)
+    deal.comp_match = CompMatch(
+        stats=make_stats(median=44.0, sample_size=12, minimum=25.0, maximum=99.0),
+        level="price_tier",
+        flag_eligible=False,
+        confidence="low",
+        blocked_reasons=("context_only_level",),
+    )
+    deal.market_value = 44.0
+    deal.dollar_savings = 22.5
+    deal.pct_under_market = 51.1
+    return deal
+
+
+class TestContextOnlyCompsPrintNoNumber:
+    def test_no_discount_line(self):
+        assert report._discount_text(context_only_deal()) is None
+
+    def test_no_economics_line(self):
+        deal = context_only_deal()
+        deal.economics = object()  # would have rendered if it were consulted
+        assert report._economics_text(deal) is None
+
+    def test_the_absence_is_explained_rather_than_silent(self):
+        body = flat(body_of([context_only_deal()]))
+        assert "CardPro has no valuation for this card" in body
+        assert "51.1%" not in body
+
+    def test_a_flag_eligible_comp_still_gets_its_numbers(self):
+        deal = make_listing()
+        assert report._discount_text(deal) is not None
+
+
+class TestConfidenceNamesEveryDowngrade:
+    def test_a_time_concentrated_sample_is_named(self):
+        # The most common downgrade in production by far -- 866 of 907
+        # listings -- and the only one with no sentence. An exact
+        # grade-matched comp at n=9 printed "LOW" with nothing accounting
+        # for the fall, which reads as an arbitrary ladder.
+        deal = make_listing()
+        deal.comp_match = CompMatch(
+            stats=make_stats(sample_size=9, distinct_dates=1, span_days=0, is_concentrated=True),
+            level="exact",
+            flag_eligible=False,
+            confidence="low",
+            blocked_reasons=("concentrated_sample",),
+        )
+        text = flat(report._confidence_text(deal))
+        assert "one snapshot, not independent readings" in text
+        assert "1 date(s) spanning 0 day(s)" in text
+
+    def test_a_well_spread_sample_says_nothing_about_dates(self):
+        assert "snapshot" not in report._confidence_text(make_listing())
+
+
+class TestUnknownShippingIsCarriedThrough:
+    def test_the_discount_says_it_is_a_ceiling(self):
+        # total_cost falls back to price alone when shipping is unknown, so
+        # the Cost line declines to state a total and the Discount line then
+        # named one to the cent two lines later.
+        deal = make_listing(shipping_price=None)
+        assert "before shipping, which is unknown" in report._discount_text(deal)
+
+    def test_a_known_shipping_discount_carries_no_caveat(self):
+        assert "unknown" not in report._discount_text(make_listing(shipping_price=4.99))
+
+
+class TestPriceDropsCarryConfidence:
+    def test_the_block_says_how_far_to_trust_its_market_value(self):
+        # Every other block type carries this; its absence here was a
+        # copy-paste omission that no test caught.
+        deal = make_listing(is_price_drop=True, previous_price=90.0)
+        assert "Confidence" in report._price_drop_block(1, deal)
+
+
+class TestAWarnedRunIsNotAQuietDay:
+    def _warned_stats(self):
+        from src import observability
+
+        stats = observability.RunStats(alert_emails_scanned=14)
+        stats.warn(
+            "Read 14 eBay alert email(s) and extracted 0 listings from all of them."
+        )
+        return stats
+
+    def test_the_subject_says_to_check(self):
+        subject = report.build_report([], 30, RUN_DATE, stats=self._warned_stats())[0]
+        assert "CHECK THIS" in subject
+
+    def test_the_email_does_not_call_the_silence_normal(self):
+        # It used to open with "That is a normal outcome, not a failure" six
+        # lines above a footer saying 14 emails yielded nothing -- asserting
+        # the zeroes were fine while the alarm said they were manufactured.
+        body = flat(body_of([], stats=self._warned_stats()))
+        assert "SOMETHING IS WRONG WITH TODAY'S SCAN." in body
+        assert "That is a normal outcome, not a failure" not in body
+        assert "Do not read the zeroes as a quiet market" in body
+
+    def test_an_unwarned_quiet_day_still_reads_as_normal(self):
+        from src import observability
+
+        body = flat(body_of([], stats=observability.RunStats()))
+        assert "NOTHING CLEARED THE BAR TODAY." in body
+        assert "That is a normal outcome, not a failure" in body
+        assert "No opportunities today" in report.build_report([], 30, RUN_DATE)[0]
+
+
+class TestFooterWrapping:
+    def test_no_footer_line_runs_past_the_wrap_width(self):
+        # The "Top reasons" line came out at 404 characters, which a mail
+        # client soft-wraps wherever it likes -- so the one part of the
+        # footer worth reading became the part nobody could.
+        from src import observability, reasons
+
+        stats = observability.RunStats(listings_matched_to_watchlist=200, valued=60)
+        for index in range(40):
+            stats.rejections.record(reasons.Reason.NO_COMP_AT_ANY_LEVEL, str(index))
+        for line in body_of([make_listing()], stats=stats).splitlines():
+            assert len(line) <= report._WRAP_WIDTH + 8, line

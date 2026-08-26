@@ -122,8 +122,12 @@ REASON_LABELS: Dict[str, str] = {
     Reason.GRADE_UNCERTAIN: "the grade is uncertain (title truncated or unreadable)",
     # data quality
     Reason.NO_PRICE: "no price could be read from the listing",
-    Reason.NO_COMP_AT_ANY_LEVEL: "no comparable sales at any level",
-    Reason.THIN_SAMPLE: "too few comparable sales to trust a median",
+    # Not "sales". There have never been any: every comp on this path is an
+    # asking price, and _market_text on the card itself already says
+    # "listing". The same fact was being stated two ways in one email, and
+    # the footer's version was the one that was wrong.
+    Reason.NO_COMP_AT_ANY_LEVEL: "no comparable listing at any level",
+    Reason.THIN_SAMPLE: "too few comparable observations to trust a median",
     Reason.STALE_COMPS: "comps are stale (newest is older than the freshness window)",
     Reason.DISPERSED_COMPS: "comps disagree with each other too much to name one value",
     Reason.CONTEXT_ONLY_LEVEL: "only context-only comps (card family or price tier), which can never declare a deal",
@@ -312,7 +316,7 @@ class RejectionLog:
         return list(self._listing_ids.get(validate(reason), []))
 
     def summary_lines(self) -> List[str]:
-        """Report-ready lines, e.g. ``"12 x no comparable sales at any level"``.
+        """Report-ready lines, e.g. ``"12 x no comparable listing at any level"``.
 
         Same order as ``counts()``. Returns an empty list when nothing was
         rejected -- the caller decides whether "nothing was rejected" is

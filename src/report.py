@@ -508,18 +508,56 @@ def _market_text(deal: Listing) -> str:
     return text
 
 
+def _is_real_comp(deal: Listing) -> bool:
+    """A comp solid enough to base a number on. Deliberately stricter than
+    "has a market value": suggesting an offer price off a context-only comp
+    would be the circular price-tier valuation wearing a negotiation hat --
+    "offer 30% below a bucket defined by price" is not advice, it is noise.
+    Listings whose only comp is context-only belong in NEEDS REVIEW."""
+    match = deal.comp_match
+    return match is not None and getattr(match, "flag_eligible", False) and _has_market(deal)
+
+
+#: What replaces the Discount and Economics lines when the only comp is
+#: context-only. Not a hedge on a number -- the number does not get printed.
+CONTEXT_ONLY_TEXT = (
+    "the only comp is a context-only level, which cannot be evidence about price -- a "
+    "price-bracket bucket is defined BY price, so the cheap end of it always looks cheap. "
+    "CardPro has no valuation for this card and there is no discount to report."
+)
+
+
 def _discount_text(deal: Listing) -> Optional[str]:
     """None when there is nothing honest to say. No comp means no discount
     line at all -- not "0%", not "n/a"."""
     if not _has_market(deal) or deal.dollar_savings is None:
+        return None
+    if not _is_real_comp(deal):
+        # A discount computed off a context-only comp is the audit's failure
+        # mode #1 verbatim: an $18 card inside a bucket defined as "$25-$100"
+        # reported as 51% off. It reaches here because the pipeline fills in
+        # market_value and dollar_savings before it checks flag-eligibility,
+        # and a target hit gets a headline section regardless of claims. The
+        # parenthetical on the Market line is not enough -- a number that
+        # cannot be stood behind must not be printed at all.
         return None
     if deal.dollar_savings < 0:
         return "{} ABOVE market ({} over)".format(
             _money(abs(deal.dollar_savings)), _pct1(abs(deal.pct_under_market or 0.0))
         )
     if deal.pct_under_market is None:
-        return "{} below market".format(_money(deal.dollar_savings))
-    return "{} below market ({})".format(_money(deal.dollar_savings), _pct1(deal.pct_under_market))
+        text = "{} below market".format(_money(deal.dollar_savings))
+    else:
+        text = "{} below market ({})".format(
+            _money(deal.dollar_savings), _pct1(deal.pct_under_market)
+        )
+    if deal.shipping_price is None:
+        # total_cost falls back to price alone when shipping is unknown, so
+        # this figure is computed against a cost the Cost line has just
+        # declined to state. Naming it to the cent two lines later, with no
+        # caveat, is the report contradicting itself.
+        text += " -- before shipping, which is unknown, so this is a ceiling"
+    return text
 
 
 #: What the Economics line says about a card that cannot be flipped.
@@ -543,21 +581,38 @@ def _economics_text(deal: Listing) -> Optional[str]:
     one-liner instead of a negative-ROI figure. The *discount* is untouched
     either way: the card really is below market, and that is exactly why it
     is being shown.
+
+    A listing whose only comp is context-only gets no line at all, for the
+    same reason it gets no discount line -- see CONTEXT_ONLY_TEXT.
     """
+    if not _is_real_comp(deal):
+        # Same reason as _discount_text: profit and ROI are computed off the
+        # market value, so a context-only comp makes them a restatement of
+        # the price wearing an accountant's hat.
+        return None
     if deal.resale_uneconomic:
         return COLLECTOR_BUY_TEXT
     econ = deal.economics
     if econ is None:
         return None
+    tail = "[assumptions in footer]"
+    if not getattr(econ, "shipping_known", True):
+        # economics.evaluate emits this caveat as an assumption, but the
+        # footer filters per-card assumptions out, so the one assumption
+        # that can flip the sign of the profit was the one the reader never
+        # saw. On a $22 card with a $3.44 expected profit, $5 of postage
+        # makes it a $1.56 loss.
+        tail = "before unknown inbound shipping, which could make it a loss " + tail
     return (
         "sell ~{} -> fees {} + ship/supplies {} -> net {} -> profit {} ({} ROI) "
-        "[assumptions in footer]".format(
+        "{}".format(
             _money(econ.expected_sale_price),
             _money(econ.selling_fees),
             _money(econ.outbound_costs),
             _money(econ.expected_net_proceeds),
             _money(econ.expected_profit),
             _pct(econ.roi_pct),
+            tail,
         )
     )
 
@@ -629,6 +684,18 @@ def _confidence_text(deal: Listing) -> str:
         why.append("newest comp is {}".format(_days(stats.age_days_newest)))
     if stats.is_dispersed:
         why.append("comps disagree widely (dispersion {:.2f})".format(stats.dispersion))
+    if stats.is_concentrated:
+        # The most common downgrade by far and the only one that had no
+        # sentence: it fires on 866 of 907 production listings, so an exact
+        # grade-matched comp with n=9 was printing "LOW" with nothing in the
+        # line to account for the fall. A confidence ladder nobody can follow
+        # reads as a black box, which is what this line exists to prevent.
+        why.append(
+            "all {} comps landed on {} date(s) spanning {} day(s) -- one snapshot, "
+            "not independent readings".format(
+                stats.sample_size, stats.distinct_dates, stats.span_days
+            )
+        )
     return "{} -- {}".format(confidence.upper(), "; ".join(why))
 
 
@@ -698,6 +765,8 @@ def _thesis_block(index: int, deal: Listing, ending_soon_hours: float = DEFAULT_
 
     lines = [_headline(index, deal), _field_line("Cost", _cost_text(deal))]
     lines.append(_field_line("Market", _market_text(deal)))
+    if _has_market(deal) and not _is_real_comp(deal):
+        lines.append(_field_line("Context", CONTEXT_ONLY_TEXT))
     discount = _discount_text(deal)
     if discount:
         lines.append(_field_line("Discount", discount))
@@ -772,6 +841,8 @@ def _auction_block(index: int, deal: Listing, ending_soon_hours: float = DEFAULT
         bidding += " -- inside your {:.0f}h ending-soon window".format(ending_soon_hours)
     lines.append(_field_line("Bidding", bidding))
     lines.append(_field_line("Market", _market_text(deal)))
+    if _has_market(deal) and not _is_real_comp(deal):
+        lines.append(_field_line("Context", CONTEXT_ONLY_TEXT))
 
     if deal.max_rational_bid is not None:
         max_bid_text = "{} -- the most you can pay and still keep your margin. Above this, stop.".format(
@@ -842,6 +913,8 @@ def _offer_block(index: int, deal: Listing, threshold_pct: float) -> str:
     lines = [_headline(index, deal)]
     lines.append(_field_line("Asking", _cost_text(deal)))
     lines.append(_field_line("Market", _market_text(deal)))
+    if _has_market(deal) and not _is_real_comp(deal):
+        lines.append(_field_line("Context", CONTEXT_ONLY_TEXT))
     discount = _discount_text(deal)
     if discount:
         lines.append(_field_line("Discount", "{} at the asking price".format(discount)))
@@ -892,6 +965,8 @@ def _compact_block(index: int, deal: Listing, *, why: Optional[str] = None,
         return _auction_block(index, deal, ending_soon_hours)
     lines = [_headline(index, deal), _field_line("Cost", _cost_text(deal))]
     lines.append(_field_line("Market", _market_text(deal)))
+    if _has_market(deal) and not _is_real_comp(deal):
+        lines.append(_field_line("Context", CONTEXT_ONLY_TEXT))
     discount = _discount_text(deal)
     if discount:
         lines.append(_field_line("Discount", discount))
@@ -923,9 +998,16 @@ def _price_drop_block(index: int, deal: Listing) -> str:
         )
     lines.append(_field_line("Cost", _cost_text(deal)))
     lines.append(_field_line("Market", _market_text(deal)))
+    if _has_market(deal) and not _is_real_comp(deal):
+        lines.append(_field_line("Context", CONTEXT_ONLY_TEXT))
     discount = _discount_text(deal)
     if discount:
         lines.append(_field_line("Discount", discount))
+    # Every other block carries this. Its absence here was a copy-paste
+    # omission, not a decision: a market value and a discount with nothing
+    # saying how far to trust them is the one thing this report is not
+    # allowed to print.
+    lines.append(_field_line("Confidence", _confidence_text(deal)))
     risks = _risks(deal)
     if risks:
         lines.append(_field_line("Risks", "; ".join(risks)))
@@ -976,16 +1058,6 @@ def _parse_time_left_hours(text) -> Optional[float]:
         else:
             hours += number / 60.0
     return hours if found else None
-
-
-def _is_real_comp(deal: Listing) -> bool:
-    """A comp solid enough to base a number on. Deliberately stricter than
-    "has a market value": suggesting an offer price off a context-only comp
-    would be the circular price-tier valuation wearing a negotiation hat --
-    "offer 30% below a bucket defined by price" is not advice, it is noise.
-    Listings whose only comp is context-only belong in NEEDS REVIEW."""
-    match = deal.comp_match
-    return match is not None and getattr(match, "flag_eligible", False) and _has_market(deal)
 
 
 def _auction_sort_key(deal: Listing):
@@ -1279,10 +1351,18 @@ def _summary_line(sections) -> str:
     return " | ".join(parts)
 
 
-def _subject(sections, date_short: str) -> str:
+def _subject(sections, date_short: str, stats=None) -> str:
     """Lead with the strongest thing that happened, short enough for a lock
     screen. Never leads with a dollar figure -- a big number off a weak comp
-    is exactly the false urgency this pass exists to remove."""
+    is exactly the false urgency this pass exists to remove.
+
+    A run that raised a warning and found nothing leads with the warning. It
+    used to be indistinguishable from a quiet day: the day eBay changes its
+    email template, every count is zero, the subject says "No opportunities
+    today", and the alarm that says the zeroes are fabricated is the last
+    line of the footer. A quiet day and a broken scan are the two states this
+    subject line most needs to keep apart.
+    """
     act_now = len(sections[SECTION_ACT_NOW])
     opportunities = len(sections[SECTION_TOP_OPPORTUNITIES])
     targets = len(sections[SECTION_TARGET_HITS])
@@ -1299,6 +1379,8 @@ def _subject(sections, date_short: str) -> str:
         return "{} ({})".format(_plural(targets, "target card hit"), date_short)
     if auctions:
         return "{} to review ({})".format(_plural(auctions, "auction"), date_short)
+    if getattr(stats, "warnings", None):
+        return "CHECK THIS -- today's scan may be broken ({})".format(date_short)
     return "No opportunities today ({})".format(date_short)
 
 
@@ -1312,20 +1394,39 @@ def _empty_state_block(threshold_pct: float, min_savings_dollars: float, stats,
     quiet day read as the system working, with the receipts to prove it
     looked, rather than as silence or breakage.
     """
-    lines = [
-        "NOTHING CLEARED THE BAR TODAY.",
-        "",
-        textwrap.fill(
-            "No listing had both a comp CardPro is willing to stand behind and a discount of "
-            "{:.0f}%+ with at least {} saved. That is a normal outcome, not a failure: since "
-            "the comp rules were fixed, a card only qualifies when its value is backed by "
-            "grade-matched, identity-matched comps. Days with nothing are the honest price of "
-            "not being told that a $1.25 base card is 95% under market.".format(
-                threshold_pct, _money(min_savings_dollars)
+    warnings = list(getattr(stats, "warnings", None) or [])
+    if warnings:
+        # Never assert that a quiet day is normal while something is warning
+        # that the quiet is manufactured. This block used to open with "that
+        # is a normal outcome, not a failure" unconditionally, six lines
+        # above a footer saying 14 alert emails yielded zero listings.
+        lines = ["SOMETHING IS WRONG WITH TODAY'S SCAN.", ""]
+        for warning in warnings:
+            lines.append(textwrap.fill(warning, width=_WRAP_WIDTH,
+                                       initial_indent="!! ", subsequent_indent="   "))
+        lines.append("")
+        lines.append(
+            textwrap.fill(
+                "Everything below is what CardPro would say about an empty day. Do not read "
+                "the zeroes as a quiet market until you have checked the above.",
+                width=_WRAP_WIDTH,
+            )
+        )
+    else:
+        lines = [
+            "NOTHING CLEARED THE BAR TODAY.",
+            "",
+            textwrap.fill(
+                "No listing had both a comp CardPro is willing to stand behind and a discount of "
+                "{:.0f}%+ with at least {} saved. That is a normal outcome, not a failure: since "
+                "the comp rules were fixed, a card only qualifies when its value is backed by "
+                "grade-matched, identity-matched comps. Days with nothing are the honest price of "
+                "not being told that a $1.25 base card is 95% under market.".format(
+                    threshold_pct, _money(min_savings_dollars)
+                ),
+                width=_WRAP_WIDTH,
             ),
-            width=_WRAP_WIDTH,
-        ),
-    ]
+        ]
     if stats is not None:
         summary = stats.rejections.summary_lines()[:5]
         if summary:
@@ -1492,7 +1593,13 @@ def _health_footer(stats) -> str:
         return ""
     lines = ["SYSTEM HEALTH"]
     for line in stats.health_lines():
-        lines.append("  " + line)
+        # Wrapped, like every other block in this module. Unwrapped, the
+        # "Top reasons" line came out at 404 characters and a mail client
+        # soft-wrapped it wherever it liked, which is how the one part of
+        # the footer worth reading became the one part nobody could.
+        lines.append(
+            textwrap.fill(line, width=_WRAP_WIDTH, initial_indent="  ", subsequent_indent="    ")
+        )
     return "\n".join(lines)
 
 
@@ -1506,6 +1613,16 @@ def _craigslist_section(craigslist_links) -> str:
     for player, url in craigslist_links.items():
         lines.append("  {}: {}".format(player, url))
     return "\n".join(lines)
+
+
+def _wrap_footer_line(text: str) -> str:
+    """Footer lines wrap like every other block. The leading spaces in the
+    caller's string are the indent, and continuations get two more."""
+    stripped = text.lstrip(" ")
+    indent = " " * (len(text) - len(stripped))
+    return textwrap.fill(
+        stripped, width=_WRAP_WIDTH, initial_indent=indent, subsequent_indent=indent + "  "
+    )
 
 
 def _sold_comp_requests_section(requests, unidentified: int = 0) -> str:
@@ -1527,14 +1644,18 @@ def _sold_comp_requests_section(requests, unidentified: int = 0) -> str:
         return ""
 
     lines = ["Sold comps worth adding (130point.com -> python -m scripts.add_sold_comp):"]
+    # Same wrapping rule as everywhere else -- a suggestion line with a long
+    # set name and a long player name ran past 130 characters.
     for request in requests:
         lines.append(
-            "  {} ({} {}) -- {} waiting, {} still needed".format(
-                request.player,
-                request.card_label,
-                request.market_label,
-                _plural(request.listings_waiting, "listing"),
-                _plural(request.still_needed, "sale"),
+            _wrap_footer_line(
+                "  {} ({} {}) -- {} waiting, {} still needed".format(
+                    request.player,
+                    request.card_label,
+                    request.market_label,
+                    _plural(request.listings_waiting, "listing"),
+                    _plural(request.still_needed, "sale"),
+                )
             )
         )
         lines.append('      search: "{}"'.format(request.search_query))
@@ -1542,9 +1663,11 @@ def _sold_comp_requests_section(requests, unidentified: int = 0) -> str:
             lines.append("      example: {}".format(request.example_url))
     if unidentified:
         lines.append(
-            "  ({} listing(s) could not be identified precisely enough for any sold "
-            "comp to match -- those need better title parsing, not more data.)".format(
-                unidentified
+            _wrap_footer_line(
+                "  ({} listing(s) could not be identified precisely enough for any sold "
+                "comp to match -- those need better title parsing, not more data.)".format(
+                    unidentified
+                )
             )
         )
     return "\n".join(lines)
@@ -1891,4 +2014,4 @@ def build_report(
     blocks.append(_assumptions_footer(sections))
 
     body = _join_blocks(blocks) + footer
-    return _subject(sections, date_short), body
+    return _subject(sections, date_short, stats), body
