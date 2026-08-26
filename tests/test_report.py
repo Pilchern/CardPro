@@ -12,6 +12,7 @@ Two things are being protected here, and they are different:
   on purpose: the exact words are the product.
 """
 from datetime import date
+from types import SimpleNamespace
 
 from src import desirability, focus, reasons, report
 from src.card_identity import CardIdentity, Field
@@ -1899,3 +1900,42 @@ class TestRisksAreOrderedWorstFirst:
     def test_a_clean_listing_has_no_risks_line(self):
         # "Risks: none" trains you to stop reading the ones that matter.
         assert report._risks(make_listing(shipping_price=4.99)) == []
+
+
+class TestACardIsNotPrintedTwiceInFull:
+    """Sections answer different questions, so a card legitimately appears in
+    more than one -- a target hit whose only comp is context-only belongs in
+    both TARGET CARD HITS and NEEDS REVIEW. What it does not need is the same
+    nine lines twice, eight of them byte-identical, in an email whose length
+    is a known problem."""
+
+    def _target_with_a_context_only_comp(self):
+        deal = context_only_deal()
+        deal.target_hit = SimpleNamespace(
+            label="BUY ZONE", in_buy_zone=True, threshold=25.0, price_known=True,
+            target=SimpleNamespace(label="Payton 1984 Topps"),
+        )
+        return deal
+
+    def test_the_second_appearance_points_at_the_first(self):
+        body = body_of([self._target_with_a_context_only_comp()])
+        later = body[body.index("WATCH"):]
+        assert "shown above under TARGET CARD HITS" in later
+        assert "Cost" not in later
+
+    def test_the_line_that_is_actually_new_is_still_printed(self):
+        # The whole reason the card is in this section.
+        body = body_of([self._target_with_a_context_only_comp()])
+        later = body[body.index("WATCH"):]
+        assert "Why here" in later
+
+    def test_the_card_still_appears_in_both_sections(self):
+        # "Nothing disappears silently" -- the fix is to stop repeating the
+        # block, never to stop listing the card.
+        body = body_of([self._target_with_a_context_only_comp()])
+        assert body.count("Michael Jordan --") >= 2
+
+    def test_a_card_appearing_only_once_gets_its_full_block(self):
+        body = body_of([context_only_deal()])
+        assert "shown above" not in body
+        assert "Cost" in body[body.index("WATCH"):]

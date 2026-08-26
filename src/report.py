@@ -1306,8 +1306,55 @@ def _needs_review(deal: Listing) -> bool:
 # ---------------------------------------------------------------------------
 
 
+#: Sections that point at an earlier full block instead of repeating it.
+#:
+#: Only the explicitly-not-a-recommendation ones. They exist so that nothing
+#: disappears silently, which is a claim about the card being LISTED, not
+#: about it being described twice -- and a card that reached one of these
+#: after a headline section has already had every one of its lines printed
+#: above. The headline sections never cross-reference: whichever of them
+#: prints first is the full block, and they do not overlap each other.
+CROSS_REFERENCE_SECTIONS = (SECTION_WATCH, SECTION_NEEDS_REVIEW, SECTION_PRICE_DROPS)
+
+
+def _why_for(key: str, deal: Listing, threshold_pct: float, min_savings_dollars: float):
+    """The one line a cross-referenced section still has to say for itself."""
+    if key == SECTION_NEEDS_REVIEW:
+        return _needs_review_why(deal)
+    if key == SECTION_WATCH:
+        return _watch_why(deal, threshold_pct, min_savings_dollars)
+    if key == SECTION_PRICE_DROPS and deal.previous_price is not None and deal.price is not None:
+        return "was {} -> now {} ({} lower)".format(
+            _money(deal.previous_price), _money(deal.price),
+            _money(deal.previous_price - deal.price),
+        )
+    return None
+
+
+def _plain_title(title: str) -> str:
+    """A section title without its emoji, for referring to it mid-sentence."""
+    return "".join(ch for ch in title if ch.isascii()).strip()
+
+
+def _already_shown_block(index: int, deal: Listing, why: Optional[str], seen_in: str) -> str:
+    """A card whose full block is already printed above.
+
+    Sections answer different questions, so a card legitimately appears in
+    more than one -- a target hit whose only comp is context-only belongs in
+    both TARGET CARD HITS and NEEDS REVIEW. What it does not need is the
+    same nine lines twice: eight of them were byte-identical and only the
+    "why" differed, in an email whose length is a known problem. Print the
+    line that is actually new, and point at the rest.
+    """
+    lines = [_headline(index, deal)]
+    if why:
+        lines.append(_field_line("Why here", why))
+    lines.append(_field_line("Full detail", "shown above under {}".format(seen_in)))
+    return "\n".join(lines)
+
+
 def _render_section(key: str, deals: list, threshold_pct: float, ending_soon_hours: float,
-                    min_savings_dollars: float = 0.0) -> str:
+                    min_savings_dollars: float = 0.0, shown_above=None) -> str:
     title = SECTION_TITLES[key]
     # A fixed-width rule rather than one measured from the title: an emoji's
     # rendered width varies by client, so a "measured" underline is ragged
@@ -1319,6 +1366,12 @@ def _render_section(key: str, deals: list, threshold_pct: float, ending_soon_hou
     lines.append("")
 
     for index, deal in enumerate(deals, start=1):
+        seen_in = (shown_above or {}).get(deal.id) if key in CROSS_REFERENCE_SECTIONS else None
+        if seen_in:
+            lines.append(_already_shown_block(index, deal, _why_for(key, deal, threshold_pct,
+                                                                   min_savings_dollars), seen_in))
+            lines.append("")
+            continue
         if key in (SECTION_ACT_NOW, SECTION_TOP_OPPORTUNITIES, SECTION_TARGET_HITS, SECTION_INVESTMENT):
             block = _thesis_block(index, deal, ending_soon_hours)
         elif key == SECTION_AUCTIONS:
@@ -2011,13 +2064,19 @@ def build_report(
                 focused=focus_rules.enabled,
             )
         )
+    # Which section printed each card's full block, so a later section can
+    # point at it rather than repeat it. Built as we go, in render order.
+    shown_above: dict = {}
     for key in SECTION_ORDER:
         if sections[key]:
             blocks.append(
                 _render_section(
-                    key, sections[key], threshold_pct, ending_soon_hours, min_savings_dollars
+                    key, sections[key], threshold_pct, ending_soon_hours, min_savings_dollars,
+                    shown_above=shown_above,
                 )
             )
+            for deal in sections[key]:
+                shown_above.setdefault(deal.id, _plain_title(SECTION_TITLES[key]))
 
     shown = {deal.id for key in SECTION_ORDER for deal in sections[key]}
     # Everything CardPro saw is accounted for in exactly one of these
