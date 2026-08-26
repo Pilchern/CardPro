@@ -31,6 +31,7 @@ checked first.
 - [Setup](#setup)
 - [Running tests](#running-tests)
 - [Checking the claims yourself: `replay_corpus`](#checking-the-claims-yourself-replay_corpus)
+- [Sold comps worth adding, and why nothing flags today](#sold-comps-worth-adding-and-why-nothing-flags-today)
 - [Configuring](#configuring)
 - [Acquisition targets](#acquisition-targets)
 - [How dedupe works](#how-dedupe-works)
@@ -792,7 +793,8 @@ failure mode in the audit has a regression test; every real bug becomes one.
 ## Checking the claims yourself: `replay_corpus`
 
 ```bash
-python -m scripts.replay_corpus --legacy
+python -m scripts.replay_corpus
+python -m scripts.replay_corpus --legacy        # also show what the v1 engine did
 python -m scripts.replay_corpus --min-comps 5   # try a stricter sample gate
 ```
 
@@ -803,6 +805,11 @@ before/after: which comp levels were used, what confidence they landed at,
 which quality gates fired, and what each engine would have flagged. With
 `--legacy` it runs the v1 hierarchical/price-tier engine over the same data
 first, so the two sit side by side.
+
+It also prints the **identity-coverage KPI**, which is the part that says
+*why* the answer is what it is rather than only what it is -- see
+[Sold comps worth adding](#sold-comps-worth-adding-and-why-nothing-flags-today)
+below for the reading of it.
 
 **This is how every number in
 [What changed in 2.0](#what-changed-in-20-and-why-youll-see-fewer-deals) was

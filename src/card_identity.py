@@ -51,6 +51,7 @@ from typing import Optional
 # whole-word/phrase keywords against the title.
 MANUFACTURERS = [
     "Panini", "Topps", "Bowman", "Upper Deck", "Leaf", "Donruss", "Fleer", "Score",
+    "O-Pee-Chee", "Pinnacle", "Playoff", "SkyBox",
 ]
 
 SET_KEYWORDS = [
@@ -71,6 +72,34 @@ SET_KEYWORDS = [
     # parallel "Choice" at high confidence, because only the phrase "Your
     # Choice" was masked -- so it is listed here AND masked below.
     "Collector's Choice", "Collectors Choice",
+    # 2023-2026 releases that were extracting as set_name=None. Vocabulary
+    # only -- adding a product here can only ever turn an unknown set into a
+    # known one, never change a set that already matched, because
+    # _find_keyword takes the longest phrase present.
+    #
+    # The brand words (Panini, Topps, Bowman, Donruss, Upper Deck) are
+    # deliberately NOT here and must never be added. _find_keyword is
+    # longest-first, so "Panini" (6) would beat "Prizm" (5) and every Panini
+    # product a player has would pool into one bucket -- the "$1.25 base card
+    # is 95% under market" failure, rebuilt. A flagship base set needs its
+    # own guarded path, not a vocabulary entry.
+    "Zenith", "Luminance", "Court Kings", "Impeccable", "Noir", "Crown Royale",
+    "One and One", "Eminence", "Elite Extra Edition", "Leaf Metal",
+    "Leaf Metal Draft", "Bowman's Best", "Bowman Draft", "Bowman Sterling",
+    "Cosmic Chrome", "Topps Chrome Sapphire", "SP Authentic", "SPx",
+    "Upper Deck MVP", "O-Pee-Chee", "Metal Universe", "Topps Fire",
+    "Topps Inception", "Topps Definitive", "Topps Dynasty", "Topps Tier One",
+    "Topps Series 1", "Topps Series 2", "Topps Series One", "Topps Series Two",
+    "Topps Update", "Prizm Monopoly", "Select Draft Picks", "Contenders Optic",
+    "National Treasures Collegiate", "Panini Chronicles Draft",
+    "Bowman Chrome Prospects", "Topps Heritage Minor League", "Topps Pristine",
+    "Topps Sterling", "Topps Triple Threads", "Topps Transcendent",
+    "Panini Encased", "Panini Origins", "Panini Rookies and Stars",
+    "Panini Playoff", "Panini Absolute Memorabilia", "Panini Vertex",
+    "Panini Spectra", "Panini Chronicles Draft Picks", "Upper Deck Trilogy",
+    "Upper Deck Series 1", "Upper Deck Series 2", "Upper Deck Artifacts",
+    "Upper Deck Ice", "Upper Deck Black Diamond", "Upper Deck Allure",
+    "Synergy", "Credentials", "Ultimate Collection", "The Cup",
 ]
 
 #: Spellings that mean the same product. Two names for one set means two comp
@@ -166,6 +195,23 @@ PATCH_KEYWORDS = ["patch", "patches", "rpa", "logoman", "laundry tag", "letter p
 YEAR_RE = re.compile(r"\b(19\d{2}|20\d{2})(?:-\d{2})?\b")
 SEASON_RE = re.compile(r"\b((?:19|20)\d{2})-(\d{2})\b")
 CARD_NUMBER_RE = re.compile(r"#([A-Za-z0-9-]{1,10})\b")
+# "Card No. 150" / "card number 301" -- the same fact, spelled out.
+# Deliberately no "#" alternative here: the hashed form is CARD_NUMBER_RE's
+# job, and letting this rule match it too would re-admit the idioms that one
+# rejects -- "Michael Jordan card #2 of 10" came back as card number 2.
+SPELLED_CARD_NUMBER_RE = re.compile(
+    r"\bcard\s*(?:no\.?|number)\s*([A-Za-z0-9-]{1,10})\b", re.IGNORECASE
+)
+# A hobby-shaped number printed WITHOUT a hash: "BDC-100", "US150", "BCP-83".
+# These are printed identifiers, not inferences -- the prefix is part of the
+# number on the card. The list is closed on purpose: a bare trailing integer
+# ("Caleb Williams 2024 Prizm RC 301") is NOT here, because in an eBay title
+# a bare integer is a jersey number, a lot count, a grade or a year fragment
+# as often as it is a card number, and guessing is what this module refuses
+# to do.
+PREFIXED_CARD_NUMBER_RE = re.compile(
+    r"\b((?:US|USC|BDC|BCP|BDP|BD|CPA|CDA|RA|TC|SG)-?\d{1,4})\b"
+)
 # "23/99" -- a numerator makes it a serial number AND tells us the print run.
 # The lookbehind keeps us off "9.5/10" (grade) and the lookahead off date
 # chains like "12/25/2024".
@@ -565,6 +611,18 @@ def _extract_card_number(title: str) -> Field:
         if next_word and _is_stop_word(next_word.group(0), following[next_word.end():]):
             continue
         return Field(value=match.group(1), confidence="high", source="title")
+
+    spelled = SPELLED_CARD_NUMBER_RE.search(title)
+    if spelled:
+        following = title[spelled.end():].lstrip()
+        next_word = re.match(r"[A-Za-z]+", following)
+        if not (next_word and _is_stop_word(next_word.group(0), following[next_word.end():])):
+            return Field(value=spelled.group(1), confidence="high", source="title")
+
+    prefixed = PREFIXED_CARD_NUMBER_RE.search(title)
+    if prefixed:
+        return Field(value=prefixed.group(1), confidence="high", source="title")
+
     return Field(value=None, confidence="none", source="title")
 
 

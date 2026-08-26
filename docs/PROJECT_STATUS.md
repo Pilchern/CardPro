@@ -1,6 +1,6 @@
 # CardPro — Project Status
 
-_Last updated: August 22, 2026 (CardPro 2.0, P0 "trust" pass)_
+_Last updated: August 26, 2026 (reliability pass; identity KPI; one row per listing)_
 
 A personal, automated sports-card deal-finding system. Runs once a day,
 scans your eBay saved-search alerts for the watchlist below, values what it
@@ -8,7 +8,8 @@ finds against comparable sales, and emails a decision-first report — every
 morning, whether or not it finds anything.
 
 **Status: live and running in production, with a deliberately much stricter
-definition of "deal" than it had yesterday.**
+definition of "deal" than it had before the 2.0 pass -- and, since August 26,
+a measured account of why that definition currently matches nothing.**
 
 ---
 
@@ -40,6 +41,60 @@ nothing in it can honestly be called underpriced.
 That is the system working. A report that says "I found nothing I can stand
 behind" is worth more than one that says "95% under market" about a common.
 
+### The current state: flags nothing, and here is the measured reason
+
+Until August 26 the honest answer to "why zero?" was a guess between three
+candidates. `python -m scripts.replay_corpus` now prints the identity KPI
+from [CARDPRO_2_AUDIT.md](CARDPRO_2_AUDIT.md) §8, so it is a measurement.
+Against the stored corpus (907 distinct listings, 2026-08-21 .. 2026-08-26,
+100% asking basis):
+
+```
+  field resolved:
+    year           734   80.9%
+    set_name       154   17.0%
+    parallel        45    5.0%
+    card_number    162   17.9%
+    grader          11    1.2%
+  complete key for level:
+    exact            4    0.4%
+    same_card        7    0.8%
+    same_set       134   14.8%
+  first blocker for a flag-eligible (same_card) key:
+    set_name         600   66.2%
+    year             173   19.1%
+    parallel         127   14.0%
+    (key complete)     7    0.8%
+  same_card: 7 distinct keys, 0 observations (0.0%) in a bucket with >3 members
+  exact: 4 distinct keys, 0 observations (0.0%) in a bucket with >3 members
+```
+
+That is two separate problems, and the KPI deliberately keeps them apart:
+
+1. **Identity resolution.** 99.2% of observations cannot build a key at the
+   narrowest level allowed to declare a deal. For two-thirds of the corpus
+   the first thing missing is the set name; year and parallel account for
+   the rest. Attributing each blocked listing to its *first* blocker rather
+   than counting missing fields independently is what makes this a work
+   queue: fixing parallel extraction alone would move none of the 600
+   listings that never got as far as a set name.
+2. **Corpus depth.** Of the 7 observations that do have a complete
+   `same_card` key, **none** sits in a bucket with more than
+   `min_comps_required` other members. A complete key that nothing else
+   shares is worth nothing, so even perfect extraction on those 7 would
+   change today's report by zero listings.
+
+The same run shows what the engine then does with that: 0 `exact` buckets,
+0 `same_card`, 8 `same_set`, 74 `price_tier`; every valuation lands at `low`
+confidence, and the gates fire 866× `context_only_level`, 866×
+`concentrated_sample`, 124× `dispersed_comps`. The concentration gate is
+unavoidable at this age -- the corpus spans five days and
+`min_comp_span_days` is 7, so no bucket in it can clear that gate yet
+regardless of how good the extraction gets.
+
+**So zero deals is not a threshold that needs relaxing.** There is nothing
+to tune. The work, in order, is title parsing (set name first), then time.
+
 ---
 
 ## 1. What this actually answers
@@ -63,7 +118,7 @@ them into a single score:
 |---|---|---|
 | **eBay saved-search email alerts** | **Live, primary discovery source** | eBay's own "save this search + email me" feature, read via Gmail IMAP. No eBay API access required. Provides *newly listed* items only, at most once a day per search. |
 | **eBay Browse / Marketplace Insights API** | Built, dormant | Full client exists (`ebay_client.py`) for if/when access is granted; the developer account application was declined. Worth re-applying for Browse (structured item specifics, real auction flags, seller data). Marketplace Insights — the only official sold-price feed — is documented as restricted and not open to new users, so it is not something to plan around. |
-| **130point** | Manual workflow | Free, and the best public source of eBay + Goldin sold prices *including accepted Best Offers*. No API; used by hand. |
+| **130point** | Manual workflow, with tooling around it | Free, and the best public source of eBay + Goldin sold prices *including accepted Best Offers*. No API, so a human does the lookup: `src/comp_requests.py` says which cards are worth looking up and hands you the query, and `python -m scripts.add_sold_comp` records the answer. Nothing is entered yet. |
 | **Card Ladder / Market Movers / SportsCardsPro** | Evaluated, not bought | See the data-source matrix and cost analysis in [CARDPRO_2_AUDIT.md](CARDPRO_2_AUDIT.md) §6. Recommendation today is to spend $0 until the system can act on better data. |
 | **Craigslist** | Link-only, not scraped | Confirmed anti-automation defenses. The report includes a ready-to-click search link per player instead. |
 | **Facebook Marketplace, Sportlots, COMC, MySlabs** | Out of scope / ruled out | ToS or no permitted automation path. |
@@ -110,8 +165,10 @@ eBay saved-search alert email
     print run, auto, memorabilia, patch, lot, negative signals
   → grade details: grader, grade, qualifier (OC/MK/...), authenticity-only slabs
   → TRUNCATED TITLES REPAIRED HERE, before anything is valued
-  → asking prices recorded to the comp corpus
+  → asking prices recorded to the comp corpus, ONE ROW PER LISTING
       (auctions excluded -- a bid is not a price; blocked listings excluded)
+      re-seeing a listing updates its row (earliest date, latest price)
+      rather than appending -- see §7 for why that matters to the gates
   → comp lookup: exact → same_card → same_set → price_tier
       only exact and same_card may declare a deal
       every level segments by market (raw / grader+grade+qualifier)
@@ -130,6 +187,8 @@ eBay saved-search alert email
       flag-eligible comp); auctions already bid past your max rational bid are
       dropped; the rest is capped at 40 listings, 10 per section. Removes only,
       re-values nothing, and every group it removed is counted in the footer
+  → sold-comp suggestions: which 130point lookups would unlock the most
+      listings, and how many listings no sold comp could ever match
   → decision-first sectioned report, emailed via Gmail SMTP
 ```
 
@@ -170,9 +229,11 @@ parallel, or a grade. Anything cheap with none of those is rejected as
 `common_card` and counted in the footer — a 60%-off base common is still a
 base common.
 
-Measured against the stored corpus, where 48% of all observations are under
-$10: **the commodity filter rejects 94% of that cheap slice.** What survives
-is the handful of cheap cards that are actually distinguishable.
+Measured against the corpus as it stood on August 22, where 48% of all
+observations were under $10: **the commodity filter rejects 94% of that
+cheap slice.** What survives is the handful of cheap cards that are actually
+distinguishable. (On today's 907-listing corpus a third of observations are
+under $10; the filter's job is unchanged.)
 
 Cheap finds are also marked as collector buys rather than flips. Below roughly
 $10, postage and fees exceed the whole spread, so the report says so plainly
@@ -185,8 +246,9 @@ instead of printing a negative ROI as though something were wrong.
 Decision-first sections, each omitted when empty: **ACT NOW**, **TOP
 OPPORTUNITIES**, **TARGET CARD HITS**, **INVESTMENT WATCHLIST**, **AUCTIONS
 ENDING SOON**, **OFFER OPPORTUNITIES**, **WATCH**, **LOW CONFIDENCE / NEEDS
-REVIEW**, **PRICE DROPS**, followed by search-coverage suggestions and a
-**SYSTEM HEALTH** footer.
+REVIEW**, **PRICE DROPS**, followed by a **SYSTEM HEALTH** footer, the
+sold comps worth adding, Craigslist quick-check links and search-coverage
+suggestions.
 
 Every headline card answers the whole thesis: what it is, total acquisition
 cost, estimated market value *with the comp level, sample size, basis, price
@@ -196,6 +258,16 @@ the link.
 
 Auctions get their own block that never calls a current bid a price, and
 shows the maximum bid that still preserves your margin.
+
+The footer also ranks the sold comps worth going and getting
+(`src/comp_requests.py`): the card identities the most of today's listings
+are waiting on, each with a query to paste into 130point and the command
+that records the answer. Next to it, the number of listings that could not
+be identified precisely enough for *any* sold comp to match -- because when
+that number dwarfs the suggestions, typing prices in will not help and
+title parsing is the real work. On the stored corpus replayed as listings
+today it is 900 of 907, which is the honest verdict on where the effort
+belongs.
 
 The report is **focused and capped** (`settings.json` → `focus`). Replaying
 a real August corpus produced a 4,255-line email; the same day under focus
@@ -211,24 +283,75 @@ that would bring it back.
 - **Scheduling: GitHub Actions** (`.github/workflows/daily-scan.yml`), daily
   ~8am Central plus manual dispatch. State (`data/seen_listings.json`,
   `data/ebay_alert_price_history.json`) is committed back to the repo after
-  each run because runners are ephemeral.
+  each run because runners are ephemeral. The job has a `concurrency` group
+  (a manual dispatch cannot race the cron run into a rejected push), a
+  15-minute timeout, and it runs the test suite before the scan -- two
+  seconds of pytest against the alternative, which is emailing conclusions
+  drawn by broken code. The state-persisting step no longer swallows errors
+  from `git add`, and its push rebases and retries up to four times; a
+  rejected push used to mean the day's observations were lost, since past
+  the IMAP lookback window there is nothing to re-read.
 - **Secrets**: `GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD`, `EMAIL_TO` (plus
   optional eBay keys) as GitHub repo secrets. Never in code, never logged.
-- **Testing**: pytest, CI on Python 3.9 and 3.12.
+- **Testing**: pytest, CI on Python 3.9 and 3.12, and the same suite gates
+  the daily scan.
+- **Dependencies**: `requirements.txt` pins upper bounds (`requests<3`,
+  `python-dotenv<2`, `beautifulsoup4<5`). The workflow installs fresh every
+  run, so an unbounded constraint would put a parser's next major release
+  straight into production -- and the symptom would be zero listings
+  extracted, which looks exactly like a quiet day.
 - **Logging**: rotating file log capped at ~2MB × 5, plus a
-  failure-notification email on any unhandled exception.
-- **Validation tool**: `python -m scripts.replay_corpus --legacy` replays the
-  stored corpus through both the old and new engines and prints the
-  before/after. This is how the claims in §0 were measured.
+  failure-notification email carrying the traceback on any unhandled
+  exception. `.gitignore` covers the rotated files as well as the live one
+  (`logs/*.log*`); `scraper.log.1` through `.5` carry every title, price and
+  your email address.
+- **State files fail loudly.** A corpus or seen-listings file that exists
+  but will not parse raises (`price_history.CorruptCorpus`,
+  `dedupe.CorruptSeenListings`) instead of quietly starting fresh. The old
+  behaviour returned `{}` with a warning saying the old file was left in
+  place, which was true for about thirty seconds -- until `save()` replaced
+  it with the day's observations and the workflow committed the wipe.
+  Raising means the run aborts, the traceback is emailed, and there is
+  nothing staged to commit. `price_history.save()` additionally refuses to
+  replace a non-empty corpus with an empty one; a shrink that is not a wipe
+  still goes through, because that is what pruning looks like.
+- **Sockets time out.** IMAP (60s) and SMTP (30s) both set one. Without
+  them, a server that accepts the connection and then stalls raises nothing,
+  the failure-notification handler never fires, and the job burns until
+  GitHub's six-hour cap -- the one path in the system that produced no
+  report *and* no failure email.
+- **A mailbox that cannot be read is not an empty mailbox.** An IMAP SEARCH
+  error raises rather than rendering as "Emails scanned: 0"; individual
+  messages that fail to fetch are counted and surfaced in the health footer
+  instead of skipped in silence; and the "eBay changed their email template"
+  canary (N alert emails, zero listings extracted) is now a health-footer
+  warning rather than a log line on a runner GitHub deletes minutes later.
+- **Validation tools**: `python -m scripts.replay_corpus` replays the stored
+  corpus through the engine and prints the identity KPI -- this is how §0
+  was measured; `--legacy` adds the v1 engine's numbers alongside for the
+  before/after. `python -m scripts.collapse_corpus_duplicates` is the
+  one-shot migration to one row per listing; it is idempotent and refuses to
+  write if the collapse would lose a listing.
 
 ---
 
 ## 8. Known limitations (open, acknowledged)
 
-- **No confirmed sold prices anywhere.** Structural. The highest-value next
-  step is importing real sold comps by hand (130point / Card Ladder) through
-  a `UserImportSource`.
-- **Graded coverage is almost nil** — 0.7% of everything observed so far. The
+- **Identity extraction is the binding constraint, and it is now measured.**
+  99.2% of stored observations cannot form a key at the narrowest level
+  allowed to declare a deal; the set name is the first missing field for
+  66% of them. See §0 for the full KPI and `python -m scripts.replay_corpus`
+  to re-run it. Everything else on this list is downstream of that.
+- **No confirmed sold prices anywhere.** Structural: 100% of the corpus is
+  asking prices. The hand-entry path now exists (`src/sold_comps.py`,
+  `python -m scripts.add_sold_comp`) and the report ranks which lookups
+  would unlock the most listings (`src/comp_requests.py`), but nothing has
+  been entered yet, and hand entry tops out around twenty comps. Card Ladder
+  remains the paid alternative and is still not bought.
+- **The corpus is five days deep**, and `min_comp_span_days` is 7, so no
+  bucket in it can currently clear the sample-span gate. That resolves with
+  time and nothing else.
+- **Graded coverage is almost nil** — 11 of 907 observations, 1.2%. The
   saved-search strategy is the cause; `src/search_terms.py` generates the
   queries that would fix it, but creating them on eBay is a manual step.
 - **Auction, shipping and best-offer extraction are unvalidated** against
@@ -249,7 +372,8 @@ that would bring it back.
 | `watchlist.json` → `target_cards` | Acquisition targets with `buy_zone` / `great_buy` / `immediate_alert` prices. Empty by default — see `_target_cards_example` |
 | `settings.json` → `discount_threshold_pct`, `min_savings_dollars` | The deal gate (both must clear) |
 | `settings.json` → `cheap_cards` | Rules below `price_ceiling` ($10): a higher percentage bar, a lower dollar bar, and the commodity filter. Set `enabled: false` to apply the ordinary rules at every price |
-| `settings.json` → `valuation` | Comp quality gates: minimum sample, recency half-life, staleness window, dispersion ceiling, outlier threshold, and whether context-only levels may flag (leave this `true`) |
+| `settings.json` → `valuation` | Comp quality gates: minimum sample, recency half-life, staleness window, dispersion ceiling, outlier threshold, how much calendar spread a bucket's observations need (`min_distinct_comp_dates`, `min_comp_span_days` -- six asks captured in one morning are one snapshot, not six readings), and whether context-only levels may flag (leave `require_flag_eligible_comp` `true`) |
+| `settings.json` → `sold_comps.path` | Where hand-entered sold comps live (`config/sold_comps.json`). Add one with `python -m scripts.add_sold_comp --help`; the report's footer says which ones are worth the trip to 130point |
 | `settings.json` → `economics` | Your real selling costs: fees, outbound shipping, supplies, tax, resale haircut |
 | `settings.json` → `auctions` | Required margin for max-rational-bid, and what counts as ending soon |
 | `settings.json` → `alerts` | How exceptional something must be to earn an ACT NOW slot. Keep the dollar figure in step with `focus.price_ceiling` -- a $40 card cannot save $150 |
@@ -280,6 +404,7 @@ that would bring it back.
 config/
   watchlist.json            -- players, tiers, acquisition targets
   settings.json             -- thresholds, valuation gates, economics, auctions, alerts, focus
+  sold_comps.json           -- hand-entered sold prices (empty by default)
 src/
   main.py                   -- orchestration; one evaluation path for all sources
   card_identity.py          -- structured identity + negative signals
@@ -291,7 +416,9 @@ src/
   desirability.py           -- what makes a card worth owning, separate from what it's worth
   reasons.py                -- the canonical vocabulary of "why not"
   observability.py          -- per-run data-quality accounting
-  price_history.py          -- self-building comp corpus
+  sold_comps.py             -- hand-entered sold prices, the only real transaction data
+  comp_requests.py          -- which sold comps to go and get, ranked by listings unlocked
+  price_history.py          -- self-building comp corpus, one row per listing
   ebay_email_alerts.py      -- IMAP fetch, HTML extraction, listing-type detection
   ebay_client.py            -- eBay Browse/Insights client (dormant)
   craigslist_links.py       -- ready-to-click search links
@@ -302,7 +429,9 @@ src/
   config.py                 -- .env + JSON config loader
   models.py                 -- the Listing dataclass
 scripts/
-  replay_corpus.py          -- before/after evidence against the real corpus
+  replay_corpus.py          -- identity KPI + before/after evidence against the real corpus
+  collapse_corpus_duplicates.py -- one-shot migration to one row per listing (idempotent)
+  add_sold_comp.py          -- record one hand-entered sold comp, validated before writing
   test_ebay_alerts.py       -- standalone real-inbox validator
   test_email.py             -- SMTP smoke test
 docs/

@@ -559,3 +559,54 @@ class TestManufacturer:
 
     def test_the_set_is_unaffected(self):
         assert extract("2024 Panini Donruss Optic Caleb Williams #301").set_name.value == "Donruss Optic"
+
+
+class TestSetVocabulary:
+    def test_2023_2026_products_resolve(self):
+        for title, expected in [
+            ("2024 Panini Zenith Caleb Williams RC #101", "Zenith"),
+            ("2024-25 Panini Court Kings Matas Buzelis #101", "Court Kings"),
+            ("2024 Leaf Metal Draft Caleb Williams Auto", "Leaf Metal Draft"),
+            ("2024-25 Upper Deck SP Authentic Connor Bedard", "SP Authentic"),
+            ("2024 Topps Cosmic Chrome Pete Crow-Armstrong", "Cosmic Chrome"),
+            ("2024 Topps Fire Caleb Williams", "Topps Fire"),
+            ("2024-25 O-Pee-Chee Connor Bedard #201", "O-Pee-Chee"),
+            ("2024 Bowman Draft 1st Chrome Auto Konnor Griffin BDC-100", "Bowman Draft"),
+        ]:
+            assert extract(title).set_name.value == expected, title
+
+    def test_a_brand_word_alone_never_becomes_a_set(self):
+        # _find_keyword is longest-first, so listing "Panini" as a set would
+        # beat "Prizm" and pool every Panini product a player has into one
+        # bucket. That is the audit's original failure mode, rebuilt.
+        assert extract("2024 Panini Prizm Caleb Williams #301").set_name.value == "Prizm"
+        assert extract("2024 Topps Chrome Caleb Williams #150").set_name.value == "Topps Chrome"
+        assert extract("2024 Topps Series 1 #150 Caleb Williams RC").set_name.value == "Topps Series 1"
+
+    def test_a_sapphire_edition_is_not_flagship_chrome(self):
+        # Sapphire trades at several times base Chrome; merging them would
+        # make every base Chrome card look underpriced.
+        assert extract("2024 Topps Chrome Sapphire Edition PCA #150").set_name.value == (
+            "Topps Chrome Sapphire"
+        )
+
+
+class TestCardNumbersWithoutAHash:
+    def test_the_spelled_out_forms(self):
+        assert extract("2024 Topps Chrome Caleb Williams RC Card No. 150").card_number.value == "150"
+        assert extract("2024 Panini Prizm Caleb Williams RC card number 301").card_number.value == "301"
+
+    def test_a_hobby_prefixed_number(self):
+        # The prefix is printed on the card -- reading it is not an inference.
+        assert extract("2024 Bowman Draft Chrome Auto Konnor Griffin BDC-100").card_number.value == "BDC-100"
+        assert extract("2025 Bowman Chrome Caleb Wilson Refractor BCP-83").card_number.value == "BCP-83"
+        assert extract("2024 Topps Update Pete Crow-Armstrong US150").card_number.value == "US150"
+
+    def test_a_bare_trailing_integer_is_still_not_a_card_number(self):
+        # In an eBay title a bare integer is a jersey number, a lot count, a
+        # grade or a year fragment as often as it is a card number.
+        assert extract("Caleb Williams 2024 Panini Prizm RC 301").card_number.value is None
+
+    def test_the_hashed_form_still_wins_and_its_idioms_still_lose(self):
+        assert extract("2024 Panini Prizm Caleb Williams #301 PSA 10").card_number.value == "301"
+        assert extract("Michael Jordan card #2 of 10").card_number.value is None
