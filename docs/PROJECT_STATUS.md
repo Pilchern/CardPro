@@ -69,6 +69,11 @@ Against the stored corpus (907 distinct listings, 2026-08-21 .. 2026-08-26,
   exact: 4 distinct keys, 0 observations (0.0%) in a bucket with >3 members
 ```
 
+Those are the observations *as recorded*, not a verdict on the extractor as
+it stands this minute -- identity extraction is under active repair, and the
+numbers move as it improves and the corpus refills. The command is the source
+of truth; this paste is a snapshot of it.
+
 That is two separate problems, and the KPI deliberately keeps them apart:
 
 1. **Identity resolution.** 99.2% of observations cannot build a key at the
@@ -175,7 +180,9 @@ eBay saved-search alert email
       the listing itself is excluded from its own comp
       MAD outlier trim, time-decay weighting, staleness + dispersion gates
   → economics: fees, outbound shipping, supplies, tax, net proceeds, ROI
-  → auctions: max rational bid instead of a discount claim
+  → auctions: max rational bid instead of a discount claim -- the same
+      resale haircut the profit maths uses, and it says so when shipping
+      is unknown and the ceiling is therefore only an upper bound
   → acquisition targets matched against your price bands
   → deal gate on TOTAL cost, and it is not one gate but two:
       normal cards  ≥30% under market AND ≥$3 saved

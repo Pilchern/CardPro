@@ -452,6 +452,12 @@ watchlist: 327 listings extracted, 96 correctly matched to watchlist
 players, zero observed player-name collisions (e.g. Caleb Williams vs.
 Caleb Wilson stayed correctly separated).
 
+**When the mailbox itself misbehaves:** an IMAP SEARCH error raises rather
+than being reported as an empty inbox, individual messages that fail to fetch
+are counted and named in the health footer, and "alert emails arrived, zero
+listings came out" raises the template-change alarm in the footer too. See
+[When something goes wrong](#when-something-goes-wrong).
+
 **What is NOT validated:** listing-type detection (auction vs. Buy It Now),
 bid counts, time-left text, shipping-cost extraction, and Best Offer
 detection are all pulled best-effort out of the alert-email HTML and have
@@ -676,7 +682,7 @@ cd cardpro
 
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.txt   # pinned with upper bounds -- see below
 
 cp .env.example .env
 # then edit .env and fill in:
@@ -684,6 +690,13 @@ cp .env.example .env
 #   EMAIL_TO (defaults to GMAIL_ADDRESS if left out)
 #   EBAY_CLIENT_ID, EBAY_CLIENT_SECRET (optional -- leave blank/placeholder if you don't have them yet)
 ```
+
+Dependencies carry upper bounds (`requests<3`, `python-dotenv<2`,
+`beautifulsoup4<5`). The daily workflow installs them fresh on every run, so
+an unbounded constraint would put a parser's next major release straight into
+production with nothing in front of it -- and the symptom would be zero
+listings extracted, which looks exactly like a quiet day. Bump them on
+purpose, with the test suite as the gate.
 
 ### 4. Verify the eBay category ID (skip if you don't have eBay keys yet)
 
@@ -931,6 +944,11 @@ observed 2026-08-21 to 2026-08-26, all of them asking prices:
   exact: 4 distinct keys, 0 observations (0.0%) in a bucket with >3 members
 ```
 
+Those are the observations *as recorded*, not a verdict on the extractor as
+it stands this minute -- identity extraction is under active repair, and the
+numbers move as it improves and the corpus refills. Re-run the command rather
+than trusting this paste.
+
 Read it as two questions kept deliberately apart:
 
 1. **Can a flag-eligible key be built at all?** For 99.2% of the corpus, no.
@@ -1069,6 +1087,8 @@ where each one applies.
 | `stale_after_days` | If the **newest** comp in a bucket is older than this, the bucket may not declare a deal. | `45` | Tighten if you only trust very recent data; loosen only if thin players are being blocked purely on age. |
 | `max_dispersion` | MAD/median above this means the comps disagree too much to trust a median. | `0.5` | Lower it to demand tighter agreement. Raise it and you start flagging off buckets that don't describe one market. |
 | `mad_threshold` | Outlier trim, in scaled median-absolute-deviations. Only applied when a bucket has 5+ points. | `3.5` | Lower to trim more aggressively (the classic "modified z-score" cutoff is 3.5). |
+| `min_distinct_comp_dates` | How many separate days a bucket's observations must come from. Counting observations alone isn't enough: the scan records every listing it sees each morning, so six asks captured in one morning is one snapshot six listings deep, not six readings of a market. Hand-entered sold comps are exempt -- three real sales on one day are three real transactions. | `3` | Rarely. Lowering it re-opens the hole that one-row-per-listing closed. |
+| `min_comp_span_days` | How much calendar time those observations must span, for the same reason. | `7` | Rarely. Note a corpus younger than this cannot clear it at all, which is where the project sits today. |
 | `require_flag_eligible_comp` | Only identity-and-grade-matched comp levels may declare a deal; broader levels are context and can never flag. **Leave this `true`** -- it is what stops the circular price-tier comparison that produced every false positive in v1. | `true` | Never, in practice. Setting it `false` really does let deals be declared off context-only comps, including the price-bracket level that is defined by price and therefore cannot be evidence about price. CardPro will do it, but it puts a warning at the top of the report's health footer every run while it is off. |
 
 ### Resale economics -- `settings.json` → `economics`
@@ -1130,6 +1150,7 @@ morning digest.
 | `dedupe.seen_listings_path` | Where dedupe state lives. | `"data/seen_listings.json"` | Rarely. |
 | `dedupe.prune_after_days` | How long a listing stays in the "already seen" file after its last flag before it's forgotten. | `120` | Shorten if you want to be re-shown old listings sooner. |
 | `email.subject_prefix` | Prefix on every email subject, so Gmail filters can catch them. | `"[Card Deals]"` | Whatever your filters expect. |
+| `sold_comps.path` | Where hand-entered sold prices live -- the only comps in the system with `basis: sold`. Add one with `python -m scripts.add_sold_comp --help`; the report's footer says which ones are worth the trip to 130point. | `"config/sold_comps.json"` | Rarely. |
 
 `ebay_alerts` is documented in
 [its own section above](#config-configsettingsjsons-ebay_alerts-section).
@@ -1221,7 +1242,11 @@ auction that's still live needs to keep appearing until it closes.
 individual listings, so the same links appear in every email.)
 
 If you ever want to re-see everything (e.g. after changing a threshold),
-delete or edit `data/seen_listings.json`. Note it's a tracked file, not
+delete `data/seen_listings.json`, or edit it and leave it valid JSON. A file
+that exists but won't parse is *not* treated as "start fresh" any more: it
+raises (`dedupe.CorruptSeenListings`) and the run stops, because starting
+fresh would re-report every listing you have already seen as new and then
+commit that reset over the real file. Note it's a tracked file, not
 gitignored -- see "Running on a schedule" for why.
 
 ## Project layout
@@ -1230,6 +1255,7 @@ gitignored -- see "Running on a schedule" for why.
 config/
   watchlist.json      -- players, tiers, acquisition targets
   settings.json        -- deal gate, valuation gates, economics, auctions, alerts, focus
+  sold_comps.json       -- hand-entered sold prices (empty by default)
 .github/workflows/
   tests.yml             -- CI: runs pytest on push/PR
   daily-scan.yml          -- runs the scraper on a schedule in GitHub's cloud (recommended over local cron)
@@ -1237,31 +1263,36 @@ src/
   main.py                  -- orchestrates the daily run; one evaluation path for all sources
   card_identity.py          -- title -> year/set/parallel/card#/print run/auto/memorabilia, each with
                                confidence, plus negative signals (reprint/custom/digital/sealed/lot/...)
-  matcher.py                  -- title -> player(s); grade details (grader, grade, qualifier, auth-only slabs)
-  comps.py                     -- CompEngine: market-segmented, quality-gated valuation
-                                  (the legacy price-tier engine lives above it, deprecated, unable to flag)
+  matcher.py                 -- title -> player(s); grade details (grader, grade, qualifier, auth-only slabs)
+  comps.py                    -- CompEngine: market-segmented, quality-gated valuation
+                                 (the legacy price-tier engine lives above it, deprecated, unable to flag)
+  sold_comps.py                -- hand-entered sold prices -- the only comps carrying basis "sold"
+  comp_requests.py              -- which sold comps to go and get, ranked by listings unlocked
   economics.py                   -- fees, net proceeds, ROI, max rational bid, breakeven grade probability
   targets.py                      -- acquisition targets and price bands
   search_terms.py                  -- saved-search generation + coverage gaps
-  reasons.py                        -- the canonical vocabulary of "why this wasn't reported"
-  observability.py                   -- per-run data-quality counters for the SYSTEM HEALTH footer
-  price_history.py                    -- the self-building comp corpus
-  ebay_email_alerts.py                 -- IMAP fetch, HTML extraction, listing-type detection
-  ebay_client.py                        -- eBay Browse/Insights client (built, dormant)
-  craigslist_links.py                    -- builds quick-check search URLs (no scraping)
-  dedupe.py                               -- seen-listings tracking
-  focus.py                                 -- what reaches the email: price ceiling, bidding room, length cap
-  report.py                                -- the decision-first sectioned email
-  emailer.py                                -- Gmail SMTP send
-  config.py                                  -- loads .env + config JSON
-  models.py                                   -- the Listing dataclass
+  desirability.py                   -- what makes a copy scarce, kept out of the price maths
+  reasons.py                         -- the canonical vocabulary of "why this wasn't reported"
+  observability.py                    -- per-run data-quality counters for the SYSTEM HEALTH footer
+  price_history.py                     -- the self-building comp corpus, one row per listing
+  ebay_email_alerts.py                  -- IMAP fetch, HTML extraction, listing-type detection
+  ebay_client.py                         -- eBay Browse/Insights client (built, dormant)
+  craigslist_links.py                     -- builds quick-check search URLs (no scraping)
+  dedupe.py                                -- seen-listings tracking
+  focus.py                                  -- what reaches the email: price ceiling, bidding room, length cap
+  report.py                                  -- the decision-first sectioned email
+  emailer.py                                  -- Gmail SMTP send
+  config.py                                    -- loads .env + config JSON
+  models.py                                     -- the Listing dataclass
 data/
   seen_listings.json -- dedupe state (tracked in git -- see "Running on a schedule")
   ebay_alert_price_history.json -- the self-built comp corpus (also tracked)
 logs/
   scraper.log, cron.log (gitignored) -- run logs
 scripts/
-  replay_corpus.py -- replays the stored corpus through the old and new engines, before/after
+  replay_corpus.py -- identity KPI, plus replays of the stored corpus through both engines
+  collapse_corpus_duplicates.py -- one-shot migration to one row per listing (idempotent)
+  add_sold_comp.py -- records one hand-entered sold comp, validated before it writes
   test_ebay_alerts.py -- standalone check of the email-alerts path against your real inbox
   test_email.py -- standalone Gmail send check (no eBay needed)
   lookup_ebay_category.py -- verifies the eBay category ID with real credentials
@@ -1269,7 +1300,8 @@ scripts/
 tests/
   pytest suite covering card_identity/matcher/comps/economics/targets/reasons/
   observability/dedupe/report/focus/search_terms/craigslist_links/price_history/
-  ebay_email_alerts/config/models + mocked full-run tests for both eBay paths
+  sold_comps/comp_requests/desirability/replay_corpus/ebay_email_alerts/config/
+  models + mocked full-run tests for both eBay paths
 docs/
   CARDPRO_2_AUDIT.md -- the current audit: scores, failure modes, roadmap, data-source matrix
   PROJECT_STATUS.md -- what the system is and does, today
@@ -1283,7 +1315,10 @@ These are not tunables. Nothing in `settings.json` relaxes them.
 1. **Never confuse an asking price with a sold price.** They are different
    claims and the report always says which one it has.
 2. **Never treat a current bid as a price.** Auctions get their own section
-   and a max rational bid, never a discount claim.
+   and a max rational bid, never a discount claim. The max bid is the bid
+   alone, with the resale haircut already applied; when shipping is
+   unknown it is an upper bound and the line says so, because the
+   calculation had to assume $0 postage to produce a number at all.
 3. **Never compare different parallels or different grades** as if they were
    the same card.
 4. **Never guess a missing attribute.** Unknown means unknown -- it never
