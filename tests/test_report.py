@@ -1852,3 +1852,50 @@ class TestEveryBlockKindRefusesToPriceAnAuction:
 
     def test_a_fixed_price_listing_is_unaffected(self):
         assert "CURRENT BID" not in report._offer_block(1, make_listing(), 30.0)
+
+
+class TestRisksAreOrderedWorstFirst:
+    """They used to be appended as they were computed, so on a card with six
+    risks "shipping unknown" and "this may be a reprint" landed in the same
+    run-on sentence with the same weight and the reader had to rank them.
+    They are not the same kind of statement."""
+
+    def _kitchen_sink(self):
+        deal = make_listing(
+            shipping_price=None,
+            title_truncated=True,
+            listing_type="unknown",
+            negative_signals=("reprint",),
+            matched_players=("Caleb Williams", "Rome Odunze"),
+        )
+        deal.comp_match = CompMatch(
+            stats=make_stats(sample_size=2, is_stale=True, age_days_newest=90),
+            level="same_card",
+            flag_eligible=False,
+            confidence="low",
+            blocked_reasons=("thin_sample", "stale_comps"),
+        )
+        return deal
+
+    def test_it_may_not_be_the_card_outranks_everything(self):
+        risks = report._risks(self._kitchen_sink())
+        assert "reprint" in risks[0].lower()
+
+    def test_the_price_may_not_be_the_price_outranks_comp_quality(self):
+        risks = report._risks(self._kitchen_sink())
+        shipping = next(i for i, r in enumerate(risks) if "shipping unknown" in r)
+        thin = next(i for i, r in enumerate(risks) if "thin sample" in r)
+        assert shipping < thin
+
+    def test_a_card_with_only_comp_caveats_still_lists_them(self):
+        deal = make_listing(shipping_price=4.99)
+        deal.comp_match = CompMatch(
+            stats=make_stats(sample_size=2),
+            level="same_card", flag_eligible=False, confidence="low",
+            blocked_reasons=("thin_sample",),
+        )
+        assert any("thin sample" in r for r in report._risks(deal))
+
+    def test_a_clean_listing_has_no_risks_line(self):
+        # "Risks: none" trains you to stop reading the ones that matter.
+        assert report._risks(make_listing(shipping_price=4.99)) == []

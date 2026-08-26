@@ -701,53 +701,77 @@ def _confidence_text(deal: Listing) -> str:
 
 def _risks(deal: Listing) -> list:
     """Everything true about this listing that could make the numbers above
-    wrong. Assembled from facts on the Listing, never from suspicion -- and
-    the line is omitted upstream when the list comes back empty, because a
-    "Risks: none" line trains you to stop reading the ones that matter."""
-    risks = []
+    wrong, worst first.
+
+    Assembled from facts on the Listing, never from suspicion -- and the line
+    is omitted upstream when the list comes back empty, because a "Risks:
+    none" line trains you to stop reading the ones that matter.
+
+    ORDER IS THE POINT. This used to be an append-as-you-go list, so on a
+    card with six risks "shipping unknown" and "this may be a reprint" got
+    the same weight in the same run-on sentence, and the reader had to rank
+    them. They are not the same kind of statement, so they go in tiers:
+
+      1. It may not be the card. A reprint, a custom, a lot, a truncated
+         title, two players in the name -- if any of these is true the rest
+         of the block is about a different object than the one you would
+         receive. Nothing else can outrank that.
+      2. The price may not be the price. An unknown listing type means the
+         number could be a current bid; unknown shipping means the total is
+         a floor.
+      3. The comp may not be the market. Thin, stale, dispersed,
+         time-concentrated. Real caveats, but caveats about how well we
+         measured a real thing, not about whether the thing is real.
+    """
     stats = _stats(deal)
     covered = set()
+    identity_risks = []
+    price_risks = []
+    comp_risks = []
+
+    for signal in deal.negative_signals or ():
+        identity_risks.append(NEGATIVE_SIGNAL_LABELS.get(signal, signal))
+    if deal.title_truncated:
+        identity_risks.append(
+            "eBay truncated the title, so the grade shown may not be the real grade"
+        )
+    if len(deal.matched_players or ()) > 1:
+        identity_risks.append(
+            "{} watchlist players in the title -- may be a multi-player card with no single "
+            "market".format(len(deal.matched_players))
+        )
+
+    if deal.listing_type == "unknown":
+        price_risks.append(
+            "listing type unknown -- if this is an auction the price shown is a current bid, "
+            "not an asking price"
+        )
+    if deal.shipping_price is None:
+        price_risks.append("shipping unknown -- actual cost may be higher")
 
     if stats is not None:
         if stats.sample_size < THIN_SAMPLE_N:
-            risks.append("thin sample (n={})".format(stats.sample_size))
+            comp_risks.append("thin sample (n={})".format(stats.sample_size))
             covered.add(reasons.Reason.THIN_SAMPLE)
         if stats.is_stale:
-            risks.append("stale comps -- newest is {}".format(_days(stats.age_days_newest)))
+            comp_risks.append("stale comps -- newest is {}".format(_days(stats.age_days_newest)))
             covered.add(reasons.Reason.STALE_COMPS)
         if stats.is_dispersed:
-            risks.append(
+            comp_risks.append(
                 "comps disagree with each other (dispersion {:.2f}), so one median hides a "
                 "wide spread".format(stats.dispersion)
             )
             covered.add(reasons.Reason.DISPERSED_COMPS)
 
-    if deal.shipping_price is None:
-        risks.append("shipping unknown -- actual cost may be higher")
-    if deal.title_truncated:
-        risks.append("eBay truncated the title, so the grade shown may not be the real grade")
-    if deal.listing_type == "unknown":
-        risks.append(
-            "listing type unknown -- if this is an auction the price shown is a current bid, "
-            "not an asking price"
-        )
-    if len(deal.matched_players or ()) > 1:
-        risks.append(
-            "{} watchlist players in the title -- may be a multi-player card with no single "
-            "market".format(len(deal.matched_players))
-        )
-    for signal in deal.negative_signals or ():
-        risks.append(NEGATIVE_SIGNAL_LABELS.get(signal, signal))
-
     for blocked in getattr(deal.comp_match, "blocked_reasons", ()) or ():
         if blocked in covered:
             continue
         try:
-            risks.append(reasons.label(blocked))
+            comp_risks.append(reasons.label(blocked))
         except reasons.UnknownReasonError:
-            risks.append(str(blocked))
+            comp_risks.append(str(blocked))
 
-    return risks
+    return identity_risks + price_risks + comp_risks
 
 
 # ---------------------------------------------------------------------------
