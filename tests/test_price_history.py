@@ -20,6 +20,7 @@ def _obs(price, date, listing_id="", **identity_overrides):
         "grade": None,
         "qualifier": None,
         "print_run": None,
+        "manufacturer": None,
         "basis": "asking",
     }
     obs.update(identity_overrides)
@@ -332,3 +333,14 @@ class TestCollapseDuplicates:
     def test_an_already_clean_corpus_is_unchanged(self):
         history = {"Caleb Williams|raw": [{"id": "a", "price": 100.0, "date": "2026-08-21"}]}
         assert price_history.collapse_duplicates(history) == history
+
+
+def test_manufacturer_is_recorded_even_though_nothing_reads_it_yet():
+    # The corpus is the only durable artefact -- titles are not stored -- so
+    # a field extracted today and dropped is unrecoverable tomorrow.
+    history = {}
+    price_history.record(
+        history, "Caleb Williams", "raw", 25.0, "2026-08-21", "id-1",
+        set_name="Prizm", manufacturer="Panini",
+    )
+    assert history["Caleb Williams|raw"][0]["manufacturer"] == "Panini"

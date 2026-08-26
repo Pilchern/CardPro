@@ -67,7 +67,33 @@ SET_KEYWORDS = [
     "Museum Collection", "Tribute", "Diamond Kings", "Score", "Prestige",
     "Elite", "Hoops", "Sapphire", "Merlin", "Stadium Club Chrome",
     "Gypsy Queen", "Big League", "Opening Day",
+    # "Collector's Choice" is an Upper Deck set. It was being read as the
+    # parallel "Choice" at high confidence, because only the phrase "Your
+    # Choice" was masked -- so it is listed here AND masked below.
+    "Collector's Choice", "Collectors Choice",
 ]
+
+#: Spellings that mean the same product. Two names for one set means two comp
+#: buckets, each half as deep -- and depth is the thing this project has
+#: least of. Applied after matching, so the vocabulary above can list every
+#: spelling a seller might type while the corpus only ever stores one.
+SET_ALIASES = {
+    "Collectors Choice": "Collector's Choice",
+    "Ginter": "Allen & Ginter",
+    "Topps Series One": "Topps Series 1",
+    "Topps Series Two": "Topps Series 2",
+}
+
+#: A bare "Chrome" is Topps Chrome or Bowman Chrome depending on the brand
+#: word in the same title, and they are different products at different
+#: prices. The live corpus had this splitting one Kyle Teel card across a
+#: 'Chrome' bucket and a 'Topps Chrome' bucket on nothing but which words the
+#: seller typed. Only these two manufacturers make a "Chrome" line, so a
+#: title naming any other brand leaves the bare name alone rather than
+#: inventing a product.
+BARE_SET_BY_MANUFACTURER = {
+    "Chrome": {"Topps": "Topps Chrome", "Bowman": "Bowman Chrome"},
+}
 
 # --- Parallel vocabulary, split by how much a match is worth ------------
 #
@@ -85,6 +111,12 @@ UNAMBIGUOUS_PARALLELS = [
     "Superfractor", "X-Fractor", "Refractor", "Prizmatic", "Snakeskin", "Shimmer",
     "Pulsar", "Genesis", "Choice", "Disco", "Scope", "Hyper", "Mojo", "Wave",
     "Lava", "Kaboom", "Downtown", "Camo", "Tiger", "Zebra", "Sepia", "Ice",
+    # Modifiers that name a specific refractor/prizm. They were missing, so
+    # "Raywave Refractor" came out as plain "Refractor" at high confidence
+    # and a scarce parallel got valued against base copies.
+    "Raywave", "Speckle", "Sparkle", "Marble", "Mini-Diamond", "Cracked",
+    "Padparadscha", "Aqua Vapor", "Fuchsia", "Peridot", "Rose Gold",
+    "Press Proof", "Die-Cut", "Holo", "Prismatic", "Dragon Scale",
 ]
 
 COLOR_PARALLEL_WORDS = [
@@ -117,6 +149,8 @@ TEAM_AND_PHRASE_MASKS = [
     "Royals", "Blues", "Rangers",
     # Awards / honours
     "Silver Slugger", "Gold Glove", "Golden Spikes", "Green Jacket",
+    # Set names containing a parallel word
+    "Collector's Choice", "Collectors Choice",
     # Events / places / idioms
     "Orange Bowl", "Rose Bowl", "White House", "Red Zone", "Blue Line",
     # Listing boilerplate that would otherwise read as a parallel
@@ -248,10 +282,97 @@ _MASK_PATTERNS = [
     for phrase in sorted(TEAM_AND_PHRASE_MASKS, key=len, reverse=True)
 ]
 
+#: The masks that apply when looking for a SET name -- everything except the
+#: phrases that ARE set names.
+#:
+#: A phrase can need masking for one field and be the answer for another.
+#: "Collector's Choice" has to be blanked before parallel extraction, or the
+#: "Choice" in it is read as a parallel at high confidence; but blanking it
+#: before set extraction is why the set then came out unknown. The mask list
+#: exists to stop colour-and-parallel words in team, award and product names
+#: being mistaken for parallels, which is a problem set names do not have.
+_SET_MASK_PATTERNS = [
+    re.compile(rf"\b{re.escape(phrase)}\b", re.IGNORECASE)
+    for phrase in sorted(
+        (p for p in TEAM_AND_PHRASE_MASKS if p not in set(SET_KEYWORDS)),
+        key=len,
+        reverse=True,
+    )
+]
+
+def _flexible_phrase(name: str) -> re.Pattern:
+    """A phrase pattern that tolerates how sellers actually punctuate.
+
+    "Red White Blue" has to match "Red, White & Blue" and "Red White and
+    Blue"; "Tie-Dye" has to match "Tie Dye". Matching the literal spelling
+    was why a Red White & Blue Prizm came out as parallel "Blue Prizm" at
+    high confidence -- the compound missed, and the colour-plus-qualifier
+    rule downstream then grabbed the tail of the phrase.
+    """
+    words = re.findall(r"[A-Za-z0-9]+", name)
+    separator = r"[\s,&/-]+(?:and[\s,&/-]+)?"
+    return re.compile(r"\b" + separator.join(re.escape(w) for w in words) + r"\b", re.IGNORECASE)
+
+
 _COMPOUND_PARALLEL_PATTERNS = [
-    (name, re.compile(rf"\b{re.escape(name)}\b", re.IGNORECASE))
+    (name, _flexible_phrase(name))
     for name in sorted(COMPOUND_PARALLELS, key=len, reverse=True)
 ]
+
+#: The words a multi-word parallel run may be built from: bare colours and
+#: terms that only ever mean "parallel". Deliberately NOT
+#: PARALLEL_QUALIFIER_WORDS, because several of those double as set names --
+#: "Prizm" in "2024 Panini Prizm Silver" is the set, and a run rule that
+#: swallowed it would report the parallel as "Prizm Silver".
+_RUN_WORD_LOOKUP = {
+    word.lower(): word for word in UNAMBIGUOUS_PARALLELS + COLOR_PARALLEL_WORDS
+}
+_UNAMBIGUOUS_LOWER = {word.lower() for word in UNAMBIGUOUS_PARALLELS}
+_WORD_RE = re.compile(r"[A-Za-z][A-Za-z-]*")
+
+
+def _parallel_run(masked_title: str):
+    """The longest run of adjacent parallel words, as (name, is_specific).
+
+    "Aqua Lava Refractor" is one parallel, not the parallel "Refractor" with
+    some words in front of it -- and the difference is a /199 card being
+    valued against base refractors. The old rule picked the single longest
+    vocabulary word anywhere in the title, so "Refractor" (nine letters) beat
+    "Lava" (four) and the modifier was discarded at high confidence. Every
+    named refractor collapsed into one bucket, which is exactly the
+    same-card-different-parallel pooling the engine exists to prevent.
+
+    Adjacency means separated by whitespace or a hyphen only: an intervening
+    comma or any other word ends the run, so a colour at one end of a title
+    never joins a parallel word at the other.
+    """
+    best_words: list = []
+    best_specific = False
+    current: list = []
+    current_specific = False
+    previous_end = None
+
+    for match in _WORD_RE.finditer(masked_title):
+        word = match.group(0).lower()
+        canonical = _RUN_WORD_LOOKUP.get(word)
+        gap = masked_title[previous_end:match.start()] if previous_end is not None else None
+        adjacent = gap is not None and gap != "" and re.fullmatch(r"[\s-]+", gap) is not None
+        if canonical is None:
+            current, current_specific = [], False
+        else:
+            if not adjacent:
+                current, current_specific = [], False
+            current.append(canonical)
+            current_specific = current_specific or word in _UNAMBIGUOUS_LOWER
+            # Longer run wins; on a tie, the specific one does. Without the
+            # tie-break a bare colour earlier in the title ("Gold Label ...
+            # Refractor") outranked a term that only ever means parallel,
+            # which is a worse answer at lower confidence.
+            if (len(current), current_specific) > (len(best_words), best_specific):
+                best_words, best_specific = list(current), current_specific
+        previous_end = match.end()
+
+    return (" ".join(best_words), best_specific) if best_words else (None, False)
 
 _COLOR_LOOKUP = {word.lower(): word for word in COLOR_PARALLEL_WORDS}
 _QUALIFIER_LOOKUP = {word.lower(): word for word in PARALLEL_QUALIFIER_WORDS}
@@ -296,6 +417,14 @@ class CardIdentity:
     negative_signals: Field = dataclass_field(default_factory=lambda: Field((), "none"))
 
 
+def mask_for_set_lookup(title: str) -> str:
+    """Masked title for set extraction -- see _SET_MASK_PATTERNS."""
+    masked = title
+    for pattern in _SET_MASK_PATTERNS:
+        masked = pattern.sub(lambda match: " " * len(match.group(0)), masked)
+    return masked
+
+
 def mask_known_phrases(title: str) -> str:
     """Blank out team/award/place phrases that merely contain a colour or
     parallel word, replacing each with the same number of spaces so word
@@ -320,6 +449,33 @@ def _find_keyword(title: str, keywords: list[str]) -> Optional[str]:
     return None
 
 
+def _find_keyword_leftmost(title: str, keywords: list[str]) -> Optional[str]:
+    """The keyword appearing EARLIEST in the title, longest wins on a tie.
+
+    For manufacturers, longest-first is wrong: "2024 Panini Donruss Optic"
+    returned "Donruss" (7 letters) over "Panini" (6), so the brand on a
+    Panini product came out as the sub-brand. eBay titles put the
+    manufacturer first, so position is the better signal than length here.
+    """
+    lowered = title.lower()
+    best = None
+    for keyword in keywords:
+        match = re.search(rf"\b{re.escape(keyword.lower())}\b", lowered)
+        if match is None:
+            continue
+        candidate = (match.start(), -len(keyword), keyword)
+        if best is None or candidate < best:
+            best = candidate
+    return best[2] if best else None
+
+
+def _leftmost_keyword_field(title: str, keywords: list[str]) -> Field:
+    match = _find_keyword_leftmost(title, keywords)
+    if match:
+        return Field(value=match, confidence="high", source="title")
+    return Field(value=None, confidence="none", source="title")
+
+
 def _keyword_field(title: str, keywords: list[str]) -> Field:
     match = _find_keyword(title, keywords)
     if match:
@@ -338,26 +494,53 @@ def _extract_parallel(masked_title: str) -> Field:
         if pattern.search(masked_title):
             return Field(value=name, confidence="high", source="title")
 
-    # 2. Colour immediately next to a parallel qualifier ("Green Refractor").
-    #    Captured as the compound: "Green Refractor" and "Gold Refractor" are
-    #    different markets, and neither is the base "Refractor" market.
+    # 2. A run of adjacent parallel words ("Green Refractor", "Aqua Lava
+    #    Refractor"). Taken whole: these are different markets from each
+    #    other and from the bare term, and reporting the bare term pools them.
+    run, specific = _parallel_run(masked_title)
+    if run and " " in run:
+        return Field(value=run, confidence="high" if specific else "medium", source="title")
+
+    # 3. Colour immediately next to a parallel qualifier ("Green Prizm").
+    #    Separate from the run above because the qualifier vocabulary
+    #    includes words that double as set names, so they may only be read as
+    #    a parallel when a colour is sitting directly in front of them.
     adjacent = _COLOR_QUALIFIER_RE.search(masked_title)
     if adjacent:
         color = _COLOR_LOOKUP[adjacent.group(1).lower()]
         qualifier = _QUALIFIER_LOOKUP[adjacent.group(2).lower()]
         return Field(value=f"{color} {qualifier}", confidence="high", source="title")
 
-    # 3. Single hobby terms that only ever mean "parallel".
-    unambiguous = _find_keyword(masked_title, UNAMBIGUOUS_PARALLELS)
-    if unambiguous:
-        return Field(value=unambiguous, confidence="high", source="title")
+    # 4. A single hobby term that only ever means "parallel".
+    if run and specific:
+        return Field(value=run, confidence="high", source="title")
 
-    # 4. A bare colour: usable as a hint, never as a confident bucket key.
-    color = _find_keyword(masked_title, COLOR_PARALLEL_WORDS)
-    if color:
-        return Field(value=color, confidence="medium", source="title")
+    # 5. A bare colour: usable as a hint, never as a confident bucket key.
+    if run:
+        return Field(value=run, confidence="medium", source="title")
 
     return Field(value=None, confidence="none", source="title")
+
+
+def _canonical_set(set_field: Field, manufacturer: Optional[str]) -> Field:
+    """One name per product, so one product means one comp bucket.
+
+    Does two things and nothing else: folds known alternate spellings onto a
+    single name, and resolves a bare product line ("Chrome") against the
+    brand word in the same title. Both only ever REPLACE a name that was
+    already found in the vocabulary -- neither can invent a set for a title
+    that has none, which is the guess this module refuses to make.
+    """
+    name = set_field.value
+    if name is None:
+        return set_field
+    name = SET_ALIASES.get(name, name)
+    by_manufacturer = BARE_SET_BY_MANUFACTURER.get(name)
+    if by_manufacturer and manufacturer in by_manufacturer:
+        name = by_manufacturer[manufacturer]
+    if name == set_field.value:
+        return set_field
+    return Field(value=name, confidence=set_field.confidence, source=set_field.source)
 
 
 def _extract_card_number(title: str) -> Field:
@@ -369,12 +552,36 @@ def _extract_card_number(title: str) -> Field:
     numbers with hyphens ("BDC-25", "US150", "RC-12") stay supported.
     """
     for match in CARD_NUMBER_RE.finditer(title):
-        following = title[match.end():].lstrip()
+        rest = title[match.end():]
+        # "#25/99" is a serial number written with a hash, not card #25. It
+        # was producing card_number "25", which keys an exact bucket for a
+        # card that does not exist -- and two Golds with different serials
+        # got two different phantom buckets, neither of which ever met the
+        # real one.
+        if re.match(r"\s*/\s*\d", rest):
+            continue
+        following = rest.lstrip()
         next_word = re.match(r"[A-Za-z]+", following)
-        if next_word and next_word.group(0).lower() in CARD_NUMBER_STOP_WORDS:
+        if next_word and _is_stop_word(next_word.group(0), following[next_word.end():]):
             continue
         return Field(value=match.group(1), confidence="high", source="title")
     return Field(value=None, confidence="none", source="title")
+
+
+def _is_stop_word(word: str, rest: str) -> bool:
+    """Whether the word after "#N" makes it an idiom rather than a card number.
+
+    "jersey" is conditional, unlike the rest. "#23 jersey number" is a
+    player's shirt number; "#23 Jersey Relic /99" is a real card number
+    followed by a real description of the card, and blanket-suppressing it
+    threw away the number on exactly the kind of listing worth valuing.
+    """
+    lowered = word.lower()
+    if lowered not in CARD_NUMBER_STOP_WORDS:
+        return False
+    if lowered == "jersey":
+        return re.match(r"\s*(number\b|#)", rest) is not None
+    return True
 
 
 def _valid_print_run(value: int) -> bool:
@@ -485,11 +692,15 @@ def extract_card_identity(title: str) -> CardIdentity:
     # Patch implies memorabilia even when the title only says "RPA".
     is_memorabilia = is_patch or bool(_find_keyword(masked, MEMORABILIA_KEYWORDS))
 
+    manufacturer_field = _leftmost_keyword_field(masked, MANUFACTURERS)
     return CardIdentity(
         year=year_field,
         season=season_field,
-        manufacturer=_keyword_field(masked, MANUFACTURERS),
-        set_name=_keyword_field(masked, SET_KEYWORDS),
+        manufacturer=manufacturer_field,
+        set_name=_canonical_set(
+            _keyword_field(mask_for_set_lookup(title), SET_KEYWORDS),
+            manufacturer_field.value,
+        ),
         parallel=_extract_parallel(masked),
         card_number=_extract_card_number(title),
         serial_number=serial_field,

@@ -431,3 +431,131 @@ def test_empty_title_is_all_unknown():
     assert identity.print_run.value is None
     assert identity.is_lot.value is False
     assert card_identity.is_excluded_from_deals(identity) is False
+
+
+# ---------------------------------------------------------------------------
+# Wrong values, not missing ones
+#
+# Every case below shipped a CONFIDENTLY WRONG answer, which this module's
+# own docstring says is worse than no answer: a wrong parallel or card number
+# does not merely fail to find a comp, it keys a bucket that pools cards
+# which are not the same card.
+# ---------------------------------------------------------------------------
+
+extract = card_identity.extract_card_identity
+
+
+class TestParallelRuns:
+    def test_red_white_and_blue_survives_seller_punctuation(self):
+        # Was "Blue Prizm" at high confidence: the compound missed on the
+        # ampersand, and the colour-plus-qualifier rule then grabbed the tail
+        # of the phrase.
+        for title in [
+            "2024 Panini Prizm Caleb Williams Red White & Blue Prizm #301",
+            "2024 Panini Prizm Caleb Williams Red, White & Blue Prizm #301",
+            "2024 Panini Prizm Caleb Williams Red White and Blue Prizm #301",
+        ]:
+            identity = extract(title)
+            assert identity.parallel.value == "Red White Blue", title
+            assert identity.parallel.confidence == "high"
+
+    def test_a_named_refractor_is_not_the_base_refractor(self):
+        # Was "Refractor" for all three, because the old rule picked the
+        # longest vocabulary word anywhere in the title. An Aqua Lava /199
+        # then keyed the same bucket as a base refractor.
+        for title, expected in [
+            ("2024 Topps Chrome PCA Aqua Lava Refractor /199 #150", "Aqua Lava Refractor"),
+            ("2024 Topps Chrome PCA Sepia Refractor #150", "Sepia Refractor"),
+            ("2024 Topps Chrome PCA Raywave Refractor #150", "Raywave Refractor"),
+        ]:
+            assert extract(title).parallel.value == expected, title
+
+    def test_a_plain_refractor_is_still_a_plain_refractor(self):
+        assert extract("2024 Topps Chrome Caleb Williams Refractor #150").parallel.value == "Refractor"
+
+    def test_a_run_must_be_adjacent(self):
+        # A colour at one end of a title must never join a parallel word at
+        # the other end just because both appear somewhere.
+        identity = extract("2024 Topps Chrome Gold Label Caleb Williams RC Refractor #150")
+        assert identity.parallel.value == "Refractor"
+
+    def test_the_set_word_is_not_swallowed_into_the_parallel(self):
+        # "Prizm" doubles as a set name, which is why the run vocabulary
+        # excludes the qualifier words. Otherwise this reads "Prizm Silver".
+        identity = extract("2024 Panini Prizm Silver Caleb Williams #123 RC 23/99 PSA 10")
+        assert identity.parallel.value == "Silver"
+        assert identity.parallel.confidence == "medium"
+
+    def test_a_colour_only_run_stays_medium(self):
+        identity = extract("2024 Panini Prizm Caleb Williams Blue #14")
+        assert (identity.parallel.value, identity.parallel.confidence) == ("Blue", "medium")
+
+
+class TestCollectorsChoice:
+    def test_it_is_a_set_not_the_choice_parallel(self):
+        identity = extract("2024-25 Upper Deck Collector's Choice Connor Bedard #201")
+        assert identity.parallel.value is None
+        assert identity.set_name.value == "Collector's Choice"
+
+    def test_both_spellings_give_one_name(self):
+        # Two names for one set is two comp buckets, each half as deep.
+        assert extract("2024-25 Upper Deck Collectors Choice Connor Bedard").set_name.value == (
+            extract("2024-25 Upper Deck Collector's Choice Connor Bedard").set_name.value
+        )
+
+
+class TestBareChromeIsResolvedByBrand:
+    def test_topps_and_bowman_chrome_are_different_products(self):
+        assert extract("2026 Chrome Kyle Teel Refractor RA-KT").set_name.value == "Chrome"
+        assert extract("2026 Topps Chrome Kyle Teel Refractor").set_name.value == "Topps Chrome"
+        assert extract("2025 Bowman Chrome Caleb Wilson Refractor").set_name.value == "Bowman Chrome"
+
+    def test_a_brand_that_makes_no_chrome_line_leaves_the_name_alone(self):
+        # Resolving is allowed to replace a name the vocabulary found. It is
+        # never allowed to invent a product.
+        assert extract("2024 Panini Chronicles Chrome Caleb Williams").set_name.value == "Chronicles"
+
+    def test_a_longer_chrome_product_is_not_collapsed(self):
+        assert extract("2026 Topps Chrome Update Kyle Teel").set_name.value == "Topps Chrome Update"
+
+
+class TestCardNumberIsNotSomethingElse:
+    def test_a_hashed_serial_is_not_a_card_number(self):
+        # "#25/99" was producing card_number "25" -- an exact key for a card
+        # that does not exist, and two Golds with different serials got two
+        # different phantom buckets.
+        identity = extract("2024 Panini Prizm Caleb Williams Gold #25/99")
+        assert identity.card_number.value is None
+        assert identity.serial_number.value == "25/99"
+        assert identity.print_run.value == 99
+
+    def test_a_one_of_one_is_not_card_number_one(self):
+        assert extract("2024 Bowman Chrome Superfractor Caleb Williams #1/1").card_number.value is None
+
+    def test_a_separated_serial_still_leaves_the_card_number_alone(self):
+        identity = extract("2024 Panini Prizm Caleb Williams #201 15/25")
+        assert (identity.card_number.value, identity.serial_number.value) == ("201", "15/25")
+
+    def test_a_relic_description_does_not_suppress_a_real_card_number(self):
+        # "jersey" used to suppress unconditionally, throwing away the number
+        # on exactly the kind of listing worth valuing.
+        assert extract("2024 Panini Prizm Caleb Williams #23 Jersey Relic /99").card_number.value == "23"
+
+    def test_a_shirt_number_is_still_suppressed(self):
+        assert extract("2024 Topps Chrome Caleb Williams #23 jersey number").card_number.value is None
+
+    def test_the_draft_pick_idiom_is_still_suppressed(self):
+        assert extract("2024 Panini Prizm Caleb Williams #1 Draft Pick").card_number.value is None
+
+
+class TestManufacturer:
+    def test_the_brand_wins_over_the_sub_brand(self):
+        # Longest-first returned "Donruss" (7) over "Panini" (6). eBay titles
+        # put the manufacturer first, so position beats length here.
+        assert extract("2024 Panini Donruss Optic Caleb Williams #301").manufacturer.value == "Panini"
+
+    def test_a_sub_brand_alone_is_still_the_manufacturer(self):
+        assert extract("2024 Donruss Optic Caleb Williams Rated Rookie").manufacturer.value == "Donruss"
+
+    def test_the_set_is_unaffected(self):
+        assert extract("2024 Panini Donruss Optic Caleb Williams #301").set_name.value == "Donruss Optic"

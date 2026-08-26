@@ -135,6 +135,7 @@ def record(
     grade: Optional[str] = None,
     qualifier: Optional[str] = None,
     print_run: Optional[int] = None,
+    manufacturer: Optional[str] = None,
     basis: str = "asking",
 ) -> None:
     """Appends one price observation to the corpus.
@@ -145,6 +146,9 @@ def record(
     asking-basis comps, so this must be recorded honestly -- mislabelling an
     asking price as sold would let a seller's wishful number masquerade as
     market truth.
+
+    `manufacturer` is stored for future analysis rather than for today's
+    lookup -- see the comment at the field itself.
 
     `qualifier` is a grade qualifier such as "OC" (off-centre). A qualified
     slab is a materially different market from an unqualified one at the same
@@ -188,6 +192,13 @@ def record(
         "grade": grade,
         "qualifier": qualifier,
         "print_run": print_run,
+        # Recorded but not yet used in any bucket key. The corpus is the only
+        # durable artefact this project has -- titles are not stored -- so a
+        # field extracted today and thrown away is permanently unrecoverable
+        # for tomorrow's analysis. Manufacturer is what would separate a
+        # Topps "Instant" from a Panini "Instant", which currently share a
+        # bucket. CompEngine._prepare ignores keys it does not know.
+        "manufacturer": manufacturer,
         "basis": basis,
     }
     if listing_id:
