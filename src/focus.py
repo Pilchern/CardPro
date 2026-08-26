@@ -146,10 +146,15 @@ def _has_bidding_room(listing, rules: FocusRules) -> bool:
     ceiling = getattr(listing, "max_rational_bid", None)
     if ceiling is None:
         return True
-    price = _price(listing)
-    if price is None:
+    # The BID, not the total cost. economics.max_rational_bid has already
+    # subtracted inbound shipping to arrive at its ceiling, so comparing a
+    # shipping-inclusive total against it charges shipping twice and drops
+    # auctions you could still win -- on a $60 card with $4.99 shipping, a
+    # $24 bid with $1.76 of room left was being reported as having none.
+    bid = getattr(listing, "price", None)
+    if bid is None:
         return True
-    return price <= ceiling
+    return bid <= ceiling
 
 
 def omission_reason(listing, rules: FocusRules) -> Optional[str]:
@@ -178,22 +183,25 @@ def select(deals, rules: FocusRules) -> Selection:
     """
     kept = []
     kept_ids = set()
-    omitted_ids = {}
+    reason_by_id = {}
     for listing in deals:
         reason = omission_reason(listing, rules)
         if reason is None:
             kept.append(listing)
             kept_ids.add(listing.id)
             continue
-        omitted_ids.setdefault(reason, set()).add(listing.id)
-    # The same eBay item can arrive twice in one run (two saved searches,
-    # one card) with different data each time -- one copy in focus, one out.
-    # It is one card and it is being shown, so it must not also be counted
-    # as left out: the footer's buckets have to add up to what CardPro saw.
+        # First reason wins. The same eBay item can arrive twice in one run
+        # (two saved searches, one card) with different data each time, and
+        # the two copies can be omitted for DIFFERENT reasons -- one over the
+        # price ceiling, one an auction past its max bid. Counting both makes
+        # the footer claim two cards were left out and print two sentences
+        # about one.
+        reason_by_id.setdefault(listing.id, reason)
+    # A card that is being shown must not also be counted as left out: the
+    # footer's buckets have to add up to what CardPro saw.
     omitted = Counter(
-        {reason: len(ids - kept_ids) for reason, ids in omitted_ids.items()}
+        reason for listing_id, reason in reason_by_id.items() if listing_id not in kept_ids
     )
-    omitted += Counter()  # drop reasons that netted zero
     return Selection(kept=kept, omitted=omitted)
 
 

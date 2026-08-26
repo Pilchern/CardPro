@@ -159,8 +159,17 @@ def test_auction_at_exactly_the_max_bid_is_kept():
     assert focus.omission_reason(make_auction(price=30.0, max_rational_bid=30.0), RULES) is None
 
 
-def test_auction_shipping_counts_against_the_max_bid():
+def test_shipping_is_not_charged_against_the_max_bid_twice():
+    """economics.max_rational_bid has already subtracted inbound shipping to
+    arrive at its ceiling. Comparing a shipping-inclusive total against it
+    charges shipping twice and drops auctions you could still win -- this
+    listing has $2 of bidding room, not none."""
     listing = make_auction(price=28.0, shipping_price=5.0, max_rational_bid=30.0)
+    assert focus.omission_reason(listing, RULES) is None
+
+
+def test_a_bid_over_the_max_is_still_left_out_when_shipping_is_known():
+    listing = make_auction(price=31.0, shipping_price=5.0, max_rational_bid=30.0)
     assert focus.omission_reason(listing, RULES) == focus.NO_BIDDING_ROOM
 
 
@@ -362,3 +371,16 @@ def test_a_listing_that_is_both_kept_and_omitted_counts_as_kept():
     selection = focus.select(deals, RULES)
     assert ids(selection.kept) == ["x"]
     assert selection.omitted_total == 0
+
+
+def test_one_card_omitted_for_two_different_reasons_is_counted_once():
+    """The same eBay item can arrive twice in one run (two saved searches),
+    and the copies can fail different rules. Counting both makes the footer
+    claim two cards were left out and print two sentences about one."""
+    expensive = make_listing(price=500.0)
+    expensive.id = "same-card"
+    auction = make_auction(price=35.0, max_rational_bid=30.0)
+    auction.id = "same-card"
+    selection = focus.select([expensive, auction], RULES)
+    assert selection.kept == []
+    assert selection.omitted_total == 1

@@ -346,6 +346,7 @@ def max_rational_bid(
     shipping_in: Optional[float],
     fees: FeeModel,
     buyer_premium_pct: float = 0.0,
+    resale_haircut_pct: float = 0.0,
 ) -> float:
     """The highest bid that still leaves you ``required_margin_pct`` of margin.
 
@@ -361,6 +362,20 @@ def max_rational_bid(
     whatever you end up bidding. Defining it against the bid would make
     the required profit shrink as the price you pay falls, which is
     backwards.
+
+    ``resale_haircut_pct`` is the same gap between "the median comp" and
+    "what you will actually get" that ``evaluate`` applies, and it has to be
+    applied here too or the two disagree about the same card. It was missing,
+    and the effect was not small: at the shipped 5% haircut and a 25% margin,
+    the returned ceiling on a $60 card was $25.76, which actually realises
+    20.66% -- and the report prints that number under the words "the most you
+    can pay and still keep your margin. Above this, stop." The overstatement
+    scales with the card: $26 on a $600 one.
+
+    The haircut applies to the SALE side only. ``required_profit`` stays a
+    percentage of estimated market value, because that is what the margin was
+    defined against and discounting it too would quietly relax the
+    requirement at the same time as tightening the budget.
 
     ``buyer_premium_pct`` covers auction houses that add a premium on top
     of the hammer price (eBay does not; Goldin and Heritage do). It is
@@ -379,7 +394,8 @@ def max_rational_bid(
     "bid a penny"; it means "walk away". The result is never negative.
     """
     required_profit = estimated_market_value * (required_margin_pct / 100.0)
-    net_proceeds = fees.net_proceeds_on(estimated_market_value)
+    expected_sale_price = estimated_market_value * (1.0 - resale_haircut_pct / 100.0)
+    net_proceeds = fees.net_proceeds_on(expected_sale_price)
 
     # The most the whole acquisition (bid + premium + shipping + tax) may cost.
     max_total_acquisition_cost = net_proceeds - required_profit

@@ -726,10 +726,22 @@ def _target_text(deal: Listing) -> str:
     target = getattr(hit, "target", None)
     name = getattr(target, "label", None) or "your target list"
     threshold = getattr(hit, "threshold", None)
+    if not getattr(hit, "price_known", True):
+        # "We do not know what it costs" is not "it costs more than every
+        # band you set". Saying the second for the first is a price claim
+        # made out of an unknown.
+        return '"{}" -- the card you asked for is listed, but its price could not be read'.format(name)
     if getattr(hit, "in_buy_zone", False) and threshold is not None:
-        return '"{}" -- {}, at or below your {} threshold of {}'.format(
+        text = '"{}" -- {}, at or below your {} threshold of {}'.format(
             name, label, label.lower(), _money(threshold)
         )
+        if deal.shipping_price is None:
+            # The band was matched against price alone, because that is what
+            # total_cost falls back to when shipping is unknown. Saying it
+            # clears your threshold without saying that is how a $149 card
+            # with $10 postage reports as inside a $150 buy zone.
+            text += "; shipping unknown, so the real cost may put it above the band"
+        return text
     return '"{}" -- the card you asked for is listed, but above every price band you set'.format(name)
 
 
@@ -762,14 +774,19 @@ def _auction_block(index: int, deal: Listing, ending_soon_hours: float = DEFAULT
     lines.append(_field_line("Market", _market_text(deal)))
 
     if deal.max_rational_bid is not None:
-        lines.append(
-            _field_line(
-                "Max bid",
-                "{} -- the most you can pay and still keep your margin. Above this, stop.".format(
-                    _money(deal.max_rational_bid)
-                ),
-            )
+        max_bid_text = "{} -- the most you can pay and still keep your margin. Above this, stop.".format(
+            _money(deal.max_rational_bid)
         )
+        if not getattr(deal, "max_rational_bid_shipping_known", True):
+            # Computed with shipping treated as $0 because it is unknown, so
+            # it is an upper bound that is too high by exactly the unknown
+            # shipping -- see economics.max_rational_bid. Printing it as a
+            # figure is how you overbid.
+            max_bid_text += (
+                " Shipping is unknown, so this assumes $0 postage and your real"
+                " ceiling is lower by whatever it turns out to be."
+            )
+        lines.append(_field_line("Max bid", max_bid_text))
     else:
         lines.append(
             _field_line(

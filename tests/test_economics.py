@@ -476,3 +476,63 @@ def test_grading_cost_moves_the_bar():
         value_if_high_grade=120.0, value_if_low_grade=20.0, fees=NO_FEES,
     )
     assert dear > cheap
+
+
+# ---------------------------------------------------------------------------
+# The max bid has to survive a round trip
+#
+# The contract is not "returns a plausible number", it is "bidding this
+# number produces the margin you asked for". The only way to test that is to
+# feed the answer back through evaluate() with the SAME assumptions.
+# ---------------------------------------------------------------------------
+
+class TestMaxBidRoundTrip:
+    FEES = FeeModel(
+        marketplace_fee_pct=13.25, marketplace_fixed_fee=0.30, payment_fee_pct=0.0,
+        outbound_shipping=5.0, supplies=1.0, sales_tax_pct=0.0,
+    )
+
+    def _round_trip(self, emv, margin, shipping, haircut):
+        bid = max_rational_bid(
+            emv, required_margin_pct=margin, shipping_in=shipping,
+            fees=self.FEES, resale_haircut_pct=haircut,
+        )
+        result = evaluate(
+            Acquisition(bid, shipping, self.FEES.sales_tax_pct),
+            emv, self.FEES, resale_haircut_pct=haircut,
+        )
+        return bid, result
+
+    def test_bidding_the_max_produces_the_margin_at_the_shipped_haircut(self):
+        # The haircut was missing here while evaluate() applied it, so the
+        # two disagreed about the same card: the ceiling on a $60 card came
+        # out $25.76 and actually realised 20.66%, under the words "the most
+        # you can pay and still keep your margin. Above this, stop."
+        _, result = self._round_trip(emv=60.0, margin=25.0, shipping=4.99, haircut=5.0)
+        assert result.expected_profit == pytest.approx(15.0)
+
+    def test_the_overstatement_scaled_with_the_card(self):
+        _, result = self._round_trip(emv=600.0, margin=25.0, shipping=4.99, haircut=5.0)
+        assert result.expected_profit == pytest.approx(150.0)
+
+    def test_a_haircut_lowers_the_ceiling(self):
+        with_haircut = max_rational_bid(
+            60.0, required_margin_pct=25.0, shipping_in=4.99, fees=self.FEES,
+            resale_haircut_pct=5.0,
+        )
+        without = max_rational_bid(
+            60.0, required_margin_pct=25.0, shipping_in=4.99, fees=self.FEES,
+        )
+        assert with_haircut < without
+
+    def test_no_haircut_is_still_the_default(self):
+        # Every existing caller and test passes nothing, and must keep the
+        # behaviour it had.
+        _, result = self._round_trip(emv=60.0, margin=25.0, shipping=4.99, haircut=0.0)
+        assert result.expected_profit == pytest.approx(15.0)
+
+    def test_the_required_profit_is_not_discounted_too(self):
+        # Margin is defined against estimated market value. Discounting the
+        # requirement as well as the budget would quietly relax it.
+        _, result = self._round_trip(emv=100.0, margin=20.0, shipping=0.0, haircut=10.0)
+        assert result.expected_profit == pytest.approx(20.0)

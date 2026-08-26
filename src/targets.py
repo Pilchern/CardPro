@@ -77,6 +77,11 @@ class TargetHit:
     target: TargetCard
     band: Optional[str]  # None when it matched the card but is above every price band
     threshold: Optional[float]
+    # False when the listing had no readable price. Without this, "we do not
+    # know what it costs" and "it costs more than every band you set" were
+    # the same value, and the report printed the second sentence for the
+    # first situation -- a price claim manufactured out of an unknown.
+    price_known: bool = True
 
     @property
     def in_buy_zone(self) -> bool:
@@ -84,6 +89,8 @@ class TargetHit:
 
     @property
     def label(self) -> str:
+        if not self.price_known:
+            return "PRICE UNKNOWN"
         return BAND_LABELS.get(self.band, "ABOVE BUY ZONE")
 
 
@@ -154,6 +161,11 @@ def match_target(
     else None. A hit is returned even when the price is above every band
     (band=None) so the report can show "your target card is listed, but
     above your buy zone" -- that is useful information, not noise.
+
+    A listing with no readable price is a hit too, with ``price_known=False``.
+    That is a different answer from "above every band" and has to stay
+    different: they were the same value, and the report printed the
+    above-every-band sentence for a card whose price it did not know.
     """
     if player.strip().lower() != target.player.strip().lower():
         return None
@@ -170,7 +182,7 @@ def match_target(
         return None
 
     if total_cost is None:
-        return TargetHit(target=target, band=None, threshold=None)
+        return TargetHit(target=target, band=None, threshold=None, price_known=False)
 
     for band in BAND_ORDER:
         threshold = target.thresholds()[band]

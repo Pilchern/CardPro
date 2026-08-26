@@ -622,7 +622,15 @@ def evaluate_listings(listings, engine, cfg, stats) -> None:
                 required_margin_pct=cfg.auction_required_margin_pct,
                 shipping_in=listing.shipping_price,
                 fees=fees,
+                # The same haircut evaluate() applies. Without it the two
+                # disagree about the same card, and the ceiling comes out
+                # high -- which is the expensive direction to be wrong in.
+                resale_haircut_pct=cfg.resale_haircut_pct,
             )
+            # Unknown shipping makes the ceiling an upper bound, not a
+            # figure. The report has to be able to say so; the bare float
+            # cannot carry that.
+            listing.max_rational_bid_shipping_known = listing.shipping_price is not None
             # A current bid is not a price, so an auction is never a
             # confirmed deal no matter how far under market it sits. It gets
             # its own report section and its own math instead.

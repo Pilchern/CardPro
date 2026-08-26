@@ -101,3 +101,38 @@ def test_unknown_total_cost_reports_a_hit_with_no_band():
 def test_matching_is_case_and_whitespace_insensitive():
     fields = dict(FULL_MATCH, player=" caleb williams ", parallel="silver", set_name="prizm")
     assert targets.best_hit(_targets(), total_cost=290, **fields).band == targets.BAND_IMMEDIATE
+
+
+def _target():
+    return targets.TargetCard(label="CW Prizm", player="Caleb Williams", buy_zone=150.0)
+
+
+def test_an_unreadable_price_is_not_the_same_as_above_every_band():
+    """They were the same value, so the report printed "above every price
+    band you set" about a card whose price it did not know -- a price claim
+    made out of an unknown."""
+    unknown = targets.match_target(_target(), player="Caleb Williams", total_cost=None)
+    above = targets.match_target(_target(), player="Caleb Williams", total_cost=9999.0)
+    assert unknown.label != above.label
+    assert unknown.label == "PRICE UNKNOWN"
+    assert above.label == "ABOVE BUY ZONE"
+    assert unknown.price_known is False and above.price_known is True
+
+
+def test_a_priced_hit_is_still_price_known():
+    hit = targets.match_target(_target(), player="Caleb Williams", total_cost=100.0)
+    assert hit.price_known is True
+    assert hit.in_buy_zone is True
+
+
+def test_thresholds_are_inclusive_at_exactly_the_band():
+    # The <= is correct today; nothing stopped a future < from silently
+    # moving every band by a penny.
+    target = targets.TargetCard(
+        label="CW Prizm", player="Caleb Williams",
+        buy_zone=400.0, great_buy=350.0, immediate_alert=300.0,
+    )
+    for total, expected in ((300.0, "immediate_alert"), (350.0, "great_buy"), (400.0, "buy_zone")):
+        hit = targets.match_target(target, player="Caleb Williams", total_cost=total)
+        assert hit.band == expected, total
+    assert targets.match_target(target, player="Caleb Williams", total_cost=400.01).band is None
