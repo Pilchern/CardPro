@@ -355,3 +355,57 @@ def test_imap_connection_has_a_timeout():
     assert ebay_email_alerts.IMAP_TIMEOUT_SECONDS > 0
     source = inspect.getsource(ebay_email_alerts.fetch_alert_messages)
     assert "timeout=IMAP_TIMEOUT_SECONDS" in source
+
+
+class TestFailuresAreNotQuietDays:
+    """A mailbox that cannot be read must never render as a mailbox with
+    nothing in it. Both used to produce the same empty list."""
+
+    def _imap(self, search_status="OK", search_data=None, fetch_status="OK"):
+        imap = mock.MagicMock()
+        imap.__enter__.return_value = imap
+        imap.search.return_value = (search_status, search_data if search_data is not None else [b""])
+        imap.fetch.return_value = (fetch_status, [(b"1", b"From: a@b\r\n\r\nhi")])
+        return imap
+
+    def test_a_search_error_raises_rather_than_reporting_an_empty_inbox(self):
+        with mock.patch.object(ebay_email_alerts.imaplib, "IMAP4_SSL", return_value=self._imap("NO")):
+            try:
+                ebay_email_alerts.fetch_alert_messages("a@b", "pw", "ebay", 2)
+            except ebay_email_alerts.AlertFetchFailed:
+                return
+            raise AssertionError("a server error was reported as an empty inbox")
+
+    def test_a_genuinely_empty_mailbox_is_still_just_empty(self):
+        with mock.patch.object(ebay_email_alerts.imaplib, "IMAP4_SSL", return_value=self._imap("OK", [b""])):
+            assert ebay_email_alerts.fetch_alert_messages("a@b", "pw", "ebay", 2) == []
+
+    def test_a_skipped_message_is_counted_not_swallowed(self):
+        counters = {}
+        imap = self._imap("OK", [b"1 2"], fetch_status="NO")
+        with mock.patch.object(ebay_email_alerts.imaplib, "IMAP4_SSL", return_value=imap):
+            messages = ebay_email_alerts.fetch_alert_messages(
+                "a@b", "pw", "ebay", 2, counters=counters
+            )
+        assert messages == []
+        assert counters["fetch_failures"] == 2
+
+    def test_the_template_canary_is_handed_to_the_caller_not_only_logged(self):
+        counters = {}
+        imap = self._imap("OK", [b"1"])
+        with mock.patch.object(ebay_email_alerts.imaplib, "IMAP4_SSL", return_value=imap):
+            with mock.patch.object(ebay_email_alerts, "get_html_body", return_value="<html></html>"):
+                ebay_email_alerts.fetch_alert_listings("a@b", "pw", "ebay", 2, counters=counters)
+        assert "changed their email template" in counters["template_warning"]
+
+    def test_no_canary_when_listings_were_actually_extracted(self):
+        counters = {}
+        imap = self._imap("OK", [b"1"])
+        with mock.patch.object(ebay_email_alerts.imaplib, "IMAP4_SSL", return_value=imap):
+            with mock.patch.object(ebay_email_alerts, "get_html_body", return_value="<html></html>"):
+                with mock.patch.object(
+                    ebay_email_alerts, "extract_listings_from_html",
+                    return_value=[{"title": "t", "url": "u", "price": 1.0}],
+                ):
+                    ebay_email_alerts.fetch_alert_listings("a@b", "pw", "ebay", 2, counters=counters)
+        assert "template_warning" not in counters

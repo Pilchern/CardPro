@@ -206,6 +206,18 @@ def fetch_ebay_alert_active(cfg, stats) -> list:
     )
     stats.alert_emails_scanned += counters.get("messages", 0)
     stats.listings_extracted += len(items)
+    # Both of these used to exist only in a log file on a runner GitHub
+    # deletes minutes later. The template warning in particular is the alarm
+    # that says every number below it is a fabricated quiet day.
+    if counters.get("template_warning"):
+        stats.warn(counters["template_warning"])
+    if counters.get("fetch_failures"):
+        stats.warn(
+            "{} alert email(s) could not be read from the mailbox and were skipped, so "
+            "the scanned count below understates what eBay actually sent.".format(
+                counters["fetch_failures"]
+            )
+        )
 
     listings = []
     for item in items:
