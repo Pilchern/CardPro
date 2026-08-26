@@ -138,41 +138,49 @@ def test_thresholds_are_inclusive_at_exactly_the_band():
     assert targets.match_target(target, player="Caleb Williams", total_cost=400.01).band is None
 
 
-def test_a_target_with_only_one_threshold_set_uses_that_one_and_no_other():
-    # The one-line target ("any Bedard Young Guns under $200") is the common
-    # shape in config, and it leaves two of the three bands as None. A None
-    # threshold has to be skipped, not read as $0 and not read as an open
-    # band -- either way round it hands out a band you never configured.
-    target = targets.TargetCard(label="CW Prizm", player="Caleb Williams", great_buy=200.0)
-    at_the_line = targets.match_target(target, player="Caleb Williams", total_cost=200.0)
-    assert at_the_line.band == targets.BAND_GREAT
-    assert at_the_line.threshold == 200.0
-    assert at_the_line.label == "GREAT BUY"
-
-    above = targets.match_target(target, player="Caleb Williams", total_cost=200.01)
-    assert above.band is None
-    assert above.in_buy_zone is False
-    assert above.threshold is None
 
 
-def test_thresholds_written_out_of_order_are_read_in_band_order_not_price_order():
-    """Pins what happens today, which is probably NOT the intended answer.
+def test_bands_written_out_of_order_are_refused_rather_than_mislabelled():
+    """match_target walks the bands strongest-first and takes the first
+    threshold the cost clears. With the ladder inverted, a $250 card came
+    back IMMEDIATE -- the strongest band there is -- at a price the same
+    target's own buy zone calls too dear. A typo in a personal config file
+    produced a confident wrong label, which is the one outcome this project
+    ranks below an error."""
+    loaded = targets.load_targets([{
+        "label": "Inverted", "player": "Caleb Williams",
+        "buy_zone": 100.0, "great_buy": 200.0, "immediate_alert": 300.0,
+    }])
+    assert loaded == []
 
-    Bands are tried best-first and the first threshold the cost clears wins,
-    so a config with the numbers upside down (buy zone $100, immediate $300)
-    reports a $250 card as IMMEDIATE -- the strongest band you have, for a
-    price your own buy zone says is too dear. Nothing in ``load_targets``
-    checks the ordering, so a typo produces a confident wrong label rather
-    than an error. Recorded here so that fixing it is a deliberate change to
-    a failing test, not a surprise.
-    """
-    muddled = targets.TargetCard(
-        label="fat fingers", player="Caleb Williams",
-        buy_zone=100.0, great_buy=200.0, immediate_alert=300.0,
-    )
-    hit = targets.match_target(muddled, player="Caleb Williams", total_cost=250.0)
-    assert hit.band == targets.BAND_IMMEDIATE
-    assert hit.threshold == 300.0
-    # The one thing that stays true whatever order they are in: a cost above
-    # every threshold is above every band.
-    assert targets.match_target(muddled, player="Caleb Williams", total_cost=301.0).band is None
+
+def test_a_correct_ladder_loads():
+    loaded = targets.load_targets([{
+        "label": "Sane", "player": "Caleb Williams",
+        "buy_zone": 400.0, "great_buy": 350.0, "immediate_alert": 300.0,
+    }])
+    assert [t.label for t in loaded] == ["Sane"]
+
+
+def test_equal_thresholds_are_a_ladder():
+    # Setting two bands to the same number is a legitimate way to say "these
+    # two mean the same thing to me", not a typo.
+    loaded = targets.load_targets([{
+        "player": "Caleb Williams", "buy_zone": 300.0, "great_buy": 300.0,
+    }])
+    assert len(loaded) == 1
+
+
+def test_a_partial_ladder_is_fine():
+    # Leaving bands out is normal. Only the ones that are set take part.
+    loaded = targets.load_targets([
+        {"player": "Caleb Williams", "buy_zone": 400.0},
+        {"player": "Connor Bedard", "immediate_alert": 50.0, "buy_zone": 400.0},
+    ])
+    assert len(loaded) == 2
+
+
+def test_an_entry_with_no_player_is_still_skipped(caplog):
+    with caplog.at_level("WARNING"):
+        assert targets.load_targets([{"buy_zone": 100.0}]) == []
+    assert "no player" in caplog.text

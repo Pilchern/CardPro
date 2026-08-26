@@ -1397,7 +1397,7 @@ def _subject(sections, date_short: str, stats=None) -> str:
         return "{} ({})".format(_plural(targets, "target card hit"), date_short)
     if auctions:
         return "{} to review ({})".format(_plural(auctions, "auction"), date_short)
-    if getattr(stats, "warnings", None):
+    if getattr(stats, "breakage_warnings", None):
         return "CHECK THIS -- today's scan may be broken ({})".format(date_short)
     return "No opportunities today ({})".format(date_short)
 
@@ -1412,7 +1412,7 @@ def _empty_state_block(threshold_pct: float, min_savings_dollars: float, stats,
     quiet day read as the system working, with the receipts to prove it
     looked, rather than as silence or breakage.
     """
-    warnings = list(getattr(stats, "warnings", None) or [])
+    warnings = list(getattr(stats, "breakage_warnings", None) or [])
     if warnings:
         # Never assert that a quiet day is normal while something is warning
         # that the quiet is manufactured. This block used to open with "that

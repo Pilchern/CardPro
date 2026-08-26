@@ -47,7 +47,7 @@ you usually shop at, and the max rational bid is a comp median less fees
 less the margin in your config. Your own price test has already been
 applied to a target -- the hit carries the band it landed in, or says it is
 above every band you set -- so a second opinion from this module would only
-overrule you with your own settings. The bidding-room rule is the case where that
+overrule you with your own settings. The bidding-room rule is where that
 bites hardest: on a target with a $400 buy zone the rational ceiling sits
 nearer $235, because it is a resale-margin figure and a target is
 explicitly allowed to be a bad flip ("you're paying up for something you

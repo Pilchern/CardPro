@@ -10,6 +10,7 @@ mocked.
 """
 from __future__ import annotations
 
+import argparse
 import importlib
 import json
 import logging
@@ -29,6 +30,7 @@ from src import (
     main as main_module,
     matcher,
     observability,
+    price_history,
     reasons,
 )
 from src.models import Listing
@@ -854,3 +856,137 @@ class TestOneCardHasOneAcquisitionCost:
         with_tax = self._evaluated(8.0)
         without = self._evaluated(0.0)
         assert with_tax.dollar_savings < without.dollar_savings
+
+
+# ---------------------------------------------------------------------------
+# run() end to end
+#
+# Everything above tests a stage. Nothing tested the function that wires the
+# stages together -- the one that reads the inbox, values, dedupes, renders,
+# emails and writes state, and the only one a production run actually calls.
+# The two project fixtures at the top of this file existed for it and had no
+# callers.
+# ---------------------------------------------------------------------------
+
+
+class TestRunEndToEnd:
+    def _args(self, dry_run=False):
+        return argparse.Namespace(dry_run=dry_run)
+
+    def _wire(self, main_module, monkeypatch, items, sent):
+        """Fake the two network edges -- IMAP in, SMTP out -- and nothing
+        else. Everything between them is the real pipeline."""
+        def fake_fetch(gmail_address, gmail_app_password, sender_contains,
+                       lookback_days, mailbox=None, counters=None):
+            if counters is not None:
+                counters["messages"] = 1 if items else 0
+            return items
+
+        monkeypatch.setattr(main_module.ebay_email_alerts, "fetch_alert_listings", fake_fetch)
+        monkeypatch.setattr(
+            main_module.emailer, "send_email",
+            lambda subject, body, *rest: sent.append((subject, body)),
+        )
+
+    def test_a_run_reads_the_inbox_and_sends_one_email(self, project_with_alerts_enabled, monkeypatch):
+        sent = []
+        self._wire(
+            project_with_alerts_enabled, monkeypatch,
+            [alert_item("https://www.ebay.com/itm/1", 25.0)], sent,
+        )
+        project_with_alerts_enabled.run(self._args())
+        assert len(sent) == 1
+        subject, body = sent[0]
+        assert subject.startswith("[Card Deals]")
+        assert "CARDPRO DAILY" in body
+
+    def test_state_is_written_after_the_email_not_before(self, project_with_alerts_enabled,
+                                                         monkeypatch, tmp_path):
+        # If SMTP fails, nothing may be marked as reported-when-it-was-not.
+        def explode(*_args, **_kwargs):
+            raise RuntimeError("smtp down")
+
+        main_module = project_with_alerts_enabled
+        self._wire(main_module, monkeypatch, [alert_item("https://www.ebay.com/itm/1", 25.0)], [])
+        monkeypatch.setattr(main_module.emailer, "send_email", explode)
+        with pytest.raises(RuntimeError):
+            main_module.run(self._args())
+        assert not (tmp_path / "data" / "seen_listings.json").exists()
+
+    def test_a_dry_run_writes_no_state_and_sends_nothing(self, project_with_alerts_enabled,
+                                                         monkeypatch, tmp_path, capsys):
+        sent = []
+        self._wire(
+            project_with_alerts_enabled, monkeypatch,
+            [alert_item("https://www.ebay.com/itm/1", 25.0)], sent,
+        )
+        project_with_alerts_enabled.run(self._args(dry_run=True))
+        assert sent == []
+        assert "CARDPRO DAILY" in capsys.readouterr().out
+        assert not (tmp_path / "data" / "ebay_alert_price_history.json").exists()
+
+    def test_an_empty_inbox_still_sends_a_report(self, project_with_alerts_enabled, monkeypatch):
+        # "Never go silent" is a design principle, not a nicety.
+        sent = []
+        self._wire(project_with_alerts_enabled, monkeypatch, [], sent)
+        project_with_alerts_enabled.run(self._args())
+        assert len(sent) == 1
+        assert "NOTHING CLEARED THE BAR TODAY." in sent[0][1]
+
+    def test_the_corpus_survives_a_second_run(self, project_with_alerts_enabled,
+                                              monkeypatch, tmp_path):
+        main_module = project_with_alerts_enabled
+        corpus = tmp_path / "data" / "ebay_alert_price_history.json"
+
+        self._wire(main_module, monkeypatch, [alert_item("https://www.ebay.com/itm/1", 25.0)], [])
+        main_module.run(self._args())
+        first = json.loads(corpus.read_text())
+
+        self._wire(main_module, monkeypatch, [alert_item("https://www.ebay.com/itm/2", 30.0)], [])
+        main_module.run(self._args())
+        second = json.loads(corpus.read_text())
+
+        # The second day must ADD to the corpus, not replace it. This is the
+        # shape of the failure that would silently reset months of history.
+        first_ids = {o["id"] for rows in first.values() for o in rows}
+        second_ids = {o["id"] for rows in second.values() for o in rows}
+        assert first_ids and first_ids < second_ids
+
+    def test_a_corrupt_corpus_aborts_the_run_and_is_left_alone(self, project_with_alerts_enabled,
+                                                               monkeypatch, tmp_path):
+        # The whole point of raising instead of starting fresh: the run stops
+        # before save() can replace the unreadable file with one day of data,
+        # and before the workflow can commit that over it.
+        main_module = project_with_alerts_enabled
+        corpus = tmp_path / "data" / "ebay_alert_price_history.json"
+        corpus.parent.mkdir(parents=True, exist_ok=True)
+        corpus.write_text("{not valid json")
+
+        sent = []
+        self._wire(main_module, monkeypatch, [alert_item("https://www.ebay.com/itm/1", 25.0)], sent)
+        with pytest.raises(price_history.CorruptCorpus):
+            main_module.run(self._args())
+        assert corpus.read_text() == "{not valid json"
+        assert sent == []
+
+    def test_the_template_canary_reaches_the_email(self, project_with_alerts_enabled, monkeypatch):
+        # The highest-value alarm in the system, and it used to exist only in
+        # a log file on a runner that gets deleted.
+        main_module = project_with_alerts_enabled
+
+        def fake_fetch(*_args, counters=None, **_kwargs):
+            if counters is not None:
+                counters["messages"] = 14
+                counters["template_warning"] = "eBay changed their email template"
+            return []
+
+        sent = []
+        monkeypatch.setattr(main_module.ebay_email_alerts, "fetch_alert_listings", fake_fetch)
+        monkeypatch.setattr(
+            main_module.emailer, "send_email",
+            lambda subject, body, *rest: sent.append((subject, body)),
+        )
+        main_module.run(self._args())
+        subject, body = sent[0]
+        assert "CHECK THIS" in subject
+        assert "eBay changed their email template" in body

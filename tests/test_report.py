@@ -1775,7 +1775,8 @@ class TestAWarnedRunIsNotAQuietDay:
 
         stats = observability.RunStats(alert_emails_scanned=14)
         stats.warn(
-            "Read 14 eBay alert email(s) and extracted 0 listings from all of them."
+            "Read 14 eBay alert email(s) and extracted 0 listings from all of them.",
+            broken=True,
         )
         return stats
 
@@ -1791,6 +1792,20 @@ class TestAWarnedRunIsNotAQuietDay:
         assert "SOMETHING IS WRONG WITH TODAY'S SCAN." in body
         assert "That is a normal outcome, not a failure" not in body
         assert "Do not read the zeroes as a quiet market" in body
+
+    def test_a_notable_but_normal_warning_does_not_cry_wolf(self):
+        # "No comp bucket is strong enough to flag today" is TRUE ON MOST
+        # DAYS right now. An alarm that fires every morning is not an alarm,
+        # so only warn(broken=True) reaches the subject and the opening line.
+        from src import observability
+
+        stats = observability.RunStats()
+        stats.warn("No comp bucket anywhere is strong enough to declare a deal from.")
+        body = flat(body_of([], stats=stats))
+        assert "SOMETHING IS WRONG WITH TODAY'S SCAN." not in body
+        assert "That is a normal outcome, not a failure" in body
+        assert "CHECK THIS" not in report.build_report([], 30, RUN_DATE, stats=stats)[0]
+        assert "No comp bucket anywhere is strong enough" in body  # still in the footer
 
     def test_an_unwarned_quiet_day_still_reads_as_normal(self):
         from src import observability

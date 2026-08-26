@@ -5,8 +5,9 @@ Two separable jobs, tested separately:
 * **What is email material** (``select``) -- the price ceiling, the
   exception for an exceptional dearer card, bidding room on auctions. The
   interesting cases are all the ones where a rule must NOT fire: a target
-  hit above the ceiling, an auction with no computable ceiling, a big
-  discount off a comp the engine won't stand behind.
+  hit above the ceiling or past its auction ceiling, an auction with no
+  computable ceiling, a big discount off a comp the engine won't stand
+  behind.
 * **How long the email is** (``trim``) -- the two-pass budget. The point of
   the first pass is that a crowded section cannot starve the sections below
   it, so that is what most of these assert.
@@ -133,6 +134,18 @@ def test_unreadable_price_is_left_out_and_counted():
     assert focus.omission_reason(listing, RULES) == focus.PRICE_UNKNOWN
 
 
+def test_target_hit_with_no_readable_price_is_still_shown():
+    """The rule above is right for every other card and wrong for this one.
+    "A copy of the card you asked for by name is listed right now" is worth
+    the eight lines on its own, and targets.TargetHit.price_known exists so
+    the report can say that instead of inventing a cost -- a sentence focus
+    would make unreachable by dropping the listing here."""
+    listing = make_listing(
+        price=None, pct_under_market=None, dollar_savings=None, target_hit=object()
+    )
+    assert focus.omission_reason(listing, RULES) is None
+
+
 # ---------------------------------------------------------------------------
 # bidding room
 # ---------------------------------------------------------------------------
@@ -187,6 +200,17 @@ def test_bidding_room_rule_can_be_turned_off():
 
 def test_fixed_price_listing_is_never_judged_on_bidding_room():
     listing = make_listing(price=35.0, max_rational_bid=1.0, listing_type="fixed_price")
+    assert focus.omission_reason(listing, RULES) is None
+
+
+def test_target_hit_on_an_auction_bid_past_the_max_is_still_shown():
+    """The max rational bid is a resale-margin figure -- market value less
+    fees less the margin in your config -- and a target is explicitly allowed
+    to be a bad flip. On the shipped example target ($400 buy zone) that
+    ceiling lands near $235, so applying it to targets would hide the card
+    you asked for by name across most of the range you said you would pay
+    for it, and the footer would report it as an auction you cannot win."""
+    listing = make_auction(price=95.0, max_rational_bid=74.0, target_hit=object())
     assert focus.omission_reason(listing, RULES) is None
 
 
@@ -371,6 +395,48 @@ def test_a_listing_that_is_both_kept_and_omitted_counts_as_kept():
     selection = focus.select(deals, RULES)
     assert ids(selection.kept) == ["x"]
     assert selection.omitted_total == 0
+
+
+def test_two_different_cards_failing_the_same_rule_are_counted_twice():
+    """The dedupe is by listing id, not by reason. Collapsing per reason
+    would turn "9 listings above your ceiling" into "1" and leave the footer
+    quietly understating what the email is not showing you."""
+    dear = dict(price=500.0, pct_under_market=10.0, dollar_savings=50.0)
+    selection = focus.select([make_listing(id="a", **dear), make_listing(id="b", **dear)], RULES)
+    assert selection.omitted[focus.ABOVE_CEILING] == 2
+    assert selection.omitted_total == 2
+
+
+def test_a_kept_copy_wins_however_late_in_the_run_it_arrives():
+    """Three saved searches, one eBay item, two of the copies failing
+    different rules and the good one arriving last. The card is being shown,
+    so the footer must not also say a card was left out -- and which copy the
+    scan happened to see first must not decide that."""
+    selection = focus.select(
+        [
+            make_listing(id="same-card", price=500.0, pct_under_market=10.0, dollar_savings=50.0),
+            make_auction(id="same-card", price=35.0, max_rational_bid=30.0),
+            make_listing(id="same-card", price=20.0),
+        ],
+        RULES,
+    )
+    assert ids(selection.kept) == ["same-card"]
+    assert selection.omitted_total == 0
+    assert selection.omitted[focus.ABOVE_CEILING] == 0
+    assert selection.omitted[focus.NO_BIDDING_ROOM] == 0
+
+
+def test_the_reason_reported_for_a_repeated_card_is_the_first_one_seen():
+    """One card, one sentence in the footer, and the same sentence every
+    run. The footer prints one line per reason bucket naming the setting that
+    would bring those listings back, so which bucket a card lands in is what
+    the reader is told to change -- it cannot depend on scan order twice
+    over."""
+    auction = make_auction(id="same-card", price=35.0, max_rational_bid=30.0)
+    dear = make_listing(id="same-card", price=500.0, pct_under_market=10.0, dollar_savings=50.0)
+    selection = focus.select([auction, dear], RULES)
+    assert selection.omitted[focus.NO_BIDDING_ROOM] == 1
+    assert selection.omitted[focus.ABOVE_CEILING] == 0
 
 
 def test_one_card_omitted_for_two_different_reasons_is_counted_once():

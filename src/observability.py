@@ -74,12 +74,29 @@ class RunStats:
 
     rejections: reasons.RejectionLog = field(default_factory=reasons.RejectionLog)
     warnings: list = field(default_factory=list)
+    #: The subset of `warnings` that mean the run may not have worked --
+    #: see warn(broken=True). Only these change the subject line.
+    breakage_warnings: list = field(default_factory=list)
 
-    def warn(self, message: str) -> None:
+    def warn(self, message: str, *, broken: bool = False) -> None:
         """A run-level concern worth surfacing in the email, not just the
         log file. Use sparingly -- a footer nobody reads is worse than no
-        footer."""
+        footer.
+
+        ``broken=True`` means "the run itself may not have worked, do not
+        trust the numbers below" -- eBay changed its email template, messages
+        could not be read. Those change the subject line and the top of the
+        email.
+
+        Everything else is a notable-but-normal state: no comp bucket is
+        strong enough to flag today, a gate has been configured off. Those
+        belong in the footer and nowhere else. The distinction is the whole
+        value of the alarm: "no flag-eligible bucket" is true on most days
+        right now, and an alarm that fires every morning is not an alarm.
+        """
         self.warnings.append(message)
+        if broken:
+            self.breakage_warnings.append(message)
 
     # --- derived rates -----------------------------------------------------
 
