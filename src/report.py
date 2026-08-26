@@ -1491,6 +1491,48 @@ def _craigslist_section(craigslist_links) -> str:
     return "\n".join(lines)
 
 
+def _sold_comp_requests_section(requests, unidentified: int = 0) -> str:
+    """Where ten minutes of your time would buy the most valuation.
+
+    Every price in the corpus is an asking price, which is why no comp in
+    this report reaches "high" confidence. The only fix available without
+    paid data or scraping is you looking a card up on 130point and typing
+    the number in. That does not scale, so this picks the handful of lookups
+    with the best return: the identities the most listings are currently
+    waiting on -- see src/comp_requests.py.
+
+    Prints the unidentified count alongside, because the two numbers say
+    different things about what to do next. If the suggestions are thin and
+    the unidentified count is large, data entry is not the bottleneck --
+    title parsing is, and no amount of typing will fix it.
+    """
+    if not requests and not unidentified:
+        return ""
+
+    lines = ["Sold comps worth adding (130point.com -> python -m scripts.add_sold_comp):"]
+    for request in requests:
+        lines.append(
+            "  {} ({} {}) -- {} waiting, {} still needed".format(
+                request.player,
+                request.card_label,
+                request.market_label,
+                _plural(request.listings_waiting, "listing"),
+                _plural(request.still_needed, "sale"),
+            )
+        )
+        lines.append('      search: "{}"'.format(request.search_query))
+        if request.example_url:
+            lines.append("      example: {}".format(request.example_url))
+    if unidentified:
+        lines.append(
+            "  ({} listing(s) could not be identified precisely enough for any sold "
+            "comp to match -- those need better title parsing, not more data.)".format(
+                unidentified
+            )
+        )
+    return "\n".join(lines)
+
+
 def _search_slice(player: str, query: str) -> str:
     """The distinguishing part of a suggested query -- "Caleb Williams PSA 10"
     against player "Caleb Williams" is the slice "PSA 10". That is what makes
@@ -1700,6 +1742,8 @@ def build_report(
     immediate_min_discount_pct: float = DEFAULT_IMMEDIATE_MIN_DISCOUNT_PCT,
     ending_soon_hours: float = DEFAULT_ENDING_SOON_HOURS,
     focus_rules: Optional[focus.FocusRules] = None,
+    comp_requests_list=(),
+    unidentified_listings: int = 0,
 ) -> tuple:
     """Returns ``(subject, body)`` -- a plain-text email, no HTML.
 
@@ -1710,6 +1754,12 @@ def build_report(
 
     ``stats`` is an ``observability.RunStats``; ``search_suggestions`` is
     ``{player: [search_terms.SuggestedSearch, ...]}``.
+
+    ``comp_requests_list`` (``comp_requests.CompRequest``) and
+    ``unidentified_listings`` drive the "sold comps worth adding" footer --
+    where a few minutes on 130point would buy the most valuation. Both
+    default to nothing, so a caller that doesn't compute them just gets no
+    such section.
 
     ``focus_rules`` (a ``focus.FocusRules``) decides what is email material
     and how long the email may be -- the price ceiling, the exception for a
@@ -1726,6 +1776,7 @@ def build_report(
     footer = _join_blocks(
         [
             _health_footer(stats),
+            _sold_comp_requests_section(comp_requests_list, unidentified_listings),
             _craigslist_section(craigslist_links),
             _search_coverage_section(search_suggestions),
         ]

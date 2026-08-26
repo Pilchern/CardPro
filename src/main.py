@@ -46,6 +46,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src import (
     card_identity,
+    comp_requests,
     comps,
     craigslist_links,
     dedupe,
@@ -134,6 +135,7 @@ def _build_listing(cfg, *, listing_id, source, title, price, url, players, shipp
         card_type=grade_info.card_type,
         grader=grade_info.grader,
         grade=grade_info.grade,
+        qualifier=grade_info.qualifier,
         player_tier=cfg.player_tiers.get(matched[0], "legend"),
         is_rookie_card=matcher.detect_rookie_card(title),
         card_identity=identity,
@@ -818,6 +820,10 @@ def run(args: argparse.Namespace) -> None:
         immediate_min_discount_pct=cfg.immediate_alert_min_discount_pct,
         ending_soon_hours=cfg.auction_ending_soon_hours,
         focus_rules=cfg.focus_rules,
+        comp_requests_list=comp_requests.build_requests(
+            listings, sold, min_comps_required=cfg.valuation_min_comps_required
+        ),
+        unidentified_listings=comp_requests.unidentified_count(listings),
     )
     subject = f"{cfg.email_subject_prefix} {subject}"
 

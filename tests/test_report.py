@@ -1602,3 +1602,77 @@ def test_empty_state_does_not_claim_completeness_under_focus():
     assert "Everything CardPro did see" not in focused
     assert "The best of what CardPro did see" in focused
     assert "Everything CardPro did see" in flat(body_of(deals))
+
+
+# ---------------------------------------------------------------------------
+# "Sold comps worth adding" -- where a few minutes of your time buys the most
+# ---------------------------------------------------------------------------
+
+
+def a_request(**overrides):
+    from src.comp_requests import CompRequest
+
+    defaults = dict(
+        player="Caleb Williams",
+        year=2024,
+        set_name="Prizm",
+        parallel="Silver Prizm",
+        market=("graded", "PSA", "10", None),
+        listings_waiting=6,
+        sold_on_file=1,
+        still_needed=2,
+        example_url="https://www.ebay.com/itm/123",
+    )
+    defaults.update(overrides)
+    return CompRequest(**defaults)
+
+
+class TestSoldCompRequestsSection:
+    def test_nothing_to_ask_for_prints_nothing(self):
+        assert report._sold_comp_requests_section([], 0) == ""
+
+    def test_names_the_card_the_market_and_the_cost_of_the_ask(self):
+        text = report._sold_comp_requests_section([a_request()], 0)
+        assert "Caleb Williams (2024 Prizm Silver Prizm PSA 10)" in text
+        assert "6 listings waiting" in text
+        assert "2 sales still needed" in text
+
+    def test_gives_a_query_that_can_be_pasted_straight_in(self):
+        text = report._sold_comp_requests_section([a_request()], 0)
+        assert 'search: "2024 Prizm Caleb Williams Silver Prizm PSA 10"' in text
+
+    def test_points_at_the_tool_that_records_the_answer(self):
+        # A suggestion with no way to act on it is a complaint.
+        text = report._sold_comp_requests_section([a_request()], 0)
+        assert "130point.com" in text
+        assert "scripts.add_sold_comp" in text
+
+    def test_singular_ask_is_not_written_as_plural(self):
+        text = report._sold_comp_requests_section(
+            [a_request(listings_waiting=1, still_needed=1)], 0
+        )
+        assert "1 listing waiting" in text
+        assert "1 sale still needed" in text
+
+    def test_an_example_listing_is_optional(self):
+        assert "example:" not in report._sold_comp_requests_section(
+            [a_request(example_url=None)], 0
+        )
+
+    def test_unidentified_listings_are_reported_as_a_different_problem(self):
+        # The whole point of printing this number: it says data entry is NOT
+        # the bottleneck, parsing is. Without it the section reads as though
+        # typing in sold prices would fix everything.
+        text = report._sold_comp_requests_section([], 412)
+        assert "412 listing(s) could not be identified" in text
+        assert "not more data" in text
+
+    def test_the_section_appears_in_the_assembled_report(self):
+        body = report.build_report(
+            [], 30, RUN_DATE, comp_requests_list=[a_request()], unidentified_listings=9
+        )[1]
+        assert "Sold comps worth adding" in body
+        assert "Caleb Williams (2024 Prizm Silver Prizm PSA 10)" in body
+
+    def test_a_caller_that_does_not_compute_them_gets_no_section(self):
+        assert "Sold comps worth adding" not in report.build_report([], 30, RUN_DATE)[1]

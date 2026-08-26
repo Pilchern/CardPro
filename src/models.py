@@ -20,6 +20,10 @@ class Listing:
     card_type: str  # "graded" | "raw"
     grader: Optional[str] = None  # PSA / BGS / SGC / CSG
     grade: Optional[str] = None  # e.g. "9", "9.5"
+    # Grade qualifier printed on the label ("OC" off-centre, "MK" marked...).
+    # Part of the market key, not decoration: a PSA 8 OC trades well below a
+    # clean PSA 8, so comps must not pool them -- see comps.market_key.
+    qualifier: Optional[str] = None
     title_truncated: bool = False  # True if the grade might be wrong -- see ebay_email_alerts.looks_truncated
     player_tier: str = "legend"  # "legend" | "young_core" -- display tag only, see config/watchlist.json
     is_rookie_card: bool = False  # keyword match on "RC"/"Rookie" -- see matcher.detect_rookie_card
