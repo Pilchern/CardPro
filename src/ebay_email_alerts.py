@@ -54,6 +54,14 @@ from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
+#: Socket timeout for every IMAP operation. Without one the socket blocks
+#: forever: a server that accepts the connection and then stalls mid-FETCH
+#: raises nothing, so main's failure-notification handler never fires and the
+#: job hangs until GitHub's six-hour cap kills it. That is the only path in
+#: the system that produces no report AND no failure email -- the one place
+#: "never go silent" genuinely did not hold.
+IMAP_TIMEOUT_SECONDS = 60
+
 IMAP_HOST = "imap.gmail.com"
 IMAP_PORT = 993
 
@@ -115,7 +123,7 @@ def fetch_alert_messages(
     -- see DEFAULT_MAILBOX.
     """
     messages: list[Message] = []
-    with imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT) as imap:
+    with imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT, timeout=IMAP_TIMEOUT_SECONDS) as imap:
         imap.login(gmail_address, gmail_app_password)
         # imaplib doesn't quote the mailbox name itself -- a name containing
         # a space (like the default "[Gmail]/All Mail") gets sent to the

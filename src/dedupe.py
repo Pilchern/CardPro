@@ -15,15 +15,31 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+class CorruptSeenListings(Exception):
+    """seen_listings.json exists but could not be read.
+
+    Same reasoning as price_history.CorruptCorpus, milder consequence:
+    starting fresh here re-reports every listing you have already seen as
+    though it were new, and then commits that reset over the real file. An
+    email full of yesterday's deals is a trust problem, so this fails loudly
+    too rather than quietly resetting.
+    """
+
+
 def load_seen(path: Path) -> dict:
     if not path.exists():
         return {}
     try:
         with open(path) as f:
             return json.load(f)
-    except json.JSONDecodeError:
-        logger.warning("seen_listings.json is corrupt, starting fresh (old file left in place)")
-        return {}
+    except json.JSONDecodeError as exc:
+        raise CorruptSeenListings(
+            "{} exists but is not valid JSON ({}). Refusing to continue, because "
+            "the next save would replace it and every listing already reported "
+            "would come back as new. Repair or move the file, then re-run.".format(
+                path, exc
+            )
+        ) from exc
 
 
 def save_seen(path: Path, seen: dict) -> None:

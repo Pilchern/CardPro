@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
 
+import pytest
+
 from src import price_history
 
 
@@ -161,9 +163,45 @@ def test_load_missing_file_returns_empty_dict(tmp_path):
     assert price_history.load(tmp_path / "does_not_exist.json") == {}
 
 
-def test_load_corrupt_file_returns_empty_dict_and_does_not_raise(tmp_path):
+def test_load_corrupt_file_refuses_rather_than_starting_fresh(tmp_path):
+    # It used to return {} with a warning saying the old file was left in
+    # place. It was -- until save() replaced it with the day's observations
+    # and the workflow committed the wipe. Failing here aborts the run, so
+    # main emails the traceback and nothing gets committed over the file.
     path = tmp_path / "corrupt.json"
     path.write_text("{not valid json")
+    with pytest.raises(price_history.CorruptCorpus):
+        price_history.load(path)
+
+
+def test_save_refuses_to_replace_a_real_corpus_with_an_empty_one(tmp_path):
+    path = tmp_path / "history.json"
+    history = {}
+    price_history.record(history, "Caleb Williams", "raw", 25.0, "2026-08-21", "id-1")
+    price_history.save(path, history)
+
+    with pytest.raises(price_history.CorruptCorpus):
+        price_history.save(path, {})
+    assert price_history.load(path) == history
+
+
+def test_save_allows_a_prune_that_shrinks_but_does_not_empty(tmp_path):
+    # Pruning legitimately removes observations. Second-guessing it here
+    # would put the retention policy in two places.
+    path = tmp_path / "history.json"
+    history = {}
+    for i in range(3):
+        price_history.record(history, "Caleb Williams", "raw", 25.0, "2026-08-21", "id-%d" % i)
+    price_history.save(path, history)
+
+    smaller = {"Caleb Williams|raw": history["Caleb Williams|raw"][:1]}
+    price_history.save(path, smaller)
+    assert price_history.load(path) == smaller
+
+
+def test_save_of_an_empty_corpus_is_fine_when_there_is_nothing_to_lose(tmp_path):
+    path = tmp_path / "history.json"
+    price_history.save(path, {})
     assert price_history.load(path) == {}
 
 

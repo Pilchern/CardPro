@@ -16,6 +16,11 @@ logger = logging.getLogger(__name__)
 SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 465
 
+#: Socket timeout, for the same reason as ebay_email_alerts.IMAP_TIMEOUT_SECONDS:
+#: a stalled SMTP socket with no timeout hangs the run past the point where
+#: anything can report the failure.
+SMTP_TIMEOUT_SECONDS = 30
+
 
 def send_email(subject: str, body: str, gmail_address: str, gmail_app_password: str, to_address: str) -> None:
     msg = EmailMessage()
@@ -24,7 +29,7 @@ def send_email(subject: str, body: str, gmail_address: str, gmail_app_password: 
     msg["To"] = to_address
     msg.set_content(body)
 
-    with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT) as server:
+    with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=SMTP_TIMEOUT_SECONDS) as server:
         server.login(gmail_address, gmail_app_password)
         server.send_message(msg)
 

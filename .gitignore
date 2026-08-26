@@ -3,7 +3,7 @@ __pycache__/
 *.pyc
 .venv/
 venv/
-logs/*.log
+logs/*.log*  # .log, and the rotated .log.1 .. .log.5 -- they carry titles, prices and your email address
 .DS_Store
 
 # data/seen_listings.json and data/ebay_alert_price_history.json are

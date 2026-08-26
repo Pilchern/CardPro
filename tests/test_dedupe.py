@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
 
+import pytest
+
 from src import dedupe
 
 
@@ -42,3 +44,16 @@ def test_prune_old_keeps_recent_entries():
     seen = {"id1": {"price": 50, "first_seen": "2026-08-09", "last_flagged": "2026-08-09"}}
     pruned = dedupe.prune_old(seen, max_age_days=120, today=datetime(2026, 8, 10, tzinfo=timezone.utc))
     assert "id1" in pruned
+
+
+def test_missing_seen_file_is_the_normal_first_run(tmp_path):
+    assert dedupe.load_seen(tmp_path / "nope.json") == {}
+
+
+def test_corrupt_seen_file_refuses_rather_than_resetting(tmp_path):
+    # Starting fresh here means every listing already reported comes back as
+    # new tomorrow -- and then that reset gets committed over the real file.
+    path = tmp_path / "seen.json"
+    path.write_text("{not valid json")
+    with pytest.raises(dedupe.CorruptSeenListings):
+        dedupe.load_seen(path)

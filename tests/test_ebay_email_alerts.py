@@ -1,3 +1,4 @@
+import inspect
 import re
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -344,3 +345,13 @@ def test_listing_type_does_not_leak_between_adjacent_listings():
     assert auction["bid_count"] == 3
     assert fixed["listing_type"] == ebay_email_alerts.LISTING_TYPE_FIXED
     assert fixed["bid_count"] is None
+
+
+def test_imap_connection_has_a_timeout():
+    """Without one, a server that stalls mid-FETCH hangs the run past the
+    point where anything can report it: no exception, so main's failure
+    handler never fires, and the job burns until GitHub's six-hour cap. It
+    is the only path where "never go silent" did not hold."""
+    assert ebay_email_alerts.IMAP_TIMEOUT_SECONDS > 0
+    source = inspect.getsource(ebay_email_alerts.fetch_alert_messages)
+    assert "timeout=IMAP_TIMEOUT_SECONDS" in source

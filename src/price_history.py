@@ -33,6 +33,10 @@ itself; older observations recorded before these fields existed simply
 don't have them, and fall back to matching only at the price_tier level.
 
 Plain JSON on disk, same pattern as dedupe.py -- easy to open and inspect.
+
+Reading a corpus that exists but cannot be parsed RAISES rather than starting
+fresh -- see CorruptCorpus. That is the difference between losing a day and
+losing six months.
 """
 from __future__ import annotations
 
@@ -47,18 +51,68 @@ from src import comps
 logger = logging.getLogger(__name__)
 
 
+class CorruptCorpus(Exception):
+    """The corpus file exists but could not be read.
+
+    Raised rather than swallowed, and this is the whole point. The previous
+    behaviour returned {} with a warning saying "old file left in place" --
+    which was true for about thirty seconds, until save() atomically replaced
+    the unreadable file with the day's ~400 observations and the workflow
+    committed the wipe to the repo. Months of corpus, gone, with the only
+    evidence a log line on a runner GitHub deletes minutes later.
+
+    Failing loudly instead means the run aborts, main's handler emails the
+    traceback, and the workflow's `git diff --cached --quiet` finds nothing
+    to commit. The file survives to be repaired by hand.
+    """
+
+
 def load(path: Path) -> dict:
+    """The stored corpus. A missing file is the normal first run and gives {}.
+
+    An UNREADABLE file is not normal and raises -- see CorruptCorpus.
+    """
     if not path.exists():
         return {}
     try:
         with open(path) as f:
             return json.load(f)
-    except json.JSONDecodeError:
-        logger.warning("%s is corrupt, starting fresh (old file left in place)", path)
-        return {}
+    except json.JSONDecodeError as exc:
+        raise CorruptCorpus(
+            "{} exists but is not valid JSON ({}). Refusing to continue, because "
+            "the next save would overwrite it with today's data alone. Repair or "
+            "move the file, then re-run.".format(path, exc)
+        ) from exc
+
+
+def _observation_count(history: dict) -> int:
+    return sum(len(entries) for entries in history.values() if isinstance(entries, list))
 
 
 def save(path: Path, history: dict) -> None:
+    """Write the corpus, unless doing so would empty a corpus that has data.
+
+    Nothing in the pipeline has a legitimate reason to reduce the corpus to
+    nothing: record() only appends, and prune_old() drops observations past
+    the retention window, which cannot empty a corpus that is being written
+    to daily. So an empty document arriving here means something upstream
+    lost the data, and writing it would turn a recoverable in-memory bug into
+    an unrecoverable on-disk one.
+
+    A shrink that is not a wipe is allowed through deliberately: that is what
+    pruning looks like, and second-guessing it here would mean encoding the
+    retention policy in two places.
+    """
+    if not _observation_count(history) and path.exists():
+        existing = _observation_count(load(path))
+        if existing:
+            raise CorruptCorpus(
+                "Refusing to overwrite {} ({} observation(s)) with an empty corpus. "
+                "Nothing in the pipeline empties the corpus, so this is a bug "
+                "upstream, and writing it would make the loss permanent.".format(
+                    path, existing
+                )
+            )
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_suffix(".json.tmp")
     with open(tmp_path, "w") as f:
