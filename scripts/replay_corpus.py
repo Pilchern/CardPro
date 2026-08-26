@@ -100,6 +100,105 @@ def replay_legacy(observations, min_comps):
     return table, levels, flagged
 
 
+
+#: The fields each flag-eligible comp level requires, narrowest first. Kept
+#: in the same order as comps._key_exact / comps._key_same_card so this stays
+#: a description of the real engine rather than a second opinion about it.
+IDENTITY_FIELDS = ("year", "set_name", "parallel", "card_number")
+LEVEL_REQUIREMENTS = {
+    "exact": ("year", "set_name", "parallel", "card_number"),
+    "same_card": ("year", "set_name", "parallel"),
+    "same_set": ("year", "set_name"),
+}
+
+
+def _resolved(obs, field):
+    value = obs.get(field)
+    return value is not None and str(value).strip() != ""
+
+
+def _first_missing(obs, fields):
+    """The narrowest field that stops this observation forming a key.
+
+    Reported one-per-observation rather than as independent per-field rates,
+    because the fields are not independent: a listing missing both set and
+    parallel is one problem to fix, not two, and fixing parallel alone would
+    move it nowhere. Attributing each blocked listing to its FIRST blocker
+    is what makes this list a work queue instead of a tally.
+    """
+    for field in fields:
+        if not _resolved(obs, field):
+            return field
+    return None
+
+
+def report_identity_coverage(observations, min_comps):
+    """The identity KPI from docs/CARDPRO_2_AUDIT.md section 8.
+
+    The engine can only declare a deal at `exact` or `same_card`, and both
+    need a complete identity key AND enough other listings sharing it. A
+    valuation engine that is perfectly correct still reports nothing if
+    identity resolution never gets that far -- which is exactly the state
+    this corpus is in. So measure both halves separately: how often the key
+    can be BUILT, and how often a built key lands in a bucket deep enough
+    to be usable.
+    """
+    total = len(observations)
+    if not total:
+        print("--- identity coverage ---")
+        print("  (no observations)")
+        return
+
+    print("--- identity coverage (KPI: CARDPRO_2_AUDIT.md section 8) ---")
+    print(f"  observations: {total}")
+
+    print("  field resolved:")
+    for field in IDENTITY_FIELDS + ("grader",):
+        n = sum(1 for o in observations if _resolved(o, field))
+        print(f"    {field:<12s} {n:>5d}  {n / total:>6.1%}")
+
+    print("  complete key for level:")
+    for level, fields in LEVEL_REQUIREMENTS.items():
+        n = sum(1 for o in observations if _first_missing(o, fields) is None)
+        print(f"    {level:<12s} {n:>5d}  {n / total:>6.1%}")
+
+    # Which single missing field is holding each listing back, at the
+    # narrowest level that could still flag a deal. This is the work queue.
+    blockers = collections.Counter(
+        _first_missing(o, LEVEL_REQUIREMENTS["same_card"]) or "(key complete)"
+        for o in observations
+    )
+    print("  first blocker for a flag-eligible (same_card) key:")
+    for field, n in blockers.most_common():
+        print(f"    {field:<14s} {n:>5d}  {n / total:>6.1%}")
+
+    # Even a complete key is worthless alone: it needs company. A bucket
+    # needs min_comps OTHER listings before the engine will use it, so count
+    # observations whose bucket is that deep -- the real achievable ceiling.
+    for level, fields in (("same_card", LEVEL_REQUIREMENTS["same_card"]),
+                          ("exact", LEVEL_REQUIREMENTS["exact"])):
+        buckets = collections.Counter()
+        keyed = []
+        for obs in observations:
+            if _first_missing(obs, fields) is not None:
+                continue
+            market = comps.market_key(
+                obs.get("card_type"), obs.get("grader"), obs.get("grade"), obs.get("qualifier")
+            )
+            if market is None:
+                continue
+            key = (obs["player"], market) + tuple(str(obs.get(f)) for f in fields)
+            buckets[key] += 1
+            keyed.append(key)
+        usable = sum(1 for key in keyed if buckets[key] > min_comps)
+        print(
+            f"  {level}: {len(buckets)} distinct keys, "
+            f"{usable} observations ({usable / total:.1%}) in a bucket with "
+            f">{min_comps} members"
+        )
+    print()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--min-comps", type=int, default=3)
@@ -122,6 +221,8 @@ def main() -> None:
     basis = collections.Counter(o.get("basis", "asking") for o in observations)
     print(f"  basis: {dict(basis)}")
     print()
+
+    report_identity_coverage(observations, args.min_comps)
 
     if args.legacy:
         table, levels, flagged = replay_legacy(observations, args.min_comps)
