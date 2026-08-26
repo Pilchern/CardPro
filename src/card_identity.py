@@ -773,6 +773,27 @@ def _flagship_window_is_clean(remainder: str) -> bool:
 
     Case is ignored on purpose: eBay titles are all-caps often enough that
     capitalisation carries no information.
+
+    WHAT THIS CANNOT CATCH, measured rather than hoped:
+      * an unknown TWO-word product standing exactly where a first and last
+        name would. "2024 Topps Iron Works #150 Caleb Williams" is asserted
+        as flagship Topps, because "Iron Works" and "Caleb Williams" are the
+        same shape and nothing in a title tells them apart.
+      * a product named AFTER the first number. The window stops at the
+        number, so "2024 Topps #150 Caleb Williams Cornerstone Edition" is
+        asserted. Extending the window to the end of the title is not the
+        fix -- past the number a title is mostly team names and seller
+        chatter, and every one of those words would refuse a good listing.
+      * a product whose name is an ordinary word we already recognise --
+        "2024 Topps Mint" would pass, because "mint" is condition noise.
+    Each of these needs the player's name to resolve, and this module is
+    given a title and nothing else. What bounds the damage is the shape of
+    the comp keys rather than anything here: a wrong flagship on a card with
+    no readable parallel can only reach same_set, which is context-only and
+    may never flag a deal. A wrong flagship on a card that DOES carry a
+    parallel and a grade can reach exact, and there it would pool a card from
+    another product with the flagship copy that shares its number. That is
+    the one case worth watching if this path is ever widened.
     """
     runs: list[int] = []
     current = 0
