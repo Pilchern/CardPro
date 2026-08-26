@@ -31,6 +31,7 @@ def obs(**overrides):
         "grade": None,
         "qualifier": None,
         "basis": "asking",
+        "title": "",
     }
     base.update(overrides)
     return base
@@ -128,3 +129,37 @@ class TestReportIdentityCoverage:
 
     def test_unusable_market_is_excluded_not_crashed(self):
         assert "same_card: 0 distinct keys" in self.render([obs(card_type=None)])
+
+
+class TestReextract:
+    """Until titles were stored, a change to card_identity.py could only be
+    measured against invented examples. --reextract replays the real inputs
+    through the current parser."""
+
+    def test_a_stored_title_is_reparsed(self):
+        stale = obs(title="2024 Panini Prizm Caleb Williams Silver Prizm RC #301",
+                    set_name=None, parallel=None, card_number=None)
+        fresh = replay_corpus.reextract([stale])[0]
+        assert fresh["set_name"] == "Prizm"
+        assert fresh["parallel"] == "Silver Prizm"
+        assert fresh["card_number"] == "301"
+
+    def test_a_row_with_no_title_keeps_what_it_was_written_with(self):
+        # Its input is gone. Blanking its fields would destroy data to make a
+        # number look consistent.
+        stale = obs(title="", set_name="Prizm")
+        assert replay_corpus.reextract([stale])[0]["set_name"] == "Prizm"
+
+    def test_the_grade_is_reparsed_too(self):
+        # A market key is grader plus grade; re-extracting identity while
+        # leaving a stale grade behind would build a bucket out of two
+        # different parser versions.
+        stale = obs(title="2024 Panini Prizm Caleb Williams Silver Prizm #301 PSA 10",
+                    card_type="raw", grader=None, grade=None)
+        fresh = replay_corpus.reextract([stale])[0]
+        assert (fresh["card_type"], fresh["grader"], fresh["grade"]) == ("graded", "PSA", "10")
+
+    def test_price_and_date_are_never_touched(self):
+        stale = obs(title="2024 Panini Prizm Caleb Williams #301", price=25.0, date="2026-08-21")
+        fresh = replay_corpus.reextract([stale])[0]
+        assert (fresh["price"], fresh["date"], fresh["id"]) == (25.0, "2026-08-21", stale["id"])

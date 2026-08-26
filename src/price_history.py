@@ -137,6 +137,7 @@ def record(
     print_run: Optional[int] = None,
     manufacturer: Optional[str] = None,
     is_base: Optional[bool] = None,
+    title: str = "",
     basis: str = "asking",
 ) -> None:
     """Appends one price observation to the corpus.
@@ -205,6 +206,25 @@ def record(
         # unknown, which is what parallel=None has always meant and is
         # exactly the ambiguity this field exists to split apart.
         "is_base": is_base,
+        # The raw title, from which every field above was derived.
+        #
+        # Storing it is what makes extraction improvable. Every identity
+        # field here is the output of a parser that is demonstrably
+        # incomplete -- set_name resolves for about a sixth of listings --
+        # and without the input, a change to that parser cannot be measured
+        # against anything except invented examples. The corpus is the only
+        # durable artefact this project has; a title not captured today is
+        # not recoverable tomorrow, because the listing will be gone.
+        #
+        # It costs roughly 90 bytes a row, which at the current rate of ~150
+        # new listings a day and the 180-day retention window is a few
+        # megabytes of committed JSON. That is a real cost and it buys the
+        # only path to measuring the thing that is currently blocking two
+        # thirds of all valuations. If it becomes a problem, shortening
+        # price_history_max_age_days is the lever -- at half_life_days=30 an
+        # observation at day 180 already carries under 2% of a fresh one's
+        # weight.
+        "title": title,
         "basis": basis,
     }
     if listing_id:

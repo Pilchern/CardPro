@@ -27,7 +27,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src import comps, price_history  # noqa: E402
+from src import card_identity, comps, matcher, price_history  # noqa: E402
 
 CORPUS = Path(__file__).resolve().parent.parent / "data" / "ebay_alert_price_history.json"
 
@@ -130,6 +130,53 @@ def _first_missing(obs, fields):
         if not _resolved(obs, field):
             return field
     return None
+
+
+def reextract(observations) -> list:
+    """Re-derive every identity field from the stored title.
+
+    The corpus stores what the extractor produced, not what it was given, so
+    until titles were recorded a change to card_identity.py could not be
+    measured against anything except invented examples. With them, `--reextract`
+    replays the real inputs through the current parser and the identity KPI
+    below reports the parser as it is today rather than as it was on the day
+    each row was written.
+
+    Rows recorded before titles were stored have none and are passed through
+    untouched -- they keep the fields they were written with, which is the
+    honest thing to do with a row whose input is gone.
+    """
+    updated = []
+    for obs in observations:
+        title = obs.get("title")
+        if not title:
+            updated.append(obs)
+            continue
+        identity = card_identity.extract_card_identity(title)
+        grade_info = matcher.detect_grade_details(title)
+        fresh = dict(obs)
+        fresh.update(
+            year=identity.year.value,
+            set_name=identity.set_name.value,
+            parallel=identity.parallel.value,
+            card_number=identity.card_number.value,
+            manufacturer=identity.manufacturer.value,
+            is_base=identity.is_base.value,
+            card_type=grade_info.card_type,
+            grader=grade_info.grader,
+            grade=grade_info.grade,
+            qualifier=grade_info.qualifier,
+        )
+        updated.append(fresh)
+    return updated
+
+
+def report_title_coverage(observations) -> None:
+    with_titles = sum(1 for obs in observations if obs.get("title"))
+    total = len(observations) or 1
+    print("  stored titles: {} ({:.1%}) -- --reextract replays these through today's parser".format(
+        with_titles, with_titles / total
+    ))
 
 
 def report_base_ceiling(observations, min_comps):
@@ -253,6 +300,12 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--min-comps", type=int, default=3)
     parser.add_argument("--legacy", action="store_true", help="also show what the v1 engine did")
+    parser.add_argument(
+        "--reextract",
+        action="store_true",
+        help="re-derive identity from the stored titles before replaying, so the KPI "
+             "measures the parser as it is now rather than as it was when each row was written",
+    )
     args = parser.parse_args()
 
     if not CORPUS.exists():
@@ -270,6 +323,10 @@ def main() -> None:
     print(f"  date range: {dates[0]} .. {dates[-1]}" if dates else "  date range: unknown")
     basis = collections.Counter(o.get("basis", "asking") for o in observations)
     print(f"  basis: {dict(basis)}")
+    report_title_coverage(observations)
+    if args.reextract:
+        observations = reextract(observations)
+        print("  (identity re-extracted from stored titles)")
     print()
 
     report_identity_coverage(observations, args.min_comps)
