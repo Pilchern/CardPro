@@ -180,6 +180,26 @@ def test_known_shipping_says_so_in_the_assumptions():
     assert "Inbound shipping of $4.50 is included in the acquisition cost." in result.assumptions
 
 
+def test_unknown_shipping_and_an_overstated_roi_travel_together():
+    # The ROI denominator is the acquisition cost, and with shipping unknown
+    # that cost is a lower bound -- so the percentage sitting on top of it is
+    # an upper bound. The two have to arrive as a pair: a reader who sees 68%
+    # without seeing that the postage is missing is reading a number that
+    # shrinks the moment it is known, and a healthy-looking ROI is exactly
+    # when nobody goes looking for the caveat.
+    unknown = evaluate(Acquisition(price=50.0, shipping=None, sales_tax_pct=0.0), 100.0, SIMPLE_FEES)
+    known = evaluate(Acquisition(price=50.0, shipping=8.0, sales_tax_pct=0.0), 100.0, SIMPLE_FEES)
+
+    assert unknown.roi_pct > 0.0
+    assert unknown.shipping_known is False
+    assert unknown.roi_pct > known.roi_pct
+    assert unknown.expected_profit > known.expected_profit
+    assert _find(unknown, "Inbound shipping is UNKNOWN") == (
+        "Inbound shipping is UNKNOWN and is not included -- the actual cost may be "
+        "higher than $50.00."
+    )
+
+
 def test_fees_larger_than_the_spread_report_a_loss_honestly():
     # $18 card, "worth" $20 -- the fees eat it. Nothing is clamped at zero.
     acq = Acquisition(price=18.0, shipping=None, sales_tax_pct=0.0)
@@ -231,6 +251,23 @@ def test_market_value_equal_to_cost_is_a_loss_after_fees():
     assert result.gross_discount == pytest.approx(0.0)
     assert result.discount_pct == pytest.approx(0.0)
     assert result.expected_profit == pytest.approx(-16.0)
+
+
+def test_breakeven_to_the_penny_is_not_profitable():
+    # src/main.py switches the report between a profit figure and the
+    # "collector buy" line on expected_profit <= 0, so the exact zero decides
+    # which sentence the reader is shown. $84 out, $84 back: filing "$0.00
+    # profit" under a heading that says the card makes money is how a
+    # break-even flip gets bought.
+    result = evaluate(Acquisition(price=84.0, shipping=None, sales_tax_pct=0.0), 100.0, SIMPLE_FEES)
+    assert result.expected_net_proceeds == pytest.approx(84.0)
+    assert result.expected_profit == 0.0
+    assert result.is_profitable is False
+    # 0% ROI here means "broke even", not the other 0% -- the one that means
+    # ROI could not be computed. Only the assumptions tell them apart, and
+    # this one must not claim the number is undefined.
+    assert result.roi_pct == 0.0
+    assert not any("ROI is undefined" in a for a in result.assumptions)
 
 
 # --- evaluate: the resale haircut -----------------------------------------

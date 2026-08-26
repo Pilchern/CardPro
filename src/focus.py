@@ -14,7 +14,9 @@ Three rules, all yours, all in ``config/settings.json`` -> ``focus``:
   it is not being called a bad card -- it is being called not-what-you-shop-
   for, and it has to be exceptional (a big percentage AND a big dollar
   figure, off a comp CardPro is willing to stand behind) to take a slot
-  away from the cheap ones.
+  away from the cheap ones. A listing whose price cannot be read fails
+  this rule too, under its own reason: there is no cost to hold against
+  the ceiling and no valuation behind it either.
 * **Bidding room on auctions.** An auction whose current bid already sits
   above your max rational bid is not a card you can win at a price that
   works. It is a finished story, and it costs the same eight lines to
@@ -36,9 +38,28 @@ Three things this module deliberately does NOT do:
   The whole point of a shorter email is that you trust what is missing
   from it.
 
-Targets are exempt from the ceiling. A target card is one you asked for by
-name, at a price you set yourself (see src/targets.py) -- a second price
-opinion from this module would be overruling you with your own settings.
+Targets are exempt from both price rules above, not just the ceiling (the
+length cap still applies to them, because that one is about how long the
+email is and not about the card). A target card is one you asked for by
+name at a price you set yourself (see src/targets.py), and both price rules
+here are CardPro's own opinion about price: the ceiling is the cheap end
+you usually shop at, and the max rational bid is a comp median less fees
+less the margin in your config. Your own price test has already been
+applied to a target -- the hit carries the band it landed in, or says it is
+above every band you set -- so a second opinion from this module would only
+overrule you with your own settings. The bidding-room rule is the case where that
+bites hardest: on a target with a $400 buy zone the rational ceiling sits
+nearer $235, because it is a resale-margin figure and a target is
+explicitly allowed to be a bad flip ("you're paying up for something you
+specifically want"), so applying it here would hide the card you named
+across most of the range you said you would pay for it. The unreadable
+price goes the same way for a weaker but sufficient reason: "a copy of the
+card you asked for is listed right now" is worth eight lines on its own,
+and the report says exactly that rather than inventing a cost for it.
+
+None of that is a promotion. A target hit still had to be produced
+upstream, focus only declines to remove it, and the report still prints the
+max bid and the band side by side so both numbers are in front of you.
 """
 from __future__ import annotations
 
@@ -162,7 +183,10 @@ def omission_reason(listing, rules: FocusRules) -> Optional[str]:
     if not rules.enabled:
         return None
     if getattr(listing, "target_hit", None) is not None:
-        return None  # you asked for this card by name, at your own price
+        # You asked for this card by name at your own price, and
+        # src/targets.py has already applied that price test -- every rule
+        # below is CardPro's price opinion. See the module docstring.
+        return None
     if not _has_bidding_room(listing, rules):
         return NO_BIDDING_ROOM
     price = _price(listing)

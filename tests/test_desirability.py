@@ -49,6 +49,18 @@ class TestAttributes:
         assert desirability.PATCH in attrs
         assert desirability.MEMORABILIA not in attrs
 
+    def test_a_relic_that_is_not_a_patch_is_still_memorabilia(self):
+        # The patch and memorabilia arms are one if/elif, so a change that let
+        # the patch arm swallow both would leave a plain jersey relic with no
+        # attribute at all -- and a cheap one would then read as commodity and
+        # be thrown out as a base common. That is the whole cheap-card gate
+        # firing on a card that is the opposite of commodity.
+        relic = listing_for("2024 Panini Absolute Caleb Williams Game-Used Jersey Relic", price=6.0)
+        attrs = desirability.attributes_of(relic)
+        assert desirability.MEMORABILIA in attrs
+        assert desirability.PATCH not in attrs
+        assert desirability.is_commodity(relic, 10.0) is False
+
     def test_plain_base_card_has_no_attributes(self):
         assert desirability.attributes_of(listing_for("Caleb Williams 2024 Panini card")) == ()
 

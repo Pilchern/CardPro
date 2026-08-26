@@ -1813,3 +1813,27 @@ class TestFooterWrapping:
             stats.rejections.record(reasons.Reason.NO_COMP_AT_ANY_LEVEL, str(index))
         for line in body_of([make_listing()], stats=stats).splitlines():
             assert len(line) <= report._WRAP_WIDTH + 8, line
+
+
+class TestEveryBlockKindRefusesToPriceAnAuction:
+    """An auction's number is a CURRENT BID. Rendering it under "Asking" or
+    "Cost" is how a $40 opening bid became a reported 60%-off deal.
+    _thesis_block and _compact_block have always guarded against this;
+    _offer_block and _price_drop_block did not, and were safe only because
+    classify_sections happens to claim auctions before it reaches their
+    loops. That is an ordering accident, not a guarantee."""
+
+    def _auction(self):
+        return make_listing(listing_type="auction", bid_count=4, time_left_text="2d 04h")
+
+    def test_the_offer_block_routes_an_auction_to_the_auction_block(self):
+        text = report._offer_block(1, self._auction(), 30.0)
+        assert "CURRENT BID, not an asking price" in flat(text)
+        assert "Asking" not in text
+
+    def test_the_price_drop_block_routes_an_auction_to_the_auction_block(self):
+        text = report._price_drop_block(1, self._auction())
+        assert "CURRENT BID, not an asking price" in flat(text)
+
+    def test_a_fixed_price_listing_is_unaffected(self):
+        assert "CURRENT BID" not in report._offer_block(1, make_listing(), 30.0)

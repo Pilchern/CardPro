@@ -910,6 +910,15 @@ def offer_trio(market_value: float, threshold_pct: float) -> tuple:
 
 
 def _offer_block(index: int, deal: Listing, threshold_pct: float) -> str:
+    if deal.is_auction:
+        # An auction's number is a CURRENT BID. Rendering it under "Asking"
+        # or "Cost" is how a $40 opening bid became a reported 60%-off deal
+        # (audit failure mode #7). _thesis_block and _compact_block have
+        # always had this guard; these two did not, and were safe only
+        # because classify_sections happens to claim auctions before it
+        # reaches their loops. Reorder those loops -- a plausible edit -- and
+        # the defect _auction_block exists to prevent comes straight back.
+        return _auction_block(index, deal)
     lines = [_headline(index, deal)]
     lines.append(_field_line("Asking", _cost_text(deal)))
     lines.append(_field_line("Market", _market_text(deal)))
@@ -984,6 +993,15 @@ def _compact_block(index: int, deal: Listing, *, why: Optional[str] = None,
 
 
 def _price_drop_block(index: int, deal: Listing) -> str:
+    if deal.is_auction:
+        # An auction's number is a CURRENT BID. Rendering it under "Asking"
+        # or "Cost" is how a $40 opening bid became a reported 60%-off deal
+        # (audit failure mode #7). _thesis_block and _compact_block have
+        # always had this guard; these two did not, and were safe only
+        # because classify_sections happens to claim auctions before it
+        # reaches their loops. Reorder those loops -- a plausible edit -- and
+        # the defect _auction_block exists to prevent comes straight back.
+        return _auction_block(index, deal)
     lines = [_headline(index, deal)]
     if deal.previous_price is not None and deal.price is not None:
         lines.append(

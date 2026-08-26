@@ -823,3 +823,34 @@ class TestSoldCompsWiring:
         from src import sold_comps
 
         assert sold_comps.load(tmp_path / "nope.json") == []
+
+
+class TestOneCardHasOneAcquisitionCost:
+    """dollar_savings was computed against Listing.total_cost (no sales tax)
+    while economics used Acquisition.total_cost (with it). At any non-zero
+    sales_tax_pct one card block printed two different totals -- a Cost line
+    saying $32.50 above a profit figure whose arithmetic only works at
+    $35.10. Latent at the shipped 0.0, and settings.json explicitly invites
+    tuning it."""
+
+    def _evaluated(self, sales_tax_pct):
+        listing = make_listing(EXACT_TITLE, 28.0, shipping_price=4.50)
+        stats = observability.RunStats()
+        main_module.evaluate_listings(
+            [listing],
+            engine_for(spread_observations(72.0)),
+            fake_cfg(sales_tax_pct=sales_tax_pct),
+            stats,
+        )
+        return listing
+
+    def test_the_discount_and_the_economics_agree_with_tax_on(self):
+        listing = self._evaluated(8.0)
+        assert listing.dollar_savings == pytest.approx(
+            listing.economics.estimated_market_value - listing.economics.acquisition_cost
+        )
+
+    def test_tax_makes_the_discount_smaller_not_unchanged(self):
+        with_tax = self._evaluated(8.0)
+        without = self._evaluated(0.0)
+        assert with_tax.dollar_savings < without.dollar_savings

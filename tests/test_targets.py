@@ -136,3 +136,43 @@ def test_thresholds_are_inclusive_at_exactly_the_band():
         hit = targets.match_target(target, player="Caleb Williams", total_cost=total)
         assert hit.band == expected, total
     assert targets.match_target(target, player="Caleb Williams", total_cost=400.01).band is None
+
+
+def test_a_target_with_only_one_threshold_set_uses_that_one_and_no_other():
+    # The one-line target ("any Bedard Young Guns under $200") is the common
+    # shape in config, and it leaves two of the three bands as None. A None
+    # threshold has to be skipped, not read as $0 and not read as an open
+    # band -- either way round it hands out a band you never configured.
+    target = targets.TargetCard(label="CW Prizm", player="Caleb Williams", great_buy=200.0)
+    at_the_line = targets.match_target(target, player="Caleb Williams", total_cost=200.0)
+    assert at_the_line.band == targets.BAND_GREAT
+    assert at_the_line.threshold == 200.0
+    assert at_the_line.label == "GREAT BUY"
+
+    above = targets.match_target(target, player="Caleb Williams", total_cost=200.01)
+    assert above.band is None
+    assert above.in_buy_zone is False
+    assert above.threshold is None
+
+
+def test_thresholds_written_out_of_order_are_read_in_band_order_not_price_order():
+    """Pins what happens today, which is probably NOT the intended answer.
+
+    Bands are tried best-first and the first threshold the cost clears wins,
+    so a config with the numbers upside down (buy zone $100, immediate $300)
+    reports a $250 card as IMMEDIATE -- the strongest band you have, for a
+    price your own buy zone says is too dear. Nothing in ``load_targets``
+    checks the ordering, so a typo produces a confident wrong label rather
+    than an error. Recorded here so that fixing it is a deliberate change to
+    a failing test, not a surprise.
+    """
+    muddled = targets.TargetCard(
+        label="fat fingers", player="Caleb Williams",
+        buy_zone=100.0, great_buy=200.0, immediate_alert=300.0,
+    )
+    hit = targets.match_target(muddled, player="Caleb Williams", total_cost=250.0)
+    assert hit.band == targets.BAND_IMMEDIATE
+    assert hit.threshold == 300.0
+    # The one thing that stays true whatever order they are in: a cost above
+    # every threshold is above every band.
+    assert targets.match_target(muddled, player="Caleb Williams", total_cost=301.0).band is None

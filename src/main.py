@@ -600,8 +600,6 @@ def evaluate_listings(listings, engine, cfg, stats) -> None:
         listing.comp_is_fallback = match.stats.basis == comps.BASIS_ASKING
         listing.comp_level_matched = match.level
         listing.comp_confidence = match.confidence
-        listing.dollar_savings = match.stats.median - listing.total_cost
-        listing.pct_under_market = listing.dollar_savings / match.stats.median * 100 if match.stats.median else 0.0
         listing.economics = economics.evaluate(
             economics.Acquisition(
                 price=listing.price, shipping=listing.shipping_price, sales_tax_pct=cfg.sales_tax_pct
@@ -610,6 +608,14 @@ def evaluate_listings(listings, engine, cfg, stats) -> None:
             fees,
             resale_haircut_pct=cfg.resale_haircut_pct,
         )
+        # Take the discount from economics rather than recomputing it here.
+        # The two used different acquisition costs -- this one excluded sales
+        # tax, economics.Acquisition includes it -- so at any non-zero
+        # sales_tax_pct one card block printed two different totals: a Cost
+        # line saying $32.50 above a profit figure whose arithmetic only
+        # works at $35.10. One card, one acquisition cost.
+        listing.dollar_savings = listing.economics.gross_discount
+        listing.pct_under_market = listing.economics.discount_pct
         # Below roughly $10 a card, postage and fees eat the whole spread, so
         # a negative profit here is arithmetic, not a warning. The report says
         # "collector buy" rather than showing a scary ROI on a card nobody
