@@ -153,24 +153,89 @@ def record(
     Auctions must NOT be recorded here: a current bid is not a price. The
     caller is responsible for that filter (see main.record_observations),
     since only the caller knows the listing type.
+
+    ONE ROW PER LISTING. Seeing the same listing again updates that row's
+    price and leaves its date alone; it does not append a second row. Both
+    halves of that matter:
+
+    * The date stays at first-sighting because that is when the ask entered
+      the market. Re-stamping it each morning made one batch of listings look
+      like several days of independent readings, which is precisely what
+      ``comps._is_concentrated`` exists to refuse -- and with a lookback
+      window that overlaps consecutive runs, a single morning's alert email
+      was spreading itself across three or four apparent dates. Measured on
+      the live corpus: 28 Kyle Teel listings, all first seen on one day,
+      stored under four distinct dates.
+    * Not appending keeps the file honest about its own size. The same corpus
+      held 2,099 rows for 906 distinct listings -- 57% of it duplicates that
+      ``deduped_observations`` threw away on every single read.
+
+    A listing whose price changed keeps the newer price: that is the ask a
+    buyer faces today. Only eight listings in the measured corpus ever
+    changed price, so this is a correctness detail rather than a common path.
     """
     key = f"{player}|{card_type}"
-    history.setdefault(key, []).append(
-        {
-            "price": price,
-            "date": today,
-            "id": listing_id,
-            "year": year,
-            "set_name": set_name,
-            "parallel": parallel,
-            "card_number": card_number,
-            "grader": grader,
-            "grade": grade,
-            "qualifier": qualifier,
-            "print_run": print_run,
-            "basis": basis,
-        }
-    )
+    entries = history.setdefault(key, [])
+    observation = {
+        "price": price,
+        "date": today,
+        "id": listing_id,
+        "year": year,
+        "set_name": set_name,
+        "parallel": parallel,
+        "card_number": card_number,
+        "grader": grader,
+        "grade": grade,
+        "qualifier": qualifier,
+        "print_run": print_run,
+        "basis": basis,
+    }
+    if listing_id:
+        for existing in entries:
+            if existing.get("id") == listing_id:
+                first_seen = existing.get("date") or today
+                existing.update(observation)
+                existing["date"] = first_seen
+                return
+    entries.append(observation)
+
+
+def collapse_duplicates(history: dict) -> dict:
+    """One row per listing id, for a corpus recorded before record() deduped.
+
+    Same rule record() now applies: earliest date, latest price. Rows with no
+    id pre-date that field and cannot be collapsed, so they are kept as they
+    are and age out through prune_old.
+
+    Kept as an explicit function rather than something load() does silently,
+    because it rewrites stored data and that should be a decision someone
+    made, not a side effect of reading a file.
+    """
+    collapsed: dict = {}
+    for key, entries in history.items():
+        by_id: dict = {}
+        order: list = []
+        kept: list = []
+        for obs in entries:
+            listing_id = obs.get("id")
+            if not listing_id:
+                kept.append(obs)
+                continue
+            prior = by_id.get(listing_id)
+            if prior is None:
+                merged = dict(obs)
+                by_id[listing_id] = merged
+                order.append(listing_id)
+                continue
+            first_seen = min(
+                d for d in (prior.get("date"), obs.get("date")) if d
+            ) if (prior.get("date") or obs.get("date")) else None
+            latest = prior if (prior.get("date") or "") >= (obs.get("date") or "") else obs
+            merged = dict(latest)
+            merged["date"] = first_seen
+            by_id[listing_id] = merged
+        collapsed[key] = [by_id[i] for i in order] + kept
+    return collapsed
 
 
 def prune_old(history: dict, max_age_days: int, today: datetime) -> dict:
