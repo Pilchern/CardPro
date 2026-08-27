@@ -207,7 +207,11 @@ def _pasted_text(args):
     if args.paste_file:
         try:
             return args.paste_file.read_text()
-        except OSError as exc:
+        except (OSError, UnicodeDecodeError) as exc:
+            # UnicodeDecodeError is a ValueError, not an OSError: without it
+            # a binary file handed to --paste-file tracebacked rather than
+            # refusing, which is the one failure shape this script does not
+            # allow itself.
             print(f"Could not read {args.paste_file}: {exc}", file=sys.stderr)
             return None
     if sys.stdin.isatty():
@@ -332,16 +336,34 @@ def main(argv=None) -> int:
     if args.paste and args.paste_file:
         print("Give --paste (stdin) or --paste-file, not both.", file=sys.stderr)
         return 2
-    if pasting and (args.price is not None or args.date is not None):
-        # Silently ignoring them would be worse: --price with --paste reads
+    if pasting:
+        # Silently ignoring these would be worse: --price with --paste reads
         # like "use this price", and it cannot mean that for a block of
-        # sales that each carry their own.
-        print(
-            "--price and --date describe one sale. With --paste, each sale's price and "
-            "date come out of the pasted text -- drop them.",
-            file=sys.stderr,
-        )
-        return 2
+        # sales that each carry their own. Shipping is per-sale for the same
+        # reason -- unguarded, it wrote one figure onto every parsed row.
+        per_sale = [
+            "--" + name for name in ("price", "date", "shipping")
+            if getattr(args, name) is not None
+        ]
+        if per_sale:
+            print(
+                "{} describe{} one sale. With --paste, every sale carries its own -- "
+                "drop them, or enter that sale on its own without --paste.".format(
+                    " and ".join(per_sale), "s" if len(per_sale) == 1 else ""
+                ),
+                file=sys.stderr,
+            )
+            return 2
+        if args.dry_run:
+            # Two words for the same thing, pointing opposite ways when both
+            # are given. --paste is a preview already; --dry-run is what the
+            # single-sale form calls one.
+            print(
+                "--paste previews by default, so --dry-run is what you get without "
+                "--confirm. Drop one of them.",
+                file=sys.stderr,
+            )
+            return 2
     if not pasting:
         missing = [name for name in ("price", "date") if getattr(args, name) is None]
         if missing:

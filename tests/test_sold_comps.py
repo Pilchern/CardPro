@@ -747,15 +747,44 @@ class TestPasteMode:
         assert not path.exists()
         assert "no date-and-price pair" in capsys.readouterr().err
 
-    def test_price_and_date_are_refused_alongside_paste(self, tmp_path, capsys):
+    @pytest.mark.parametrize("flag,value", [
+        ("--price", "348"),
+        ("--date", "2026-08-15"),
+        ("--shipping", "5.99"),
+    ])
+    def test_per_sale_flags_are_refused_alongside_paste(self, tmp_path, capsys, flag, value):
         """--price with --paste reads as "use this price", and it cannot mean
-        that for a block of sales that each carry their own."""
+        that for a block of sales that each carry their own. --shipping is
+        the same shape and was writing one figure onto every parsed row."""
         path = tmp_path / "s.json"
 
-        assert self._run(tmp_path, path, extra=["--price", "348"]) == 2
+        assert self._run(tmp_path, path, extra=[flag, value]) == 2
 
         assert not path.exists()
-        assert "--price and --date describe one sale" in capsys.readouterr().err
+        assert "{} describes one sale".format(flag) in capsys.readouterr().err
+
+    def test_dry_run_and_confirm_together_are_refused_rather_than_one_winning(self, tmp_path, capsys):
+        """--confirm --dry-run wrote the file: add_pasted never looked at
+        dry_run. Two words for the same thing pointing opposite ways is a
+        question for the user, not something to resolve silently."""
+        path = tmp_path / "s.json"
+
+        assert self._run(tmp_path, path, extra=["--confirm", "--dry-run"]) == 2
+
+        assert not path.exists()
+        assert "--dry-run" in capsys.readouterr().err
+
+    def test_a_file_that_is_not_text_is_refused_rather_than_crashing(self, tmp_path, capsys):
+        path = tmp_path / "s.json"
+        binary = tmp_path / "binary.bin"
+        binary.write_bytes(b"\xff\xfe\x00\x01")
+
+        argv = self._identity(path)
+        argv[1] = str(binary)
+
+        assert add_sold_comp.main(argv + ["--confirm"]) == 2
+        assert not path.exists()
+        assert "Could not read" in capsys.readouterr().err
 
     def test_an_inferred_year_is_flagged_in_the_preview(self, tmp_path, capsys):
         path = tmp_path / "s.json"
