@@ -120,11 +120,11 @@ def _thresholds_are_ordered(immediate, great, buy_zone) -> bool:
 def load_targets(raw_targets: list) -> list:
     """Builds TargetCards from the raw JSON list in config/watchlist.json.
 
-    Entries missing a `player`, or whose price bands are not a ladder, are
-    skipped rather than raising: a typo in a personal config file shouldn't
-    take down the daily scan, and the entry is visible in the config for you
-    to notice and fix. Both skips are logged -- a target you thought you had
-    and do not is worth a line in the log.
+    Entries missing a `player`, entries with no readable price, and entries
+    whose price bands are not a ladder are skipped rather than raising: a typo
+    in a personal config file shouldn't take down the daily scan, and the entry
+    is visible in the config for you to notice and fix. Every skip is logged --
+    a target you thought you had and do not is worth a line in the log.
     """
     targets = []
     for entry in raw_targets or []:
@@ -132,9 +132,30 @@ def load_targets(raw_targets: list) -> list:
         if not player:
             logger.warning("Skipping a target_cards entry with no player: %r", entry)
             continue
-        buy_zone = _as_float(entry.get("buy_zone"))
-        great_buy = _as_float(entry.get("great_buy"))
-        immediate_alert = _as_float(entry.get("immediate_alert"))
+        bands = {key: _threshold(entry, key) for key in BAND_ORDER}
+        unreadable = [key for key, (_, readable) in bands.items() if not readable]
+        if unreadable:
+            logger.warning(
+                "Skipping target %r: the price written for %s could not be read as a "
+                "number (%s). "
+                "A target with no threshold matches on player alone, so every listing "
+                "of that player would be reported as the card you asked for, at a "
+                "price you never set.",
+                entry.get("label") or player,
+                ", ".join(sorted(unreadable)),
+                ", ".join("%s=%r" % (key, entry.get(key)) for key in sorted(unreadable)),
+            )
+            continue
+        immediate_alert, great_buy, buy_zone = (bands[key][0] for key in BAND_ORDER)
+        if immediate_alert is None and great_buy is None and buy_zone is None:
+            logger.warning(
+                "Skipping target %r: it sets no price band at all (immediate_alert, "
+                "great_buy and buy_zone are all absent). A target is a card you asked "
+                "for AT A PRICE -- without one it is the player watchlist wearing your "
+                "label, and every listing of that player becomes a target hit.",
+                entry.get("label") or player,
+            )
+            continue
         if not _thresholds_are_ordered(immediate_alert, great_buy, buy_zone):
             logger.warning(
                 "Skipping target %r: its price bands are not a ladder "
@@ -169,6 +190,25 @@ def _as_float(value) -> Optional[float]:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _threshold(entry: dict, key: str):
+    """One price band, as (value, readable).
+
+    `readable` is False only when the config actually wrote that band and it
+    could not be read as a number -- "$400", "350 USD", "~300". An absent band
+    is not a failure: leaving one out is normal, and its value is None.
+
+    The two have to stay apart because _as_float returns None for both, and a
+    target whose prices all failed to parse does not fail loudly -- it quietly
+    degenerates to "any card of this player", and a target hit bypasses the
+    report's price ceiling, so the user is shown a card they never asked for
+    with their own name and price attached.
+    """
+    if key not in entry or entry[key] is None:
+        return None, True
+    value = _as_float(entry[key])
+    return value, value is not None
 
 
 def _matches_field(specified, actual) -> bool:

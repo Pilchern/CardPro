@@ -184,3 +184,60 @@ def test_an_entry_with_no_player_is_still_skipped(caplog):
     with caplog.at_level("WARNING"):
         assert targets.load_targets([{"buy_zone": 100.0}]) == []
     assert "no player" in caplog.text
+
+
+def test_a_target_whose_prices_do_not_parse_is_skipped_not_degraded(caplog):
+    """The prices were written with currency and punctuation, so every one of
+    them parsed to None -- and a target with no threshold matches on player
+    alone. Every Caleb Williams listing came back as a target hit at 'ABOVE
+    BUY ZONE', and because focus.py lets any target hit past the price ceiling,
+    a card the user never asked for reached the email with their own name and
+    price on it. Silently, too: nothing was logged."""
+    with caplog.at_level("WARNING"):
+        loaded = targets.load_targets([{
+            "label": "2024 Prizm Caleb Williams Silver PSA 10",
+            "player": "Caleb Williams",
+            "buy_zone": "$400", "great_buy": "350 USD", "immediate_alert": "~300",
+        }])
+    assert loaded == []
+    assert "could not be read as a number" in caplog.text
+    assert "2024 Prizm Caleb Williams Silver PSA 10" in caplog.text
+    # The offending values belong in the log; that is what makes the config
+    # line findable without re-reading the file.
+    assert "'$400'" in caplog.text
+
+
+def test_one_unreadable_band_skips_the_whole_target(caplog):
+    # Keeping the readable bands and dropping the broken one would price the
+    # target differently from the way it is written in the config.
+    with caplog.at_level("WARNING"):
+        loaded = targets.load_targets([{
+            "player": "Caleb Williams", "buy_zone": 400, "great_buy": "three fifty",
+        }])
+    assert loaded == []
+    assert "great_buy" in caplog.text
+
+
+def test_a_target_with_no_price_at_all_is_skipped(caplog):
+    """config/settings.json says at least one threshold is required; nothing
+    enforced it. Without one the entry is the player watchlist wearing a
+    target's label, and every listing of that player bypasses the report's
+    price rules."""
+    with caplog.at_level("WARNING"):
+        loaded = targets.load_targets([{"label": "Priceless", "player": "Caleb Williams"}])
+    assert loaded == []
+    assert "no price band" in caplog.text
+    assert "Priceless" in caplog.text
+
+
+def test_prices_written_as_plain_numeric_strings_still_load():
+    # JSON configs get hand-edited; "400" is a number a person wrote, not a
+    # typo, and refusing it would be the fix overreaching.
+    loaded = targets.load_targets([{"player": "Caleb Williams", "buy_zone": "400"}])
+    assert [t.buy_zone for t in loaded] == [400.0]
+
+
+def test_a_band_left_out_is_not_the_same_as_a_band_that_failed_to_parse():
+    # Absent is normal; unreadable is a mistake. They must not collapse.
+    assert len(targets.load_targets([{"player": "Caleb Williams", "buy_zone": 400}])) == 1
+    assert targets.load_targets([{"player": "Caleb Williams", "buy_zone": "$400"}]) == []
