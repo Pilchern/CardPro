@@ -21,7 +21,13 @@ def listing_for(title, price=5.0, **overrides):
         is_rookie_card=matcher.detect_rookie_card(title),
     )
     fields.update(overrides)
-    return Listing(**fields)
+    listing = Listing(**fields)
+    # main.evaluate_listings fills this in before anything reads it, and it
+    # is deliberately left empty for a listing the pipeline rejected -- so a
+    # fixture that skips it is testing a listing that cannot exist.
+    if "desirable_attributes" not in overrides:
+        listing.desirable_attributes = desirability.attributes_of(listing)
+    return listing
 
 
 class TestAttributes:
@@ -111,22 +117,6 @@ class TestDescribe:
 # tests below are about relative order rather than any absolute number --
 # asserting a specific total would turn a ranking hint into a contract.
 # ---------------------------------------------------------------------------
-
-
-def listing_for(title, **overrides):
-    from src import card_identity, matcher
-    from src.models import Listing
-
-    grade_info = matcher.detect_grade_details(title)
-    fields = dict(
-        id="1", source="ebay", title=title, price=25.0, url="u",
-        player="Caleb Williams", card_type=grade_info.card_type,
-        grader=grade_info.grader, grade=grade_info.grade,
-        card_identity=card_identity.extract_card_identity(title),
-        is_rookie_card=matcher.detect_rookie_card(title),
-    )
-    fields.update(overrides)
-    return Listing(**fields)
 
 
 class TestInterestScore:

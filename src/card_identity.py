@@ -62,7 +62,11 @@ SET_KEYWORDS = [
     "Recon", "Revolution", "Origins", "Pinnacle", "Playbook", "Illusions",
     # Added in the 2.0 hardening pass -- all measured as common in the live
     # corpus and previously extracting as set_name=None.
-    "Young Guns", "Rated Rookie", "Bowman Chrome Draft", "Topps Chrome Update",
+    # "Rated Rookie" was here and is NOT a set: it is a Donruss rookie
+    # designation printed across Donruss, Optic, Score and Elite, so it
+    # pooled four products into one bucket -- the failure the comment below
+    # about brand words forbids, arriving by a different door.
+    "Young Guns", "Bowman Chrome Draft", "Topps Chrome Update",
     "Prizm Draft Picks", "Select Concourse", "Downtown", "Kaboom", "Cosmic",
     "Instant", "Panini Instant", "Topps Now", "Allen & Ginter", "Ginter",
     "Museum Collection", "Tribute", "Diamond Kings", "Score", "Prestige",
@@ -100,6 +104,11 @@ SET_KEYWORDS = [
     "Upper Deck Series 1", "Upper Deck Series 2", "Upper Deck Artifacts",
     "Upper Deck Ice", "Upper Deck Black Diamond", "Upper Deck Allure",
     "Synergy", "Credentials", "Ultimate Collection", "The Cup",
+    # Topps Gold Label is a SET, and it was resolving to flagship "Topps"
+    # with parallel "Gold" -- putting a Gold Label base card and a flagship
+    # Topps Gold parallel of the same player, year and card number into ONE
+    # exact bucket, which is the level allowed to declare a deal.
+    "Topps Gold Label", "Gold Label",
 ]
 
 #: Spellings that mean the same product. Two names for one set means two comp
@@ -134,18 +143,27 @@ COMPOUND_PARALLELS = [
     "Red White Blue", "Atomic Refractor", "Orange Ice", "Blue Ice", "Purple Ice",
     "Green Ice", "Cracked Ice", "Color Blast", "Silver Prizm", "Gold Vinyl",
     "Tie-Dye", "Stained Glass", "Fast Break", "Neon Green", "Hyper Pink",
+    # Multi-word parallels belong HERE, not in UNAMBIGUOUS_PARALLELS. That
+    # list is consulted one word at a time by the adjacency run, so a
+    # two-word entry in it can never match anything -- "Aqua Vapor
+    # Refractor" came out as plain "Refractor" at high confidence, which is
+    # the exact pooling the entry was added to prevent.
+    "Aqua Vapor", "Rose Gold", "Press Proof", "Dragon Scale", "Logofractor",
+    "Rainbow Foil", "Speckle Refractor", "Snakeskin Refractor",
 ]
 
 UNAMBIGUOUS_PARALLELS = [
     "Superfractor", "X-Fractor", "Refractor", "Prizmatic", "Snakeskin", "Shimmer",
     "Pulsar", "Genesis", "Choice", "Disco", "Scope", "Hyper", "Mojo", "Wave",
-    "Lava", "Kaboom", "Downtown", "Camo", "Tiger", "Zebra", "Sepia", "Ice",
+    # "Tiger" was here and gave "Tiger Woods" the parallel "Tiger" at high
+    # confidence. A Tiger parallel exists, but not often enough to be worth
+    # a wrong high-confidence value on every Tiger Woods listing.
+    "Lava", "Kaboom", "Downtown", "Camo", "Zebra", "Sepia", "Ice",
     # Modifiers that name a specific refractor/prizm. They were missing, so
     # "Raywave Refractor" came out as plain "Refractor" at high confidence
     # and a scarce parallel got valued against base copies.
     "Raywave", "Speckle", "Sparkle", "Marble", "Mini-Diamond", "Cracked",
-    "Padparadscha", "Aqua Vapor", "Fuchsia", "Peridot", "Rose Gold",
-    "Press Proof", "Die-Cut", "Holo", "Prismatic", "Dragon Scale",
+    "Padparadscha", "Fuchsia", "Peridot", "Die-Cut", "Holo", "Prismatic",
 ]
 
 COLOR_PARALLEL_WORDS = [
@@ -545,22 +563,28 @@ def _extract_parallel(masked_title: str) -> Field:
         if pattern.search(masked_title):
             return Field(value=name, confidence="high", source="title")
 
-    # 2. A run of adjacent parallel words ("Green Refractor", "Aqua Lava
-    #    Refractor"). Taken whole: these are different markets from each
-    #    other and from the bare term, and reporting the bare term pools them.
-    run, specific = _parallel_run(masked_title)
-    if run and " " in run:
-        return Field(value=run, confidence="high" if specific else "medium", source="title")
-
-    # 3. Colour immediately next to a parallel qualifier ("Green Prizm").
-    #    Separate from the run above because the qualifier vocabulary
-    #    includes words that double as set names, so they may only be read as
-    #    a parallel when a colour is sitting directly in front of them.
+    # 2. Colour immediately next to a parallel qualifier ("Green Prizm",
+    #    "Red Wave"). This runs BEFORE the adjacency run, and the order is
+    #    the fix for a real regression: a great many players have a colour
+    #    for a surname. With the run first, "Coby White Gold Prizm" came out
+    #    as "White Gold", "Draymond Green Green Prizm" as "Green Green", and
+    #    "Jalen Green Gold Prizm" as "Green Gold" -- phantom parallels that
+    #    then keyed comp buckets, because nothing downstream gates a parallel
+    #    on its confidence. Anchoring on the qualifier instead picks the
+    #    colour that is actually attached to a parallel word, and the
+    #    surname in front of it falls away.
     adjacent = _COLOR_QUALIFIER_RE.search(masked_title)
     if adjacent:
         color = _COLOR_LOOKUP[adjacent.group(1).lower()]
         qualifier = _QUALIFIER_LOOKUP[adjacent.group(2).lower()]
         return Field(value=f"{color} {qualifier}", confidence="high", source="title")
+
+    # 3. A run of adjacent parallel words ("Aqua Lava Refractor", "Sepia
+    #    Refractor"). Taken whole: these are different markets from each
+    #    other and from the bare term, and reporting the bare term pools them.
+    run, specific = _parallel_run(masked_title)
+    if run and " " in run:
+        return Field(value=run, confidence="high" if specific else "medium", source="title")
 
     # 4. A single hobby term that only ever means "parallel".
     if run and specific:
@@ -685,7 +709,7 @@ FLAGSHIP_REQUIRES_CARD_NUMBER = True
 #: "Prospect", "Star" and "Total" are not here despite being common noise:
 #: each of them is, or is part of, a real product name.
 TITLE_NOISE_WORDS = [
-    "rc", "rookie", "rookies", "card", "cards", "base", "the", "of", "and",
+    "rc", "rookie", "rookies", "rated", "card", "cards", "base", "the", "of", "and",
     "psa", "bgs", "sgc", "cgc", "csg", "hga", "beckett", "graded", "ungraded",
     "raw", "slab", "slabbed", "gem", "mint", "nm", "near", "ex", "vg",
     "condition", "cond", "centered", "sharp", "clean", "pack", "fresh",

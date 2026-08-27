@@ -226,7 +226,10 @@ def test_season_absent_on_single_year_titles():
 
 def test_new_set_keywords_extracted():
     for title, expected in [
-        ("2024 Donruss Caleb Williams Rated Rookie #301", "Rated Rookie"),
+        # "Rated Rookie" is a Donruss ROOKIE DESIGNATION, printed across
+        # Donruss, Optic, Score and Elite alike -- reading it as a set pooled
+        # four products into one comp bucket. The set here is the flagship.
+        ("2024 Donruss Caleb Williams Rated Rookie #301", "Donruss"),
         ("2024 Bowman Chrome Draft Jackson Holliday", "Bowman Chrome Draft"),
         ("2023 Topps Allen & Ginter Julio Rodriguez", "Allen & Ginter"),
         ("2024 Topps Gypsy Queen Bobby Witt Jr", "Gypsy Queen"),
@@ -476,7 +479,7 @@ class TestParallelRuns:
     def test_a_run_must_be_adjacent(self):
         # A colour at one end of a title must never join a parallel word at
         # the other end just because both appear somewhere.
-        identity = extract("2024 Topps Chrome Gold Label Caleb Williams RC Refractor #150")
+        identity = extract("2024 Topps Chrome Gold Rush Caleb Williams RC Refractor #150")
         assert identity.parallel.value == "Refractor"
 
     def test_the_set_word_is_not_swallowed_into_the_parallel(self):
@@ -815,3 +818,74 @@ class TestFlagshipBaseSets:
         # Two names for one product is two comp buckets, each half as deep.
         for name in card_identity.FLAGSHIP_NUMBER_PREFIX_SETS.values():
             assert name in card_identity.SET_KEYWORDS, name
+
+
+class TestPlayerSurnamesAreNotParallels:
+    """A great many players have a colour for a surname, and nothing
+    downstream gates a parallel on its confidence -- main passes the value
+    straight into the comp lookup and the exact/same_card keys use it
+    verbatim. So a phantom parallel is not a cosmetic error, it keys a
+    bucket."""
+
+    def test_a_colour_surname_before_a_real_parallel(self):
+        for title, expected in [
+            ("2023-24 Panini Prizm Jalen Green Gold Prizm #10 Rockets /10", "Gold Prizm"),
+            ("2019-20 Panini Prizm Coby White Gold Prizm RC /10 Bulls", "Gold Prizm"),
+            ("2019-20 Panini Prizm Coby White Red Wave RC Bulls", "Red Wave"),
+            ("2022 Panini Prizm Draymond Green Green Prizm #45 Warriors", "Green Prizm"),
+        ]:
+            assert extract(title).parallel.value == expected, title
+
+    def test_the_named_refractors_still_resolve(self):
+        # The reordering that fixed the surnames must not undo the fix that
+        # stopped a /199 parallel keying the base refractor bucket.
+        for title, expected in [
+            ("2024 Topps Chrome PCA Aqua Lava Refractor /199 #150", "Aqua Lava Refractor"),
+            ("2024 Topps Chrome PCA Sepia Refractor #150", "Sepia Refractor"),
+            ("2022 Topps Chrome Julio Rodriguez Green Refractor /99", "Green Refractor"),
+        ]:
+            assert extract(title).parallel.value == expected, title
+
+
+class TestMultiWordParallelsAreReachable:
+    """UNAMBIGUOUS_PARALLELS is consulted one word at a time by the
+    adjacency run, so a two-word entry in it could never match anything --
+    "Aqua Vapor Refractor" came out as plain "Refractor" at high confidence,
+    the exact pooling the entry was added to prevent. They belong in
+    COMPOUND_PARALLELS, which matches whole phrases."""
+
+    def test_they_resolve_now(self):
+        for title, expected in [
+            ("2024 Topps Chrome Aqua Vapor Refractor Paul Skenes RC /199", "Aqua Vapor"),
+            ("2024 Topps Chrome Dragon Scale Refractor Bobby Witt Jr /75", "Dragon Scale"),
+            ("2023 Topps Chrome Corbin Carroll Rose Gold /50 RC", "Rose Gold"),
+            ("2024 Donruss Caleb Williams Press Proof #301", "Press Proof"),
+        ]:
+            assert extract(title).parallel.value == expected, title
+
+    def test_none_of_them_is_left_in_the_single_word_list(self):
+        assert not any(" " in word for word in card_identity.UNAMBIGUOUS_PARALLELS)
+
+
+class TestSetsThatWereCollidingOnOneCompKey:
+    def test_topps_gold_label_is_its_own_set(self):
+        # It was resolving to flagship "Topps" with parallel "Gold", putting
+        # a Gold Label base card and a flagship Topps Gold parallel of the
+        # same player, year and number into ONE exact bucket -- the level
+        # allowed to declare a deal.
+        label = extract("2022 Topps Gold Label Class 1 Aaron Judge #45 PSA 10")
+        flagship = extract("2022 Topps Aaron Judge #45 Gold PSA 10")
+        assert label.set_name.value == "Topps Gold Label"
+        assert label.set_name.value != flagship.set_name.value
+
+    def test_rated_rookie_is_a_designation_not_a_set(self):
+        # Printed across Donruss, Optic, Score and Elite alike; reading it as
+        # a set pooled four products into one bucket.
+        assert extract("2024 Donruss Optic Caleb Williams Rated Rookie #301").set_name.value == (
+            "Donruss Optic"
+        )
+        assert extract("2024 Score Caleb Williams Rated Rookie #301").set_name.value == "Score"
+        assert extract("2024 Donruss Caleb Williams Rated Rookie #301").set_name.value == "Donruss"
+
+    def test_a_players_name_is_not_a_parallel(self):
+        assert extract("Tiger Woods 2001 Upper Deck #1 Rookie").parallel.value is None

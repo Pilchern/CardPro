@@ -18,7 +18,7 @@ other half is that the count came back.
 """
 from collections import OrderedDict
 
-from src import focus
+from src import desirability, focus
 from src.models import Listing
 
 RULES = focus.FocusRules(
@@ -463,6 +463,7 @@ def test_a_scarce_card_gets_a_higher_ceiling_than_the_shopping_ceiling():
     listing = make_listing(price=60.0)
     listing.title = title
     listing.card_identity = card_identity.extract_card_identity(title)
+    listing.desirable_attributes = desirability.attributes_of(listing)
     rules = focus.FocusRules(price_ceiling=40.0, cool_cards_price_ceiling=100.0)
     assert focus.omission_reason(listing, rules) is None
 
@@ -486,6 +487,7 @@ def test_a_scarce_card_over_the_higher_ceiling_is_left_out_too():
     listing = make_listing(price=250.0)
     listing.title = title
     listing.card_identity = card_identity.extract_card_identity(title)
+    listing.desirable_attributes = desirability.attributes_of(listing)
     rules = focus.FocusRules(price_ceiling=40.0, cool_cards_price_ceiling=100.0)
     assert focus.omission_reason(listing, rules) == focus.ABOVE_CEILING
 
@@ -497,5 +499,6 @@ def test_setting_the_two_ceilings_equal_switches_the_exemption_off():
     listing = make_listing(price=60.0)
     listing.title = title
     listing.card_identity = card_identity.extract_card_identity(title)
+    listing.desirable_attributes = desirability.attributes_of(listing)
     rules = focus.FocusRules(price_ceiling=40.0, cool_cards_price_ceiling=40.0)
     assert focus.omission_reason(listing, rules) == focus.ABOVE_CEILING

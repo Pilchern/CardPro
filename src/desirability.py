@@ -151,6 +151,24 @@ INTEREST_WEIGHTS = {
 STANDOUT_WEIGHT = 3
 
 
+def settled_attributes(listing) -> tuple:
+    """The attributes the PIPELINE settled on, not a fresh recount.
+
+    main.evaluate_listings fills `desirable_attributes` in only after a
+    listing has survived the hard rejections -- a break slot, a lot, a
+    custom, a multi-player card, a grade read off a truncated title. For
+    exactly those, the pipeline's answer is the empty tuple and a fresh call
+    to attributes_of() returns a full list, because the title of a break slot
+    still says "auto refractor /99".
+
+    Recounting is how a group-break slot became the top card in the email,
+    described as "rookie card, autograph, serial numbered". A break slot is
+    not a card you receive at all. Whoever asks this question wants the
+    pipeline's verdict about a real object, so that is what this returns.
+    """
+    return tuple(getattr(listing, "desirable_attributes", ()) or ())
+
+
 def interest_score(listing) -> int:
     """How interesting this card is, for ordering a list. Never a price.
 
@@ -160,8 +178,9 @@ def interest_score(listing) -> int:
     and a one-of-one is worth several, because "there is exactly one" is the
     strongest thing a title can say about a card.
     """
-    attributes = attributes_of(listing)
-    score = sum(INTEREST_WEIGHTS.get(name, 0) for name in attributes)
+    score = sum(INTEREST_WEIGHTS.get(name, 0) for name in settled_attributes(listing))
+    if not score:
+        return 0
     identity = getattr(listing, "card_identity", None)
     print_run = _print_run(identity) if identity is not None else None
     if print_run is not None:
@@ -181,8 +200,12 @@ def is_standout(listing) -> bool:
     else is true of the listing. Otherwise it takes at least two, because a
     single common attribute describes most of the hobby and a section that
     prints most of the hobby is the pile the reader is already drowning in.
+
+    Reads the pipeline's settled attributes, so a listing it rejected as not
+    being a single identifiable card is never a standout however good its
+    title sounds -- see settled_attributes.
     """
-    attributes = attributes_of(listing)
+    attributes = settled_attributes(listing)
     if any(INTEREST_WEIGHTS.get(name, 0) >= STANDOUT_WEIGHT for name in attributes):
         return True
     return len(attributes) >= 2

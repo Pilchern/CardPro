@@ -2207,3 +2207,48 @@ class TestCraigslistLinksAreCapped:
 
     def test_no_links_prints_nothing(self):
         assert report._craigslist_section({}) == ""
+
+
+class TestRejectedListingsNeverReachTheBrowseSections:
+    """main.evaluate_listings leaves desirable_attributes empty for a
+    listing it rejected -- a break slot, a lot, a custom, a multi-player
+    card, a grade read off a truncated title. The browse sections used to
+    recount the attributes from the title instead, and the title of a break
+    slot still says "auto refractor /99". A group-break slot became the top
+    card in the email, described as "rookie card, autograph, serial
+    numbered". A break slot is not a card you receive at all."""
+
+    def _rejected(self, title):
+        # Exactly what the pipeline hands the report for a rejected listing:
+        # a full card_identity, and an empty verdict.
+        deal = carded(title, 30.0)
+        deal.desirable_attributes = ()
+        deal.is_opportunity = False
+        return deal
+
+    def test_a_break_slot_is_not_a_cool_card(self):
+        deal = self._rejected("Kyle Teel 2024 Bowman Chrome Auto Refractor /99 RC BREAK SLOT 1")
+        assert report.classify_sections([deal])[report.SECTION_COOL_CARDS] == []
+
+    def test_a_lot_is_not_a_cool_card(self):
+        deal = self._rejected("Caleb Williams 2024 Topps Chrome Auto Refractor /99 RC LOT OF 5")
+        assert report.classify_sections([deal])[report.SECTION_COOL_CARDS] == []
+
+    def test_a_custom_is_not_a_cheap_find(self):
+        deal = self._rejected("Caleb Williams 2024 Topps Chrome Auto RC CUSTOM ART CARD")
+        deal.price = 4.0
+        sections = report.classify_sections([deal], cheap_find_ceiling=15.0)
+        assert sections[report.SECTION_CHEAP_FINDS] == []
+
+    def test_a_rejected_young_core_card_is_not_promoted_either(self):
+        deal = self._rejected("Caleb Williams 2024 Topps Chrome Auto Refractor /99 RC LOT OF 5")
+        deal.player_tier = "young_core"
+        assert report.classify_sections([deal])[report.SECTION_INVESTMENT] == []
+
+    def test_the_block_never_describes_attributes_the_pipeline_did_not_settle(self):
+        deal = self._rejected("Kyle Teel 2024 Bowman Chrome Auto Refractor /99 RC BREAK SLOT 1")
+        assert "What it is" not in report._interest_block(1, deal)
+
+    def test_an_accepted_card_is_unaffected(self):
+        deal = carded(AUTO, 42.0)
+        assert report.classify_sections([deal])[report.SECTION_COOL_CARDS] == [deal]

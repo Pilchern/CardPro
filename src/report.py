@@ -1063,7 +1063,7 @@ def _interest_block(index: int, deal: Listing,
     if deal.is_auction:
         return _auction_block(index, deal, ending_soon_hours)
     lines = [_headline(index, deal), _field_line("Cost", _cost_text(deal))]
-    described = desirability.describe(desirability.attributes_of(deal))
+    described = desirability.describe(desirability.settled_attributes(deal))
     if described:
         lines.append(_field_line("What it is", described))
     risks = _risks(deal, include_comp_quality=False)
@@ -1311,7 +1311,7 @@ def classify_sections(
         if deal.id in claimed:
             continue
         price = deal.total_cost
-        if price is not None and price <= cheap_find_ceiling and desirability.attributes_of(deal):
+        if price is not None and price <= cheap_find_ceiling and desirability.settled_attributes(deal):
             take(SECTION_CHEAP_FINDS, deal)
     sections[SECTION_CHEAP_FINDS].sort(
         key=lambda d: (_price_for_sort(d), -desirability.interest_score(d), d.id)
@@ -1328,7 +1328,7 @@ def classify_sections(
     for deal in ranked:
         if deal.id in claimed:
             continue
-        if deal.player_tier == "young_core" and desirability.attributes_of(deal):
+        if deal.player_tier == "young_core" and desirability.settled_attributes(deal):
             take(SECTION_INVESTMENT, deal)
     sections[SECTION_INVESTMENT].sort(
         key=lambda d: (-desirability.interest_score(d), _price_for_sort(d), d.id)
