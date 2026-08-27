@@ -1,0 +1,24 @@
+2026-08-27 15:08:49,377 INFO main: Starting daily card deal scan (dry_run=True)
+2026-08-27 15:08:49,378 INFO main: eBay API unavailable -- using saved-search email alerts (IMAP) instead
+2026-08-27 15:08:49,390 INFO main: Matched 15 listing(s) from eBay alert emails
+2026-08-27 15:08:49,394 INFO main: Recorded 13 asking-price observation(s) (auctions and blocked listings excluded)
+2026-08-27 15:08:49,404 INFO main: Sold comps: none loaded -- every comp is an asking price.
+2026-08-27 15:08:49,414 INFO main: Comp buckets: 0 exact, 0 same_card, 10 same_set, 74 price_tier (from 920 observation(s))
+2026-08-27 15:08:49,416 INFO main: 0 opportunity(ies) after dedupe; 15 listing(s) not reported, top reasons: 9 x only context-only comps (card family or price tier), which can never declare a deal; 2 x a cheap card with nothing that makes a copy scarce -- no rookie, auto, patch, serial number, parallel or grade. Cheap because it is common; 2 x no comparable listing at any level
+2026-08-27 15:08:49,421 INFO main: Dry run -- not sending email or updating state files
+2026-08-27 15:09:10,064 INFO main: Starting daily card deal scan (dry_run=True)
+2026-08-27 15:09:10,064 INFO main: eBay API unavailable -- using saved-search email alerts (IMAP) instead
+2026-08-27 15:09:10,075 INFO main: Matched 15 listing(s) from eBay alert emails
+2026-08-27 15:09:10,078 INFO main: Recorded 13 asking-price observation(s) (auctions and blocked listings excluded)
+2026-08-27 15:09:10,085 INFO main: Sold comps: none loaded -- every comp is an asking price.
+2026-08-27 15:09:10,094 INFO main: Comp buckets: 0 exact, 0 same_card, 10 same_set, 74 price_tier (from 920 observation(s))
+2026-08-27 15:09:10,095 INFO main: 0 opportunity(ies) after dedupe; 15 listing(s) not reported, top reasons: 9 x only context-only comps (card family or price tier), which can never declare a deal; 2 x a cheap card with nothing that makes a copy scarce -- no rookie, auto, patch, serial number, parallel or grade. Cheap because it is common; 2 x no comparable listing at any level
+2026-08-27 15:09:10,098 INFO main: Dry run -- not sending email or updating state files
+2026-08-27 15:09:22,206 INFO main: Starting daily card deal scan (dry_run=True)
+2026-08-27 15:09:22,207 INFO main: eBay API unavailable -- using saved-search email alerts (IMAP) instead
+2026-08-27 15:09:22,218 INFO main: Matched 15 listing(s) from eBay alert emails
+2026-08-27 15:09:22,220 INFO main: Recorded 13 asking-price observation(s) (auctions and blocked listings excluded)
+2026-08-27 15:09:22,228 INFO main: Sold comps: none loaded -- every comp is an asking price.
+2026-08-27 15:09:22,237 INFO main: Comp buckets: 0 exact, 0 same_card, 10 same_set, 74 price_tier (from 920 observation(s))
+2026-08-27 15:09:22,238 INFO main: 0 opportunity(ies) after dedupe; 15 listing(s) not reported, top reasons: 9 x only context-only comps (card family or price tier), which can never declare a deal; 2 x a cheap card with nothing that makes a copy scarce -- no rookie, auto, patch, serial number, parallel or grade. Cheap because it is common; 2 x no comparable listing at any level
+2026-08-27 15:09:22,242 INFO main: Dry run -- not sending email or updating state files

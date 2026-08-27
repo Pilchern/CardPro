@@ -2134,3 +2134,38 @@ class TestYoungCore:
         body = body_of([deal])
         assert "YOUNG CORE" in body
         assert "85.0%" not in body
+
+
+class TestBrowseSectionsDropCompCaveats:
+    """These sections show no market value, no discount and no ROI.
+    Caveating the quality of a comp that is not on the page is noise -- it
+    was four wrapped lines of it on every card, the same four lines seven
+    times over, about a number the section deliberately refuses to print."""
+
+    def _with_bad_comps(self):
+        deal = carded(AUTO, 42.0, shipping_price=None)
+        deal.comp_match = make_match(
+            flag_eligible=False,
+            blocked=("context_only_level", "concentrated_sample", "thin_sample"),
+        )
+        deal.market_value = 200.0
+        return deal
+
+    def test_comp_quality_caveats_are_left_out(self):
+        block = flat(report._interest_block(1, self._with_bad_comps()))
+        assert "context-only" not in block
+        assert "one snapshot" not in block
+
+    def test_the_ones_about_the_card_and_the_cost_stay(self):
+        block = flat(report._interest_block(1, self._with_bad_comps()))
+        assert "shipping unknown" in block
+
+    def test_a_negative_signal_is_never_dropped(self):
+        # "This may be a reprint" is a fact about the card, not about how
+        # well a comp was measured, and it outranks everything.
+        deal = carded(AUTO, 42.0, negative_signals=("reprint",))
+        assert "REPRINT" in report._interest_block(1, deal)
+
+    def test_a_deal_section_still_gets_the_full_list(self):
+        risks = report._risks(self._with_bad_comps())
+        assert any("context-only" in r for r in risks)

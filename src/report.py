@@ -724,7 +724,7 @@ def _confidence_text(deal: Listing) -> str:
     return "{} -- {}".format(confidence.upper(), "; ".join(why))
 
 
-def _risks(deal: Listing) -> list:
+def _risks(deal: Listing, include_comp_quality: bool = True) -> list:
     """Everything true about this listing that could make the numbers above
     wrong, worst first.
 
@@ -796,6 +796,14 @@ def _risks(deal: Listing) -> list:
         except reasons.UnknownReasonError:
             comp_risks.append(str(blocked))
 
+    if not include_comp_quality:
+        # The browse sections show no market value, no discount and no ROI.
+        # Caveating the quality of a comp that is not on the page is noise,
+        # and it was four wrapped lines of it on every card -- the same four
+        # lines, seven times over, about a number the section deliberately
+        # refuses to print. What still belongs is everything about the card
+        # and the cost, which are the two things those sections DO state.
+        return identity_risks + price_risks
     return identity_risks + price_risks + comp_risks
 
 
@@ -1058,7 +1066,7 @@ def _interest_block(index: int, deal: Listing,
     described = desirability.describe(desirability.attributes_of(deal))
     if described:
         lines.append(_field_line("What it is", described))
-    risks = _risks(deal)
+    risks = _risks(deal, include_comp_quality=False)
     if risks:
         lines.append(_field_line("Risks", "; ".join(risks)))
     title_line = _title_line(deal)
