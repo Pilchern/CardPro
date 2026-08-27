@@ -82,6 +82,12 @@ class RunStats:
     #: parallel, card number and grade all live past that cut, so this is
     #: close to a ceiling on what the valuation engine can ever do.
     titles_truncated_pct: Optional[float] = None
+    #: What share of alert titles had a longer copy elsewhere in the same
+    #: anchor that we refused because it did not match the visible text.
+    #: Without it the truncation rate above is unreadable: a stubborn 98%
+    #: could mean eBay sends no fuller title (a real ceiling) or that we are
+    #: throwing one away (our bug). None means the run never measured it.
+    titles_recovery_refused_pct: Optional[float] = None
 
     rejections: reasons.RejectionLog = field(default_factory=reasons.RejectionLog)
     warnings: list = field(default_factory=list)
@@ -194,6 +200,18 @@ class RunStats:
                 "Titles: {:.0f}% arrived truncated by eBay -- a cut title is missing its set, "
                 "parallel, card number and grade, which is most of why comps do not "
                 "form".format(self.titles_truncated_pct)
+            )
+
+        if self.titles_recovery_refused_pct is not None:
+            # Printed even at 0%, because 0% is the answer to the question
+            # the line above always raises -- "is that ceiling eBay's or
+            # ours?" -- and a line that only appears on bad days leaves the
+            # good days looking unmeasured.
+            lines.append(
+                "Titles: a fuller copy was present but refused as not-this-listing for "
+                "{:.0f}% -- 0% means eBay's HTML carries no fuller title, so the rate "
+                "above is a real ceiling, not a check of ours discarding "
+                "it".format(self.titles_recovery_refused_pct)
             )
 
         if self.sold_comps_summary:

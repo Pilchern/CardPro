@@ -214,6 +214,7 @@ def fetch_ebay_alert_active(cfg, stats) -> list:
         stats.warn(counters["template_warning"], broken=True)
     seen = counters.get("titles_seen", 0)
     cut = counters.get("titles_truncated", 0)
+    refused = counters.get("titles_recovery_refused", 0)
     if seen:
         # The measured bottleneck, reported every run so a change to title
         # recovery is visible the next morning rather than argued about. A
@@ -221,7 +222,13 @@ def fetch_ebay_alert_active(cfg, stats) -> list:
         # grade -- everything the comp key needs -- so this number is close
         # to a ceiling on what the valuation engine can ever do.
         stats.titles_truncated_pct = 100.0 * cut / seen
-        logger.info("Titles: %d seen, %d still truncated (%.0f%%)", seen, cut, stats.titles_truncated_pct)
+        # ... and the half of that number we can actually act on: how often a
+        # fuller title was in the email and our own match check refused it.
+        stats.titles_recovery_refused_pct = 100.0 * refused / seen
+        logger.info(
+            "Titles: %d seen, %d still truncated (%.0f%%), %d had a fuller copy refused",
+            seen, cut, stats.titles_truncated_pct, refused,
+        )
 
     if counters.get("fetch_failures"):
         stats.warn(
@@ -905,16 +912,33 @@ def run(args: argparse.Namespace) -> None:
         logger.info("Dry run -- not sending email or updating state files")
         return
 
-    emailer.send_email(subject, body, cfg.gmail_address, cfg.gmail_app_password, cfg.email_to)
-
+    # BEFORE the send, and deliberately not with the two state writes below.
+    # The corpus is a record of what was OBSERVED, and today's alert emails
+    # were observed whether or not SMTP is up. Saving it after the send meant
+    # a failed send threw the day's asking prices away: the alert emails only
+    # look back ebay_alerts_lookback_days (a couple of days), so if the
+    # recovery run also misses that window those prices are gone for good and
+    # the comp corpus has a permanent hole. The workflow's persist step runs
+    # `if: always()`, so a corpus written here is still committed back when
+    # the run later fails.
     if history is not None:
         price_history.save(cfg.ebay_alert_price_history_path, history)
+
+    emailer.send_email(subject, body, cfg.gmail_address, cfg.gmail_app_password, cfg.email_to)
+
+    # AFTER the send, and it must stay after -- do not "tidy" this back
+    # together with the corpus save above. The seen file means "I have
+    # already TOLD you about this listing", not "I saw this listing". A send
+    # that raised told the user nothing, so marking these seen would suppress
+    # them from tomorrow's email and the user would never hear about them.
     seen = dedupe.prune_old(seen, cfg.prune_after_days, today)
     dedupe.save_seen(cfg.seen_listings_path, seen)
-    # Last, and only on the path where the email actually went out. The
-    # marker's one job is to answer "did today's scan complete", and writing
-    # it before the send would let a failed send record a run that never
-    # reached anybody.
+    # Last, and only on the path where the email actually went out -- also
+    # not to be merged with the corpus save above. The marker's one job is to
+    # answer "did today's scan complete", and the 17:00 backup run keys off
+    # it via --skip-if-ran-today. Writing it before the send would let a
+    # failed send record a run that never reached anybody, and the backup run
+    # would then skip the one day it exists for.
     run_marker.save(cfg.last_run_path, today_str, len(listings))
     logger.info("Done")
 

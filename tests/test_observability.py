@@ -152,3 +152,24 @@ def test_the_truncation_rate_is_reported():
 def test_no_line_when_nothing_was_measured():
     stats = _stats(listings_matched_to_watchlist=5)
     assert not any("truncated by eBay" in line for line in stats.health_lines())
+
+
+def test_the_refused_recovery_rate_is_reported():
+    """The truncation rate above it is not actionable on its own -- this is
+    the line that says whether the ceiling is eBay's or ours."""
+    stats = _stats(listings_matched_to_watchlist=5)
+    stats.titles_recovery_refused_pct = 12.0
+    assert any("refused as not-this-listing for 12%" in line for line in stats.health_lines())
+
+
+def test_a_zero_refusal_rate_is_still_reported():
+    # 0% is the answer to the question the truncation line raises, not an
+    # absence of news, so it has to be printed rather than skipped.
+    stats = _stats(listings_matched_to_watchlist=5)
+    stats.titles_recovery_refused_pct = 0.0
+    assert any("refused as not-this-listing for 0%" in line for line in stats.health_lines())
+
+
+def test_no_refusal_line_when_nothing_was_measured():
+    stats = _stats(listings_matched_to_watchlist=5)
+    assert not any("refused as not-this-listing" in line for line in stats.health_lines())
