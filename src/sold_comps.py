@@ -51,7 +51,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from src import comps
+from src import card_identity, comps
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +122,76 @@ def _valid_date(value) -> Optional[str]:
         return None
 
 
+def _spelling_lookup(pairs) -> dict:
+    """{lowercased term a user might type: the spelling card_identity emits}.
+
+    Takes pairs because the two are not always the same word: SET_ALIASES
+    means a title saying "Ginter" is stored as "Allen & Ginter", so a sale
+    typed the way the seller wrote it is just as unmatchable as a miscased
+    one. A term two vocabulary entries disagree about is dropped -- with no
+    single answer, saying nothing beats naming the wrong one.
+    """
+    lookup: dict[str, str] = {}
+    disputed: set[str] = set()
+    for typed, emitted in pairs:
+        key = " ".join(typed.lower().split())
+        if key in lookup and lookup[key] != emitted:
+            disputed.add(key)
+        lookup[key] = emitted
+    return {key: emitted for key, emitted in lookup.items() if key not in disputed}
+
+
+#: How card_identity spells the sets and parallels it extracts. Read out of
+#: its vocabulary rather than restated here: a product added there must not
+#: need a second edit here before a sale of it can be typed in.
+#:
+#: Only spellings the parser can actually EMIT belong in these tables. The
+#: manufacturer list is deliberately absent -- the parser refuses to call a
+#: card's set "Panini", so suggesting that spelling would send a user off to
+#: type something that still never matches.
+_SET_SPELLINGS = _spelling_lookup(
+    [(name, card_identity.SET_ALIASES.get(name, name)) for name in card_identity.SET_KEYWORDS]
+    + [(name, name) for name in card_identity.SET_ALIASES.values()]
+    + [(name, name) for name in card_identity.FLAGSHIP_NUMBER_PREFIX_SETS.values()]
+    + [(name, name) for name in card_identity.FLAGSHIP_MANUFACTURERS]
+)
+
+_PARALLEL_TERMS = card_identity.PARALLEL_KEYWORDS + card_identity.PARALLEL_QUALIFIER_WORDS
+
+_PARALLEL_SPELLINGS = _spelling_lookup((term, term) for term in _PARALLEL_TERMS)
+
+_PARALLEL_WORD_SPELLINGS = _spelling_lookup(
+    (word, word) for term in _PARALLEL_TERMS for word in term.split()
+)
+
+
+def _parser_spelling(value: str, field: str) -> Optional[str]:
+    """How card_identity would spell `value`, or None where its vocabulary
+    has no opinion at all.
+
+    Sets are matched whole, because the parser only ever emits a set name it
+    found in the vocabulary (then folded through SET_ALIASES) -- a phrase it
+    does not know is a phrase this cannot judge, and guessing at one would be
+    the confident-wrong answer this project refuses. Parallels are matched
+    word by word as well, because the parser BUILDS those: "Green Refractor"
+    is a colour joined to a qualifier and appears in no list to match whole.
+
+    None is the honest answer for an unknown term, and it means "accepted":
+    the vocabulary is a keyword list, not the set of every product that
+    exists, so an entry it has never heard of must not be refused.
+    """
+    phrase = " ".join(value.split())
+    whole = (_SET_SPELLINGS if field == "set_name" else _PARALLEL_SPELLINGS).get(phrase.lower())
+    if whole is not None:
+        return whole
+    if field != "parallel":
+        return None
+    words = [_PARALLEL_WORD_SPELLINGS.get(word.lower()) for word in phrase.split()]
+    if not words or any(word is None for word in words):
+        return None
+    return " ".join(words)
+
+
 def describe(sale: dict) -> str:
     """A short human label for one sale, used in warnings and CLI output so a
     rejected entry can actually be found in the file."""
@@ -172,6 +242,33 @@ def validation_error(sale) -> Optional[str]:
         return "has a 'grader' but no 'grade' (a slab with no grade has no market)"
     if grade and not grader:
         return "has a 'grade' but no 'grader' (PSA 10 and BGS 10 are different markets)"
+    # A typed set or parallel is worth nothing unless it is spelled the way
+    # card_identity spells it. Comp buckets are keyed on the exact string, so
+    # "prizm" and "Prizm" are two different cards to the engine: a sale typed
+    # the first way validates, writes, loads, counts in the footer -- and then
+    # never matches the listing it was entered to value. That is the silent
+    # entry-that-never-loads failure this function exists to prevent, one
+    # layer down, and it is worse there because nothing warns.
+    #
+    # Refused here rather than case-folded in the comp engine's key
+    # derivation, which was the other candidate. Folding there makes every
+    # observation's bucket key lossy forever to repair one input path, still
+    # catches nothing but case (an alias or a typo sails through), and undoes
+    # comps._clean_upper's standing decision that normalising set and
+    # parallel names is card_identity's job. Refusing also keeps the promise
+    # the rest of this module makes: loud, and never a quiet repair -- a
+    # repair would leave the user believing a spelling works that does not.
+    for field in ("set_name", "parallel"):
+        typed = _text(sale.get(field))
+        if typed is None:
+            continue
+        spelling = _parser_spelling(typed, field)
+        if spelling is not None and spelling != typed:
+            return (
+                f"{field} {typed!r} is not how the title parser spells it "
+                f"({spelling!r}) -- comps are keyed on the exact text, so this "
+                f"sale would load and then never match a listing"
+            )
     return None
 
 

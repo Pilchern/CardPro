@@ -469,7 +469,10 @@ def _tags(deal: Listing) -> list:
 
 
 #: Punctuation a title uses between the player name and the rest of it.
-_AFTER_PLAYER_CHARS = " \t-\u2013\u2014:,|/"
+#: No "/": a slash straight after the name is a print run ("Matas Buzelis
+#: /249 Rookie"), and eating it leaves "249 Rookie" reading as a card
+#: number -- a worse headline than the repetition this trim exists to fix.
+_AFTER_PLAYER_CHARS = " \t-\u2013\u2014:,|"
 
 
 def _without_leading_player(title: Optional[str], player: Optional[str]) -> Optional[str]:

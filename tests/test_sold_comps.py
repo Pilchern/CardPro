@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from src import comps, sold_comps
+from src import card_identity, comps, sold_comps
 from scripts import add_sold_comp
 
 
@@ -459,6 +459,114 @@ def test_sold_and_asking_observations_can_share_one_engine(tmp_path):
 
     assert match.stats.basis == comps.BASIS_ASKING
     assert match.confidence != "high"
+
+
+# -- spelled the way the parser spells it -----------------------------------
+#
+# A hand-typed set or parallel that differs from card_identity's spelling
+# validated, wrote, loaded and then matched nothing: comp buckets are keyed on
+# the exact string, so "prizm" is a different card from "Prizm". The invariant
+# these tests hold: a sale that validates is a sale that can match.
+
+
+@pytest.mark.parametrize(
+    "overrides,expected_fragment",
+    [
+        ({"set_name": "prizm"}, "'Prizm'"),
+        ({"set_name": "PRIZM"}, "'Prizm'"),
+        ({"set_name": "topps chrome"}, "'Topps Chrome'"),
+        ({"parallel": "silver"}, "'Silver'"),
+        ({"parallel": "silver prizm"}, "'Silver Prizm'"),
+        ({"parallel": "green REFRACTOR"}, "'Green Refractor'"),
+        # Not a case difference: SET_ALIASES means a title saying "Ginter" is
+        # stored as "Allen & Ginter", so the typed spelling is just as unable
+        # to meet a listing as a miscased one.
+        ({"set_name": "Ginter"}, "'Allen & Ginter'"),
+        ({"set_name": "Collectors Choice"}, '"Collector\'s Choice"'),
+    ],
+)
+def test_a_spelling_the_parser_would_never_produce_is_refused(overrides, expected_fragment):
+    problem = sold_comps.validation_error(_sale(**overrides))
+
+    assert problem is not None
+    assert expected_fragment in problem
+    assert sold_comps.to_observation(_sale(**overrides)) is None
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"set_name": "Prizm", "parallel": "Silver"},
+        {"parallel": "Silver Prizm"},
+        {"parallel": "Green Refractor"},  # built by the parser, in no list whole
+        {"set_name": "Topps"},  # what the flagship path emits
+        {"set_name": "Allen & Ginter"},
+        # The vocabulary is a keyword list, not every product that exists. A
+        # name it has never heard of gets no opinion and must not be refused.
+        {"set_name": "Nifty Fifty", "parallel": "Sunburst Foilboard"},
+        {"set_name": _OMIT, "parallel": _OMIT},
+    ],
+)
+def test_spellings_the_parser_could_produce_are_left_alone(overrides):
+    assert sold_comps.validation_error(_sale(**overrides)) is None
+
+
+def test_a_sale_that_validates_is_a_sale_that_can_match(tmp_path):
+    """The regression, end to end: the same card, typed by hand on one side
+    and read off a listing title by card_identity on the other, must land in
+    one bucket. Before the spelling check, `--set prizm --parallel "silver
+    prizm"` validated, loaded, counted in the footer -- and this lookup
+    returned None for ever, with nothing anywhere saying why.
+    """
+    identity = card_identity.extract_card_identity(
+        "2024 Panini Prizm Silver Prizm Caleb Williams #301 PSA 10"
+    )
+    assert (identity.set_name.value, identity.parallel.value) == ("Prizm", "Silver Prizm")
+
+    typed = [_sale(price=p, date=d, set_name="prizm", parallel="silver prizm")
+             for p, d in [(340.0, "2026-07-20"), (348.0, "2026-08-03"), (355.0, "2026-08-14")]]
+    assert [sold_comps.validation_error(sale) for sale in typed] != [None, None, None]
+
+    corrected = [
+        _sale(price=sale["price"], date=sale["date"],
+              set_name=sold_comps._parser_spelling(sale["set_name"], "set_name"),
+              parallel=sold_comps._parser_spelling(sale["parallel"], "parallel"))
+        for sale in typed
+    ]
+    assert [sold_comps.validation_error(sale) for sale in corrected] == [None, None, None]
+
+    engine = comps.CompEngine(
+        sold_comps.load(_write(tmp_path / "s.json", corrected)),
+        min_comps_required=3,
+        today=datetime(2026, 8, 15, tzinfo=timezone.utc),
+    )
+    match = engine.lookup(
+        player="Caleb Williams",
+        card_type="graded",
+        price=299.0,
+        grader="PSA",
+        grade="10",
+        year=2024,
+        set_name=identity.set_name.value,
+        parallel=identity.parallel.value,
+        card_number="301",
+    )
+
+    assert match is not None
+    assert match.level == "exact"
+    assert match.stats.basis == comps.BASIS_SOLD
+
+
+def test_cli_refuses_to_write_a_miscased_set(tmp_path, capsys):
+    """The writer must refuse what the loader would key differently from
+    every listing -- an entry that never matches is the failure this file's
+    validation exists to keep out."""
+    path = _write(tmp_path / "s.json", [])
+
+    assert add_sold_comp.main(_argv(path, **{"--set": "prizm"})) == 2
+
+    assert "Prizm" in capsys.readouterr().err
+    assert json.loads(path.read_text())["sales"] == []
 
 
 # -- the shipped config file ------------------------------------------------

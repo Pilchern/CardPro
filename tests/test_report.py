@@ -1079,6 +1079,19 @@ def test_a_title_that_is_only_the_player_name_is_still_shown():
     assert "Josh Giddey -- Josh Giddey" in body
 
 
+def test_a_print_run_right_after_the_player_keeps_its_slash():
+    """"Matas Buzelis /249 Rookie" trimmed to "249 Rookie" reads as card
+    number 249 -- a worse headline than the repetition being fixed."""
+    body = body_of([
+        make_listing(
+            player="Matas Buzelis",
+            title="Matas Buzelis /249 Rookie Red\u2026",
+            card_identity=CardIdentity(),
+        )
+    ])
+    assert "Matas Buzelis -- /249 Rookie" in body
+
+
 def test_a_title_not_starting_with_the_player_is_left_alone():
     body = body_of([
         make_listing(
