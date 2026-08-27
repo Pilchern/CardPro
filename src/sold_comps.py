@@ -192,9 +192,14 @@ def _parser_spelling(value: str, field: str) -> Optional[str]:
     return " ".join(words)
 
 
-def describe(sale: dict) -> str:
-    """A short human label for one sale, used in warnings and CLI output so a
-    rejected entry can actually be found in the file."""
+def describe_card(sale: dict) -> str:
+    """The CARD half of describe() -- everything except what it sold for.
+
+    Split out because a bulk import shows several sales of one card, and
+    labelling that table with a whole describe() puts one row's price and
+    date in the heading over all of them: "3 sale(s) for ... $344.00 on
+    2026-08-15" reads as three sales at that price on that day.
+    """
     if not isinstance(sale, dict):
         return repr(sale)
     parts = [
@@ -207,9 +212,17 @@ def describe(sale: dict) -> str:
     grader, grade = _text(sale.get("grader")), _text(sale.get("grade"))
     slab = f"{grader.upper()} {grade}" if grader and grade else "raw"
     player = _text(sale.get("player")) or "?"
+    return f"{player} {card} [{slab}]".replace("  ", " ")
+
+
+def describe(sale: dict) -> str:
+    """A short human label for one sale, used in warnings and CLI output so a
+    rejected entry can actually be found in the file."""
+    if not isinstance(sale, dict):
+        return repr(sale)
     price = sale.get("price")
     date = _text(sale.get("date")) or "?"
-    return f"{player} {card} [{slab}] ${price} on {date}".replace("  ", " ")
+    return f"{describe_card(sale)} ${price} on {date}"
 
 
 def validation_error(sale) -> Optional[str]:

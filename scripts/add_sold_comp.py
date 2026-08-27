@@ -295,7 +295,9 @@ def add_pasted(args) -> int:
             states.append("new")
             fresh.append((sale, row))
 
-    print(f"\nRead {len(rows)} sale(s) for {sold_comps.describe(sales[0])}")
+    # The card, not the first sale: describe() ends with one row's price and
+    # date, which over a table of three reads as three sales at that price.
+    print(f"\nRead {len(rows)} sale(s) for {sold_comps.describe_card(sales[0])}")
     print("-" * 68)
     for row, state in zip(rows, states):
         flag = "  <- YEAR ASSUMED, check this" if row.year_inferred else ""
