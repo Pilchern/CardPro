@@ -1,3 +1,5 @@
+import pytest
+
 from src import matcher
 
 PLAYERS = ["Michael Jordan", "Walter Payton"]
@@ -183,3 +185,94 @@ def test_detect_grading_is_a_wrapper_and_unchanged():
     ]:
         details = matcher.detect_grade_details(title)
         assert matcher.detect_grading(title) == (details.card_type, details.grader, details.grade), title
+
+
+class TestNamePartsMustBeAdjacent:
+    """Testing each part of a name independently anywhere in the title reads
+    a THIRD person out of two. The cheap-card-attributed-to-a-legend
+    direction is the dangerous one: it is exactly the shape that becomes a
+    DEALS headline, and it puts the ask in that legend's comp bucket."""
+
+    WATCHLIST = ["Michael Jordan", "Frank Thomas", "Caleb Williams", "Caleb Wilson",
+                 "Luther Burden", "Pete Crow-Armstrong", "Scottie Pippen"]
+
+    @pytest.mark.parametrize("title", [
+        "2024 Panini Prizm Jordan Love RC Michael Penix Jr Dual Rookies",
+        "1998 Upper Deck Michael Finley / Jordan Clarkson",
+        "2022 Topps Frank Schwindel RC Thomas Hatch Cubs Team Set",
+        "1970 Topps Isiah Thomas Frank Robinson Combo",
+    ])
+    def test_two_other_peoples_names_do_not_add_up_to_a_watchlist_player(self, title):
+        assert matcher.match_players(title, self.WATCHLIST) == []
+
+    def test_a_real_card_is_not_discarded_as_a_multi_player_lot(self):
+        """Both watchlist Calebs matched any title containing a Wilson and a
+        Williams, and main.py drops a listing that matches two players. A
+        genuine Caleb Wilson card was being thrown away because someone
+        called Williams was on the same card."""
+        title = "2025 Bowman Caleb Wilson RC Jameson Williams Refractor Dual"
+
+        assert matcher.match_players(title, self.WATCHLIST) == ["Caleb Wilson"]
+
+    @pytest.mark.parametrize("title,expected", [
+        ("2024 Panini Prizm Caleb Williams Silver #301 PSA 10", ["Caleb Williams"]),
+        ("MICHAEL JORDAN 1986 FLEER #57 PSA 9", ["Michael Jordan"]),
+        ("Michael-Jordan 1986 Fleer", ["Michael Jordan"]),
+        ("Michael Jordan's 1986 Fleer Rookie", ["Michael Jordan"]),
+        ("Michael  Jordan 1986 Fleer", ["Michael Jordan"]),
+        ("Luther Burden III 2025 Prizm", ["Luther Burden"]),
+        ("Pete Crow-Armstrong 2024 Topps", ["Pete Crow-Armstrong"]),
+    ])
+    def test_the_spellings_sellers_actually_use_still_match(self, title, expected):
+        assert matcher.match_players(title, self.WATCHLIST) == expected
+
+    def test_a_reversed_name_needs_its_comma(self):
+        """"Jordan, Michael" is a real notation and keeps working. Bare
+        reversed adjacency does not, because that is how "Isiah Thomas Frank
+        Robinson" would become a Frank Thomas card."""
+        assert matcher.match_players("Jordan, Michael 1986 Fleer", self.WATCHLIST) == [
+            "Michael Jordan"
+        ]
+
+    def test_a_genuine_dual_still_matches_both(self):
+        title = "2024 Topps Michael Jordan / Scottie Pippen Dual Auto"
+
+        assert matcher.match_players(title, self.WATCHLIST) == [
+            "Michael Jordan", "Scottie Pippen",
+        ]
+
+
+class TestAGradeIsNotASerialNumber:
+    @pytest.mark.parametrize("title", [
+        "Walter Payton Game Used Patch Tag 1/1 Bears",
+        "Michael Jordan Nameplate Tag 1/1 Jersey Relic",
+        "Caleb Williams Shoe Tag 1/1 Rookie Patch Auto",
+    ])
+    def test_tag_one_of_one_is_a_print_run_not_a_tag_1(self, title):
+        """Reading "TAG 1/1" as a TAG 1 comps a patch card against the worst
+        slabs on the market -- the exact harm the false-friend list was
+        written to prevent, arriving through a shape it did not cover."""
+        info = matcher.detect_grade_details(title)
+
+        assert info.card_type == "raw"
+        assert info.grade is None
+
+    def test_a_hyphen_no_longer_defeats_the_false_friend_guard(self):
+        """The guard read exactly one space-delimited token, so
+        "laundry-tag" was a single token matching nothing in the list -- on
+        the very phrase the list exists to catch."""
+        info = matcher.detect_grade_details("Michael Jordan laundry-tag TAG 9")
+
+        assert info.card_type == "raw"
+
+    def test_a_real_tag_slab_still_reads(self):
+        info = matcher.detect_grade_details("Michael Jordan TAG 9 slab")
+
+        assert (info.card_type, info.grader, info.grade) == ("graded", "TAG", "9")
+
+    def test_a_graded_card_numbered_to_99_keeps_its_grade(self):
+        """"PSA 9 /99" is a PSA 9 of a card numbered to 99. The space is what
+        separates it from "TAG 1/1"."""
+        info = matcher.detect_grade_details("Caleb Williams PSA 9 /99 Silver")
+
+        assert (info.grader, info.grade) == ("PSA", "9")
