@@ -103,9 +103,19 @@ more than one that says "95% under market" about a common.
 8. Emails a **sectioned, decision-first report**, each section omitted when
    empty:
 
-   `ACT NOW` · `TOP OPPORTUNITIES` · `TARGET CARD HITS` ·
-   `INVESTMENT WATCHLIST` · `AUCTIONS ENDING SOON` · `OFFER OPPORTUNITIES` ·
+   `ACT NOW` · `DEALS` · `TARGET CARD HITS` · `AUCTIONS ENDING SOON` ·
+   `COOL CARDS` · `CHEAP FINDS` · `YOUNG CORE` · `OFFER OPPORTUNITIES` ·
    `WATCH` · `LOW CONFIDENCE / NEEDS REVIEW` · `PRICE DROPS`
+
+   The order is what a reader is looking for, not how strong the valuation
+   behind it is. That distinction matters here more than it would elsewhere:
+   the first three sections need a comp CardPro will stand behind, and on
+   this project's data that almost never exists -- so a report ordered only
+   by valuation strength has a body made entirely of things it could not
+   value. `COOL CARDS`, `CHEAP FINDS` and `YOUNG CORE` answer questions that
+   *can* be answered from a title -- what is this card, is it cheap, is it
+   one of my players -- and make no claim about price at all. No market
+   value, no discount, no ROI, even when a comp exists.
 
    followed by a **SYSTEM HEALTH** footer, the
    [sold comps worth adding](#sold-comps-worth-adding-and-why-nothing-flags-today),

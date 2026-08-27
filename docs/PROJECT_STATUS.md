@@ -250,14 +250,41 @@ instead of printing a negative ROI as though something were wrong.
 
 ## 6. What the report tells you
 
-Decision-first sections, each omitted when empty: **ACT NOW**, **TOP
-OPPORTUNITIES**, **TARGET CARD HITS**, **INVESTMENT WATCHLIST**, **AUCTIONS
-ENDING SOON**, **OFFER OPPORTUNITIES**, **WATCH**, **LOW CONFIDENCE / NEEDS
-REVIEW**, **PRICE DROPS**, followed by a **SYSTEM HEALTH** footer, the
-sold comps worth adding, Craigslist quick-check links and search-coverage
+Sections, each omitted when empty: **ACT NOW**, **DEALS**, **TARGET CARD
+HITS**, **AUCTIONS ENDING SOON**, **COOL CARDS**, **CHEAP FINDS**, **YOUNG
+CORE**, **OFFER OPPORTUNITIES**, **WATCH**, **LOW CONFIDENCE / NEEDS
+REVIEW**, **PRICE DROPS**, followed by a **SYSTEM HEALTH** footer, the sold
+comps worth adding, Craigslist quick-check links and search-coverage
 suggestions.
 
-Every headline card answers the whole thesis: what it is, total acquisition
+### Two kinds of section, and why both exist
+
+The first three need a comp CardPro is willing to stand behind. On the data
+this project actually has, that has never existed -- so for a while the body
+of every email was a list of things it could not value, under headings that
+read as junk drawers, with a subject line saying "No opportunities today"
+above all of it. Honest, and unusable.
+
+**COOL CARDS**, **CHEAP FINDS** and **YOUNG CORE** answer questions that can
+be answered from a title alone:
+
+| Section | The question | Rule |
+|---|---|---|
+| **COOL CARDS** | What IS this card? | One strong attribute (autograph, patch, serial numbering) or at least two ordinary ones. Ordered by how scarce or wanted the card is -- see `desirability.interest_score`. |
+| **CHEAP FINDS** | Is it pocket change worth having? | Total cost at or under `report.cheap_find_ceiling`, with any desirability attribute at all. |
+| **YOUNG CORE** | Is it one of the players I am betting on? | `player_tier: young_core` with any attribute, that no earlier section took. |
+
+None of the three prints a market value, a discount or an ROI, **even when a
+comp exists**. That is the whole reason they are safe: being interesting and
+being underpriced are different facts, the second is the one CardPro usually
+cannot establish, and a browse section that quietly borrowed the first to
+imply the second would be the circular valuation wearing a new label.
+
+A day with cool cards and no deals still says so, in one line rather than
+six paragraphs. Dropping the statement would let a page of autographs read
+as a page of opportunities.
+
+Every headline card in a *deal* section answers the whole thesis: what it is, total acquisition
 cost, estimated market value *with the comp level, sample size, basis, price
 range and recency behind it*, the discount, the resale economics and their
 assumptions, the confidence and why, the risks that could invalidate it, and
@@ -384,7 +411,31 @@ that would bring it back.
 | `settings.json` → `economics` | Your real selling costs: fees, outbound shipping, supplies, tax, resale haircut |
 | `settings.json` → `auctions` | Required margin for max-rational-bid, and what counts as ending soon |
 | `settings.json` → `alerts` | How exceptional something must be to earn an ACT NOW slot. Keep the dollar figure in step with `focus.price_ceiling` -- a $40 card cannot save $150 |
-| `settings.json` → `focus` | What reaches the email and how long it is: the price ceiling you shop under, the exception for an exceptional dearer card, whether auctions bid past your maximum are dropped, and the caps on total and per-section length |
+| `settings.json` → `focus` | What reaches the email and how long it is: the price ceiling you shop under, the exception for an exceptional dearer card, the higher `cool_cards_price_ceiling` that a genuinely scarce card is allowed to reach, whether auctions bid past your maximum are dropped, and the caps on total and per-section length |
+| `settings.json` → `report.cheap_find_ceiling` | What counts as pocket change for **CHEAP FINDS**. Raise it to see more cheap cards, lower it to see fewer. This is not a deal threshold and moving it changes nothing about what counts as a deal |
+
+### If you want to see more, these are the knobs that will and will not work
+
+Worth stating plainly, because the obvious lever is the wrong one.
+**Lowering `discount_threshold_pct` will not produce a single extra deal.**
+A listing only becomes an opportunity if it has a comp the engine will stand
+behind, and on this data that has never happened -- so the discount bar is
+not what is stopping anything. The knobs that actually change what you see:
+
+| Want | Knob |
+|---|---|
+| More cheap cards to browse | `report.cheap_find_ceiling` (default $15) |
+| Dearer interesting cards | `focus.cool_cards_price_ceiling` (default $100) |
+| More of everything | `focus.max_listings`, `focus.max_per_section` |
+| Actual deals | Nothing in this file. Enter sold comps (`python -m scripts.add_sold_comp`) -- the report footer ranks which ones would unlock the most listings |
+
+There is one switch that would make deals appear immediately:
+`valuation.require_flag_eligible_comp: false`. It lets the price-bracket
+level declare deals, and that level is defined *by price*, so the cheap end
+of every bucket automatically reads as under market. Every false positive in
+v1 came from exactly this, including a $1.25 base card reported as 95% under
+market. The report prints a loud warning whenever it is off. It is your
+system and the switch is there; this is what it costs.
 
 ---
 
