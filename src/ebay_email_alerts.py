@@ -216,17 +216,20 @@ def extract_listings_from_html(html: str, counters: Optional[dict] = None) -> li
     results = []
     seen_urls = set()
     truncated = 0
+    recovery_refused = 0
 
     for a in soup.find_all("a", href=True):
         clean_url = _find_item_url(a["href"])
         if not clean_url or clean_url in seen_urls:
             continue
 
-        title = _fullest_title(a)
+        title, fuller_refused = _fullest_title(a)
         if not title:
             continue
         if looks_truncated(title):
             truncated += 1
+        if fuller_refused:
+            recovery_refused += 1
 
         price = _find_nearby(a, _extract_price)
         shipping_price = _find_nearby(a, _extract_shipping)
@@ -249,6 +252,15 @@ def extract_listings_from_html(html: str, counters: Optional[dict] = None) -> li
     if counters is not None and results:
         counters["titles_seen"] = counters.get("titles_seen", 0) + len(results)
         counters["titles_truncated"] = counters.get("titles_truncated", 0) + truncated
+        # Without this, a report still saying "98% truncated" cannot be read:
+        # it could mean eBay's HTML simply carries no fuller copy of the
+        # title (a real ceiling, nothing to fix here), or that a fuller copy
+        # was sitting right there and our own stem check threw it away (our
+        # bug, and fixable). Those two need different work, so they get
+        # counted apart rather than argued about.
+        counters["titles_recovery_refused"] = (
+            counters.get("titles_recovery_refused", 0) + recovery_refused
+        )
 
     return results
 
@@ -277,8 +289,9 @@ def _title_stem(text: str) -> str:
     return stripped.strip().lower()
 
 
-def _fullest_title(anchor) -> str:
-    """The longest title for this listing that the email actually contains.
+def _fullest_title(anchor) -> tuple[str, bool]:
+    """The longest title for this listing that the email actually contains,
+    and whether a longer candidate was refused for not matching it.
 
     THIS IS THE BOTTLENECK, measured. Of the first 350 titles the live run
     stored, 98% arrived truncated, at a median of 30 characters -- "2024
@@ -299,8 +312,19 @@ def _fullest_title(anchor) -> str:
     begins with the part of it we can be sure of. Without that check a
     generic alt like "eBay" or a seller's store name would silently replace a
     real title, which is worse than a short one.
+
+    The second return value is True when that check was the only thing
+    standing between us and a longer title. It is the difference between
+    "eBay sent no fuller copy" and "eBay sent one and we refused it", which
+    a truncation rate on its own cannot tell you -- see the counters in
+    extract_listings_from_html.
     """
-    visible = anchor.get_text(strip=True)
+    # The separator is load-bearing: these are HTML emails, so a title is
+    # routinely split across sibling <span>s or table cells, and joining the
+    # child nodes with nothing welds two words together ("Panini PrizmCaleb
+    # Williams"). That fused pair appears in no real title, so the stem built
+    # from it matched nothing and every recovery was silently refused.
+    visible = " ".join(anchor.get_text(" ", strip=True).split())
     stem = _title_stem(visible) if visible else ""
 
     candidates = [anchor.get(name) for name in _TITLE_ATTRIBUTES]
@@ -309,6 +333,7 @@ def _fullest_title(anchor) -> str:
         candidates.append(image.get("title"))
 
     best = visible
+    refused = False
     for candidate in candidates:
         if not candidate:
             continue
@@ -322,9 +347,13 @@ def _fullest_title(anchor) -> str:
         # twenty-odd characters of this specific listing either way, so it
         # still cannot match a generic alt like "Shop eBay for great deals".
         if stem and stem not in candidate.lower():
+            refused = True
             continue
         best = candidate
-    return best
+    # A refusal only counts while it is still costing us something: if a
+    # later candidate got through, nothing was lost and reporting it as a
+    # near-miss would send tomorrow's reader after a title we already have.
+    return best, refused and best == visible
 
 
 def _find_item_url(href: str) -> Optional[str]:

@@ -470,6 +470,45 @@ class TestTheFullestTitleAvailable:
         )
         assert self._extract(html) == "2024 Panini Caleb Williams Prizm Silver"
 
+    def test_a_title_split_across_spans_is_still_recovered(self):
+        # HTML emails are span-and-table soup, so the visible title routinely
+        # arrives in pieces. Joining those pieces with nothing welds two words
+        # together ("Panini Caleb" -> "PaniniCaleb"), the stem built from the
+        # weld matches no real title, and every recovery was refused.
+        html = (
+            '<a href="https://www.ebay.com/itm/1" title="{}">'
+            "<span>2024 Panini</span><span>Caleb Williams Pr\u2026</span></a>"
+        ).format(self.FULL)
+        assert self._extract(html) == self.FULL
+
+    def test_a_title_split_across_block_elements_is_still_recovered(self):
+        html = (
+            '<a href="https://www.ebay.com/itm/1" title="{}">'
+            "<div>2024 Panini</div><div>Caleb Williams Pr\u2026</div></a>"
+        ).format(self.FULL)
+        assert self._extract(html) == self.FULL
+
+    def test_a_nested_candidate_is_still_refused_when_it_is_another_listing(self):
+        # The nesting fix must not buy recovery by weakening the check that
+        # keeps a generic string out of a real title. This decoy is longer
+        # than the visible text, so only the stem check can stop it.
+        html = (
+            '<a href="https://www.ebay.com/itm/1" '
+            'title="Shop eBay for great deals on trading cards and collectibles today">'
+            "<span>2024 Panini</span><span>Caleb Williams Pr\u2026</span></a>"
+        )
+        assert self._extract(html) == "2024 Panini Caleb Williams Pr\u2026"
+
+    def test_the_visible_text_of_a_split_title_keeps_its_word_break(self):
+        # Nothing fuller exists here, so the visible text is the title -- and
+        # it must not arrive with two words welded together, which no
+        # downstream parser could split again.
+        html = (
+            '<a href="https://www.ebay.com/itm/1">'
+            "<span>2024 Panini</span><span>Caleb Williams Pr\u2026</span></a>"
+        )
+        assert self._extract(html) == "2024 Panini Caleb Williams Pr\u2026"
+
     def test_a_prefixed_template_still_matches(self):
         # Some templates put "New listing" in front of one copy and not the
         # other; a strict prefix check would throw the real title away.
@@ -501,7 +540,8 @@ def test_the_truncation_rate_is_counted_for_the_report():
         '<a href="https://www.ebay.com/itm/2">2026 Topps #201 Kyle Teel</a>'
     )
     ebay_email_alerts.extract_listings_from_html(html, counters=counters)
-    assert counters == {"titles_seen": 2, "titles_truncated": 1}
+    assert counters["titles_seen"] == 2
+    assert counters["titles_truncated"] == 1
 
 
 def test_a_recovered_title_is_not_counted_as_truncated():
@@ -513,3 +553,39 @@ def test_a_recovered_title_is_not_counted_as_truncated():
     )
     ebay_email_alerts.extract_listings_from_html(html, counters=counters)
     assert counters["titles_truncated"] == 0
+
+
+def test_a_refused_recovery_is_counted_separately_from_a_truncation():
+    """A truncation rate on its own cannot be acted on: 98% could mean eBay
+    sends no fuller title, or that a fuller one was sitting in the HTML and
+    our own match check threw it away. Those need different work."""
+    counters = {}
+    html = (
+        # A fuller copy is there and matches -- recovered, nothing refused.
+        '<a href="https://www.ebay.com/itm/1" title="2024 Panini Caleb Williams Prizm Silver #301">'
+        "2024 Panini Caleb Williams Pr\u2026</a>"
+        # A longer copy is there but belongs to no listing of ours -- refused.
+        '<a href="https://www.ebay.com/itm/2" '
+        'title="Shop eBay for great deals on trading cards and collectibles today">'
+        "2024 Panini Caleb Williams Pr\u2026</a>"
+        # Nothing fuller anywhere -- truncated, but nothing was refused.
+        '<a href="https://www.ebay.com/itm/3">2024 Panini Caleb Williams Pr\u2026</a>'
+    )
+    ebay_email_alerts.extract_listings_from_html(html, counters=counters)
+    assert counters["titles_seen"] == 3
+    assert counters["titles_truncated"] == 2
+    assert counters["titles_recovery_refused"] == 1
+
+
+def test_nothing_is_refused_when_a_later_candidate_gets_through():
+    # A near-miss that cost us nothing is not worth reporting -- it would
+    # send tomorrow's reader after a title we already have in full.
+    counters = {}
+    html = (
+        '<a href="https://www.ebay.com/itm/1" '
+        'title="Shop eBay for great deals on trading cards and collectibles today">'
+        '<img alt="2024 Panini Caleb Williams Prizm Silver RC #301 PSA 10">'
+        "2024 Panini Caleb Williams Pr\u2026</a>"
+    )
+    ebay_email_alerts.extract_listings_from_html(html, counters=counters)
+    assert counters["titles_recovery_refused"] == 0

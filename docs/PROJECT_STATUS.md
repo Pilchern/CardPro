@@ -1,6 +1,6 @@
 # CardPro — Project Status
 
-_Last updated: August 26, 2026 (reliability pass; identity KPI; one row per listing)_
+_Last updated: August 27, 2026 (browse sections; identity stops reading the cut; sold comps from one paste)_
 
 A personal, automated sports-card deal-finding system. Runs once a day,
 scans your eBay saved-search alerts for the watchlist below, values what it
@@ -8,8 +8,9 @@ finds against comparable sales, and emails a decision-first report — every
 morning, whether or not it finds anything.
 
 **Status: live and running in production, with a deliberately much stricter
-definition of "deal" than it had before the 2.0 pass -- and, since August 26,
-a measured account of why that definition currently matches nothing.**
+definition of "deal" than it had before the 2.0 pass -- a measured account of
+why that definition currently matches nothing, and, since August 27, an email
+that is worth opening on the days it matches nothing.**
 
 ---
 
@@ -101,6 +102,47 @@ regardless of how good the extraction gets.
 to tune. The work, in order, is title parsing (set name first), then time.
 
 ---
+
+### August 27: an email worth opening, and four things it was reading wrong
+
+The strict definition above was correct and the email built on it was not
+usable: the sections that need a comp were empty every morning, so what the
+reader actually got was a long list of things CardPro could not value. The
+report is now built around browse sections that make no price claim at all
+(§6), and on the live corpus it leads with "11 cool cards + 12 cheap finds"
+instead of "No opportunities today".
+
+Alongside that, four defects found by attacking the code with realistic
+input rather than reading it. Each is now a regression test.
+
+- **Identity was being read out of the half-word eBay cut off.** Twenty
+  rows in the live corpus held a value ending exactly at the truncation and
+  stored it as fact: `parallel 'Red'` off `Red...` (as likely Redemption),
+  `print_run 2` off `/2...` (the card is numbered to 250 -- and 2 is scored
+  as the scarcest thing the ranking knows). `card_number` and `parallel`
+  key the only two comp levels allowed to declare a deal, so these are
+  exactly the fields that must not be guessed. A field now goes back to
+  unknown where its evidence runs into the cut; parallels need one word more
+  room, because `White S...` yields the whole word `White` off a White Sox
+  card. Measured cost: `same_card` keys 7 -> 6. Nothing flag-eligible either
+  way.
+- **The corpus waited on SMTP.** `run()` emailed and only then saved
+  `price_history`, so a failed send discarded the day's observations --
+  unrecoverable, because the alert emails only look back a couple of days.
+  The corpus now saves first. The seen file and the run marker deliberately
+  do not move: both mean something that is false when the send failed.
+- **One listing was counted in two markets.** A listing read `raw` one day
+  and `graded` the next occupied a row under both keys for the full
+  retention window. One such pair is live in the corpus today, and fuller
+  titles will produce more.
+- **A hand-entered sold comp could validate and then never match.**
+  `--set prizm` passed validation, loaded, and was counted in the footer,
+  while the listing it was entered to value is keyed `Prizm`. Refused at the
+  boundary now, against `card_identity`'s own vocabulary.
+
+Sold comps also got much cheaper to enter: `python -m scripts.add_sold_comp
+--paste` reads every sale off a results page you copied, in one go. It is
+deliberately suspicious about what a sale is -- see §5.
 
 ## 1. What this actually answers
 
@@ -390,12 +432,27 @@ that would bring it back.
   statement is that the extraction work is expected to help and has not been
   shown to.
 
+  **The cause underneath it was measured on August 26 and it is not the
+  vocabulary.** 98% of stored titles arrive truncated, at a median of 30
+  characters -- "2024 Panini Prizm Caleb Willi..." -- and the set, parallel,
+  card number and grade all live past that cut. No amount of parser work
+  reads a word that is not there. `src/ebay_email_alerts.py` now takes the
+  fullest title the email contains, including `title`/`aria-label`/`alt`
+  attributes rather than only the visible anchor text; whether eBay actually
+  carries one there is unknown from here and is graded by the next live run.
+  The report reports both numbers, deliberately: the truncation rate, and
+  how often a fuller copy was present and refused by our own match check.
+  A stubborn 98% means opposite things in those two cases.
+
   Everything else on this list is downstream of this one.
 - **No confirmed sold prices anywhere.** Structural: 100% of the corpus is
   asking prices. The hand-entry path now exists (`src/sold_comps.py`,
-  `python -m scripts.add_sold_comp`) and the report ranks which lookups
-  would unlock the most listings (`src/comp_requests.py`), but nothing has
-  been entered yet, and hand entry tops out around twenty comps. Card Ladder
+  `python -m scripts.add_sold_comp`, and `--paste` for a whole results page
+  at once) and the report ranks which lookups would unlock the most listings
+  (`src/comp_requests.py`), but nothing has been entered yet. Note the
+  ordering constraint: a sold comp can only match a listing CardPro can
+  identify, so seeding comps pays off exactly when the truncation problem
+  above does. Card Ladder
   remains the paid alternative and is still not bought.
 - **The corpus is only a few days deep**, and `min_comp_span_days` is 7, so
   no bucket in it can currently clear the sample-span gate. That resolves

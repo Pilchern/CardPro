@@ -520,21 +520,73 @@ def test_confidence_states_the_word_and_the_reasons():
 
 
 def test_no_comp_prints_no_discount_line_and_says_so_plainly():
+    """The guarantee is that a card with no comp is still shown and still
+    says so. It used to say it on a Market line reading "no comparable
+    listing was found"; NEEDS REVIEW now says it once, on the Why here line,
+    rather than spending four lines per card restating its own header. What
+    must never change is that the absence is stated and no discount is
+    computed off it."""
     listing = make_listing(
         comp_match=None, market_value=None, pct_under_market=None, dollar_savings=None,
         is_opportunity=False,
     )
     body = body_of([listing])
-    assert "no comparable listing was found" in flat(body)
+    assert "no comp at any level" in flat(body)
+    assert "CardPro cannot say what this is worth" in flat(body)
     assert "Discount" not in body
     assert "below market" not in body
 
 
-def test_no_comp_confidence_line_says_there_is_nothing_to_be_confident_about():
+def test_no_comp_says_there_is_nothing_to_be_confident_about():
+    """Same guarantee from the other side: no figure is printed for a card
+    with no comp, so there is no number for the reader to mistake for one."""
     listing = make_listing(comp_match=None, market_value=None, pct_under_market=None,
                            dollar_savings=None, is_opportunity=False)
     body = body_of([listing])
-    assert "no comp backs this listing" in flat(body)
+    assert "showing it rather than dropping it silently" in flat(body)
+    assert "Market" not in body
+
+
+def test_an_untrustworthy_identity_still_prints_the_figure_it_has():
+    """The third way into NEEDS REVIEW is a comp CardPro would stand behind
+    attached to a card it does not trust. "We have a number and do not trust
+    the card it belongs to" is a different thing to say than "we have no
+    number", so the figure and its confidence are printed here even though
+    the two comp-less paths print neither."""
+    listing = make_listing(
+        is_opportunity=False,
+        pct_under_market=5.0,  # nowhere near the threshold, so WATCH passes on it
+        dollar_savings=10.0,
+        title_truncated=True,
+    )
+    body = body_of([listing])
+    assert "Market" in body
+    assert "Confidence" in body
+    assert "identity is not trustworthy enough" in flat(body)
+
+
+def test_needs_review_does_not_restate_its_own_header_once_per_card():
+    """Ten cards of Market-not-established + a four-line Context + a LOW
+    Confidence line under a header saying LOW ran to 249 lines, about half
+    the email, for the section that is explicitly not recommending anything.
+    The reason is per-card and stays; the explanation belongs to the header."""
+    listings = [
+        make_listing(
+            id=str(index),
+            url="http://example.com/{}".format(index),
+            is_opportunity=False,
+            pct_under_market=1.0,
+            comp_match=make_match(level="price_tier", flag_eligible=False,
+                                  blocked=("context_only_level",)),
+        )
+        for index in range(5)
+    ]
+    body = body_of(listings)
+    # Said once, in the section header.
+    assert flat(body).count("a price-bracket bucket is defined BY price") == 1
+    # Said once per card, because it is about the card.
+    assert flat(body).count("the only comp available is price-bracket estimate") == 5
+    assert "not established" not in body
 
 
 def test_discount_percent_shows_one_decimal_and_never_contradicts_the_threshold():
@@ -798,7 +850,10 @@ def test_context_only_blocked_reason_is_surfaced_in_english():
                               blocked=("context_only_level",)),
     )
     body = body_of([listing])
-    assert "only context-only comps (card family or price tier)" in flat(body)
+    # Stated on the Why here line rather than as one of four lines all
+    # saying it -- see test_no_comp_prints_no_discount_line_and_says_so_plainly.
+    assert "the only comp available is price-bracket estimate (context only)" in flat(body)
+    assert "never allowed to declare a deal" in flat(body)
 
 
 def test_negative_signals_are_labelled_in_english():
@@ -984,6 +1039,68 @@ def test_a_patch_card_is_tagged_patch_and_not_also_mem():
     assert "AUTO" in body
     assert "PATCH" in body
     assert "MEM +" not in body
+
+
+def test_the_headline_does_not_say_the_player_name_twice():
+    """A title CardPro could not parse falls back to showing the title in the
+    headline, and most seller titles open with the player -- so the row read
+    "Josh Giddey -- Josh Giddey Auto PSA DNA Cer...", spending a third of the
+    line on the name it had just printed."""
+    body = body_of([
+        make_listing(
+            player="Josh Giddey",
+            title="Josh Giddey Auto PSA DNA Cer...",
+            card_identity=CardIdentity(),
+        )
+    ])
+    assert "Josh Giddey -- Auto PSA DNA Cer..." in body
+    assert "Josh Giddey -- Josh Giddey" not in body
+
+
+def test_trimming_the_player_off_the_headline_puts_the_raw_title_back_on_its_own_line():
+    """The title is the primary evidence for every parsed field, so the
+    headline may shorten it only if the full thing is still printed."""
+    body = body_of([
+        make_listing(
+            player="Josh Giddey",
+            title="Josh Giddey Auto PSA DNA Cer...",
+            card_identity=CardIdentity(),
+        )
+    ])
+    assert "Title       Josh Giddey Auto PSA DNA Cer..." in body
+
+
+def test_a_title_that_is_only_the_player_name_is_still_shown():
+    """Trimming would leave nothing, and an empty headline slot says less
+    than a redundant one."""
+    body = body_of([
+        make_listing(player="Josh Giddey", title="Josh Giddey", card_identity=CardIdentity())
+    ])
+    assert "Josh Giddey -- Josh Giddey" in body
+
+
+def test_a_print_run_right_after_the_player_keeps_its_slash():
+    """"Matas Buzelis /249 Rookie" trimmed to "249 Rookie" reads as card
+    number 249 -- a worse headline than the repetition being fixed."""
+    body = body_of([
+        make_listing(
+            player="Matas Buzelis",
+            title="Matas Buzelis /249 Rookie Red\u2026",
+            card_identity=CardIdentity(),
+        )
+    ])
+    assert "Matas Buzelis -- /249 Rookie" in body
+
+
+def test_a_title_not_starting_with_the_player_is_left_alone():
+    body = body_of([
+        make_listing(
+            player="Josh Giddey",
+            title="Signed rookie card Josh Giddey",
+            card_identity=CardIdentity(),
+        )
+    ])
+    assert "Josh Giddey -- Signed rookie card Josh Giddey" in body
 
 
 def test_tag_row_omits_graded_because_the_grade_is_already_in_the_headline():

@@ -900,9 +900,14 @@ class TestRunEndToEnd:
         assert subject.startswith("[Card Deals]")
         assert "CARDPRO DAILY" in body
 
-    def test_state_is_written_after_the_email_not_before(self, project_with_alerts_enabled,
-                                                         monkeypatch, tmp_path):
-        # If SMTP fails, nothing may be marked as reported-when-it-was-not.
+    def test_the_seen_file_and_run_marker_wait_for_a_successful_send(self,
+                                                                     project_with_alerts_enabled,
+                                                                     monkeypatch, tmp_path):
+        # If SMTP fails, nothing may be marked as reported-when-it-was-not:
+        # the seen file would suppress these listings from tomorrow's email,
+        # and the marker would make the 17:00 backup run skip the day it
+        # exists for. Both stay behind the send even though the comp corpus
+        # (below) no longer does.
         def explode(*_args, **_kwargs):
             raise RuntimeError("smtp down")
 
@@ -912,6 +917,45 @@ class TestRunEndToEnd:
         with pytest.raises(RuntimeError):
             main_module.run(self._args())
         assert not (tmp_path / "data" / "seen_listings.json").exists()
+        assert not (tmp_path / "data" / "last_run.json").exists()
+
+    def test_the_corpus_keeps_the_days_observations_when_the_send_fails(self,
+                                                                       project_with_alerts_enabled,
+                                                                       monkeypatch, tmp_path):
+        # Observing a listing is a fact that happened whether or not the
+        # email went out, and the alert emails only look back a couple of
+        # days -- a run that discarded its observations because SMTP was down
+        # would leave a permanent hole in the comp corpus if the recovery run
+        # missed that window too.
+        def explode(*_args, **_kwargs):
+            raise RuntimeError("smtp down")
+
+        main_module = project_with_alerts_enabled
+        corpus = tmp_path / "data" / "ebay_alert_price_history.json"
+
+        self._wire(main_module, monkeypatch, [alert_item("https://www.ebay.com/itm/1", 25.0)], [])
+        main_module.run(self._args())
+        before = {
+            o["id"] for rows in json.loads(corpus.read_text()).values() for o in rows
+        }
+
+        self._wire(
+            main_module, monkeypatch,
+            [alert_item("https://www.ebay.com/itm/2", 30.0),
+             alert_item("https://www.ebay.com/itm/3", 31.0)],
+            [],
+        )
+        monkeypatch.setattr(main_module.emailer, "send_email", explode)
+        with pytest.raises(RuntimeError):
+            main_module.run(self._args())
+
+        after = {
+            o["id"] for rows in json.loads(corpus.read_text()).values() for o in rows
+        }
+        assert "https://www.ebay.com/itm/2" in after
+        assert "https://www.ebay.com/itm/3" in after
+        # And the failed run added to the corpus rather than replacing it.
+        assert before < after
 
     def test_a_dry_run_writes_no_state_and_sends_nothing(self, project_with_alerts_enabled,
                                                          monkeypatch, tmp_path, capsys):

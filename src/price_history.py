@@ -120,6 +120,48 @@ def save(path: Path, history: dict) -> None:
     tmp_path.replace(path)
 
 
+def _drop_from_other_card_types(
+    history: dict, player: str, card_type: str, listing_id: str
+) -> Optional[str]:
+    """Removes this listing's rows from the same player's OTHER card_type
+    buckets, returning the earliest date any of them carried.
+
+    A listing that reads `raw` one morning and `graded` the next is not two
+    listings. It is one ask, read better (or worse) the second time -- a
+    fuller subject line revealing the slab, a truncated one hiding it. Left
+    alone, the stale row goes on quoting a market the card is not in for the
+    whole retention window, and every consumer counts the same ask twice.
+
+    Only the same player's other card_types are touched, and that limit is
+    the point: raw and graded stay separate markets (principle #6), this
+    just stops one listing sitting in two of them. The same id under a
+    DIFFERENT player is a multi-player card genuinely present in two
+    players' markets; both rows are real, and dropping one would lose data
+    that cannot be re-fetched once the listing sells.
+    """
+    prefix = "{}|".format(player)
+    current_key = "{}|{}".format(player, card_type)
+    first_seen = None
+    emptied = []
+    for key, entries in history.items():
+        if key == current_key or not key.startswith(prefix):
+            continue
+        kept = [obs for obs in entries if obs.get("id") != listing_id]
+        if len(kept) == len(entries):
+            continue
+        for obs in entries:
+            if obs.get("id") == listing_id:
+                date = obs.get("date")
+                if date and (first_seen is None or date < first_seen):
+                    first_seen = date
+        history[key] = kept
+        if not kept:
+            emptied.append(key)
+    for key in emptied:
+        del history[key]
+    return first_seen
+
+
 def record(
     history: dict,
     player: str,
@@ -179,6 +221,10 @@ def record(
     A listing whose price changed keeps the newer price: that is the ask a
     buyer faces today. Only eight listings in the measured corpus ever
     changed price, so this is a correctness detail rather than a common path.
+
+    ONE ROW PER LISTING holds across card_type too. A listing whose reading
+    changes -- raw one day, graded the next -- MOVES to the new bucket
+    rather than occupying a row in both; see _drop_from_other_card_types.
     """
     key = f"{player}|{card_type}"
     entries = history.setdefault(key, [])
@@ -234,15 +280,77 @@ def record(
                 existing.update(observation)
                 existing["date"] = first_seen
                 return
+        moved_from = _drop_from_other_card_types(history, player, card_type, listing_id)
+        if moved_from:
+            # A move inherits the old row's date for the same reason a
+            # re-sighting keeps its own: the ask entered the market when it
+            # was first seen, whichever reading of the title that sighting
+            # produced. Re-stamping it here would rebuild exactly the fake
+            # calendar spread the one-row rule exists to prevent.
+            observation["date"] = moved_from
     entries.append(observation)
 
 
-def collapse_duplicates(history: dict) -> dict:
-    """One row per listing id, for a corpus recorded before record() deduped.
+def _collapse_across_card_types(history: dict) -> dict:
+    """Keeps one row per (player, listing id), in the card_type of its latest
+    reading, for a corpus recorded before record() moved listings between
+    buckets.
 
-    Same rule record() now applies: earliest date, latest price. Rows with no
-    id pre-date that field and cannot be collapsed, so they are kept as they
-    are and age out through prune_old.
+    Same rule and same limit as _drop_from_other_card_types: only one
+    player's own card_types compete, because two players sharing a listing
+    is a multi-player card that really is in both markets.
+    """
+    winners: dict[tuple[str, str], tuple[str, dict]] = {}
+    for key, entries in history.items():
+        player = key.partition("|")[0]
+        for obs in entries:
+            listing_id = obs.get("id")
+            if not listing_id:
+                continue
+            prior = winners.get((player, listing_id))
+            if prior is None:
+                winners[(player, listing_id)] = (key, dict(obs))
+                continue
+            prior_key, prior_obs = prior
+            first_seen = min(
+                (d for d in (prior_obs.get("date"), obs.get("date")) if d),
+                default=None,
+            )
+            latest = (
+                (key, obs)
+                if (obs.get("date") or "") >= (prior_obs.get("date") or "")
+                else (prior_key, prior_obs)
+            )
+            merged = dict(latest[1])
+            if first_seen:
+                merged["date"] = first_seen
+            winners[(player, listing_id)] = (latest[0], merged)
+
+    collapsed: dict = {}
+    for key, entries in history.items():
+        player = key.partition("|")[0]
+        kept = []
+        for obs in entries:
+            listing_id = obs.get("id")
+            if not listing_id:
+                kept.append(obs)
+                continue
+            winner_key, winner_obs = winners[(player, listing_id)]
+            if winner_key == key:
+                kept.append(winner_obs)
+        if kept:
+            collapsed[key] = kept
+    return collapsed
+
+
+def collapse_duplicates(history: dict) -> dict:
+    """One row per listing, for a corpus recorded before record() deduped.
+
+    Same rule record() now applies: earliest date, latest price -- and that
+    rule reaches across card_type, because a listing read `raw` one day and
+    `graded` the next changed how it was read, not how many listings there
+    are. Rows with no id pre-date that field and cannot be collapsed, so
+    they are kept as they are and age out through prune_old.
 
     Kept as an explicit function rather than something load() does silently,
     because it rewrites stored data and that should be a decision someone
@@ -272,7 +380,26 @@ def collapse_duplicates(history: dict) -> dict:
             merged["date"] = first_seen
             by_id[listing_id] = merged
         collapsed[key] = [by_id[i] for i in order] + kept
-    return collapsed
+    return _collapse_across_card_types(collapsed)
+
+
+def observed_dates(history: dict) -> set:
+    """Every date the corpus holds a row for, as YYYY-MM-DD strings.
+
+    Answers a question the run marker cannot: the marker says when a scan
+    last COMPLETED, and completing means the email went out. Since the
+    corpus is saved before the send, a run whose SMTP failed leaves a gap in
+    the marker and no gap here -- and the two cases call for opposite
+    reactions. "A day of listings was never seen" is unrecoverable; "a day
+    was seen and you were not told" is a day of listings sitting in the
+    corpus that you can still go and look at.
+    """
+    return {
+        obs["date"]
+        for entries in history.values()
+        for obs in entries
+        if obs.get("date")
+    }
 
 
 def prune_old(history: dict, max_age_days: int, today: datetime) -> dict:
@@ -293,10 +420,10 @@ def prune_old(history: dict, max_age_days: int, today: datetime) -> dict:
 
 
 def deduped_observations(history: dict) -> list[dict]:
-    """One observation per unique listing id (the latest by date), each
-    tagged with its "player" and "card_type" (parsed out of the storage
-    key) -- the shared corpus used both by as_buckets() (price-tier only)
-    and comps.build_hierarchical_comp_table() (identity-aware levels).
+    """One observation per unique listing (the latest by date), each tagged
+    with its "player" and "card_type" (parsed out of the storage key) -- the
+    shared corpus used both by as_buckets() (price-tier only) and
+    comps.build_hierarchical_comp_table() (identity-aware levels).
 
     Observations sharing the same listing "id" are collapsed to just the
     most recent one, so one listing seen on multiple days (overlapping
@@ -304,26 +431,38 @@ def deduped_observations(history: dict) -> list[dict]:
     contributes a single price to the median instead of one per sighting --
     see module docstring. Observations with no "id" (pre-dating that field)
     can't be deduped and are kept as-is.
+
+    That collapse spans card_types, keyed on (player, id) rather than on the
+    storage key. record() now moves a listing whose reading changes, but it
+    can only do that for a listing it sees again -- a listing that flipped
+    raw/graded and then sold leaves its stale row on disk until it ages out,
+    and one such pair is in the live corpus today. Deduping at read time is
+    what stops that ask being counted in two markets at once, without
+    waiting on a re-sighting or a migration.
+
+    It stays keyed on the player, though: the same id under two players is a
+    multi-player card really present in both players' markets, and each of
+    those rows is a distinct datum for a distinct comp set.
+
+    The newest reading wins, because a later look at the same listing is a
+    later look at the same title -- usually a fuller one.
     """
-    observations: list[dict] = []
+    unidentified: list[dict] = []
+    latest_by_listing: dict[tuple[str, str], dict] = {}
     for key, entries in history.items():
         player, _, card_type = key.partition("|")
-        latest_by_id: dict[str, dict] = {}
-        unidentified: list[dict] = []
         for obs in entries:
-            listing_id = obs.get("id")
-            if not listing_id:
-                unidentified.append(obs)
-                continue
-            prior = latest_by_id.get(listing_id)
-            if prior is None or obs.get("date", "") >= prior.get("date", ""):
-                latest_by_id[listing_id] = obs
-        for obs in list(latest_by_id.values()) + unidentified:
             merged = dict(obs)
             merged["player"] = player
             merged["card_type"] = card_type
-            observations.append(merged)
-    return observations
+            listing_id = obs.get("id")
+            if not listing_id:
+                unidentified.append(merged)
+                continue
+            prior = latest_by_listing.get((player, listing_id))
+            if prior is None or merged.get("date", "") >= prior.get("date", ""):
+                latest_by_listing[(player, listing_id)] = merged
+    return list(latest_by_listing.values()) + unidentified
 
 
 def as_buckets(history: dict) -> dict[tuple[str, str, str], list[float]]:

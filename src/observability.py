@@ -82,6 +82,17 @@ class RunStats:
     #: parallel, card number and grade all live past that cut, so this is
     #: close to a ceiling on what the valuation engine can ever do.
     titles_truncated_pct: Optional[float] = None
+    #: What share of alert titles had a longer copy elsewhere in the same
+    #: anchor that we refused because it did not match the visible text.
+    #: Without it the truncation rate above is unreadable: a stubborn 98%
+    #: could mean eBay sends no fuller title (a real ceiling) or that we are
+    #: throwing one away (our bug). None means the run never measured it.
+    titles_recovery_refused_pct: Optional[float] = None
+    #: Of the days missing from the run marker, how many the corpus DOES
+    #: hold observations for. Those days were scanned and only the email
+    #: failed, which is a different loss from never having looked -- see
+    #: price_history.observed_dates.
+    scanned_but_unreported_days: Optional[int] = None
 
     rejections: reasons.RejectionLog = field(default_factory=reasons.RejectionLog)
     warnings: list = field(default_factory=list)
@@ -180,20 +191,47 @@ class RunStats:
         ]
 
         if self.days_since_last_run is not None and self.days_since_last_run > 1:
-            lines.append(
-                "!! {} day(s) since the last completed scan -- {} day(s) of listings were "
-                "never seen and cannot be recovered (eBay's alert emails only look back "
-                "a couple of days). Check the Actions tab: GitHub drops scheduled "
-                "workflows under load.".format(
-                    self.days_since_last_run, self.days_since_last_run - 1
+            missed = self.days_since_last_run - 1
+            # The marker only records runs that finished by EMAILING you, and
+            # the corpus is written before the send. So a gap in the marker
+            # has two causes with opposite consequences, and claiming the
+            # worse one when the corpus disproves it is the same overclaim
+            # this project refuses everywhere else.
+            scanned = self.scanned_but_unreported_days or 0
+            unseen = max(missed - scanned, 0)
+            if unseen:
+                lines.append(
+                    "!! {} day(s) since the last completed scan -- {} day(s) of listings were "
+                    "never seen and cannot be recovered (eBay's alert emails only look back "
+                    "a couple of days). Check the Actions tab: GitHub drops scheduled "
+                    "workflows under load.".format(self.days_since_last_run, unseen)
                 )
-            )
+            if scanned:
+                lines.append(
+                    "!! {} day(s) were scanned but never reached you -- the listings are in "
+                    "the corpus and still count towards comps, but no email went out, so "
+                    "anything worth acting on that day went unseen. That is a send failure "
+                    "rather than a missed run: check the Actions tab and the app "
+                    "password.".format(scanned)
+                )
 
         if self.titles_truncated_pct is not None:
             lines.append(
                 "Titles: {:.0f}% arrived truncated by eBay -- a cut title is missing its set, "
                 "parallel, card number and grade, which is most of why comps do not "
                 "form".format(self.titles_truncated_pct)
+            )
+
+        if self.titles_recovery_refused_pct is not None:
+            # Printed even at 0%, because 0% is the answer to the question
+            # the line above always raises -- "is that ceiling eBay's or
+            # ours?" -- and a line that only appears on bad days leaves the
+            # good days looking unmeasured.
+            lines.append(
+                "Titles: a fuller copy was present but refused as not-this-listing for "
+                "{:.0f}% -- 0% means eBay's HTML carries no fuller title, so the rate "
+                "above is a real ceiling, not a check of ours discarding "
+                "it".format(self.titles_recovery_refused_pct)
             )
 
         if self.sold_comps_summary:

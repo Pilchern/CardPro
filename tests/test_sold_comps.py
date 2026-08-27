@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from src import comps, sold_comps
+from src import card_identity, comps, sold_comps
 from scripts import add_sold_comp
 
 
@@ -461,6 +461,114 @@ def test_sold_and_asking_observations_can_share_one_engine(tmp_path):
     assert match.confidence != "high"
 
 
+# -- spelled the way the parser spells it -----------------------------------
+#
+# A hand-typed set or parallel that differs from card_identity's spelling
+# validated, wrote, loaded and then matched nothing: comp buckets are keyed on
+# the exact string, so "prizm" is a different card from "Prizm". The invariant
+# these tests hold: a sale that validates is a sale that can match.
+
+
+@pytest.mark.parametrize(
+    "overrides,expected_fragment",
+    [
+        ({"set_name": "prizm"}, "'Prizm'"),
+        ({"set_name": "PRIZM"}, "'Prizm'"),
+        ({"set_name": "topps chrome"}, "'Topps Chrome'"),
+        ({"parallel": "silver"}, "'Silver'"),
+        ({"parallel": "silver prizm"}, "'Silver Prizm'"),
+        ({"parallel": "green REFRACTOR"}, "'Green Refractor'"),
+        # Not a case difference: SET_ALIASES means a title saying "Ginter" is
+        # stored as "Allen & Ginter", so the typed spelling is just as unable
+        # to meet a listing as a miscased one.
+        ({"set_name": "Ginter"}, "'Allen & Ginter'"),
+        ({"set_name": "Collectors Choice"}, '"Collector\'s Choice"'),
+    ],
+)
+def test_a_spelling_the_parser_would_never_produce_is_refused(overrides, expected_fragment):
+    problem = sold_comps.validation_error(_sale(**overrides))
+
+    assert problem is not None
+    assert expected_fragment in problem
+    assert sold_comps.to_observation(_sale(**overrides)) is None
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"set_name": "Prizm", "parallel": "Silver"},
+        {"parallel": "Silver Prizm"},
+        {"parallel": "Green Refractor"},  # built by the parser, in no list whole
+        {"set_name": "Topps"},  # what the flagship path emits
+        {"set_name": "Allen & Ginter"},
+        # The vocabulary is a keyword list, not every product that exists. A
+        # name it has never heard of gets no opinion and must not be refused.
+        {"set_name": "Nifty Fifty", "parallel": "Sunburst Foilboard"},
+        {"set_name": _OMIT, "parallel": _OMIT},
+    ],
+)
+def test_spellings_the_parser_could_produce_are_left_alone(overrides):
+    assert sold_comps.validation_error(_sale(**overrides)) is None
+
+
+def test_a_sale_that_validates_is_a_sale_that_can_match(tmp_path):
+    """The regression, end to end: the same card, typed by hand on one side
+    and read off a listing title by card_identity on the other, must land in
+    one bucket. Before the spelling check, `--set prizm --parallel "silver
+    prizm"` validated, loaded, counted in the footer -- and this lookup
+    returned None for ever, with nothing anywhere saying why.
+    """
+    identity = card_identity.extract_card_identity(
+        "2024 Panini Prizm Silver Prizm Caleb Williams #301 PSA 10"
+    )
+    assert (identity.set_name.value, identity.parallel.value) == ("Prizm", "Silver Prizm")
+
+    typed = [_sale(price=p, date=d, set_name="prizm", parallel="silver prizm")
+             for p, d in [(340.0, "2026-07-20"), (348.0, "2026-08-03"), (355.0, "2026-08-14")]]
+    assert [sold_comps.validation_error(sale) for sale in typed] != [None, None, None]
+
+    corrected = [
+        _sale(price=sale["price"], date=sale["date"],
+              set_name=sold_comps._parser_spelling(sale["set_name"], "set_name"),
+              parallel=sold_comps._parser_spelling(sale["parallel"], "parallel"))
+        for sale in typed
+    ]
+    assert [sold_comps.validation_error(sale) for sale in corrected] == [None, None, None]
+
+    engine = comps.CompEngine(
+        sold_comps.load(_write(tmp_path / "s.json", corrected)),
+        min_comps_required=3,
+        today=datetime(2026, 8, 15, tzinfo=timezone.utc),
+    )
+    match = engine.lookup(
+        player="Caleb Williams",
+        card_type="graded",
+        price=299.0,
+        grader="PSA",
+        grade="10",
+        year=2024,
+        set_name=identity.set_name.value,
+        parallel=identity.parallel.value,
+        card_number="301",
+    )
+
+    assert match is not None
+    assert match.level == "exact"
+    assert match.stats.basis == comps.BASIS_SOLD
+
+
+def test_cli_refuses_to_write_a_miscased_set(tmp_path, capsys):
+    """The writer must refuse what the loader would key differently from
+    every listing -- an entry that never matches is the failure this file's
+    validation exists to keep out."""
+    path = _write(tmp_path / "s.json", [])
+
+    assert add_sold_comp.main(_argv(path, **{"--set": "prizm"})) == 2
+
+    assert "Prizm" in capsys.readouterr().err
+    assert json.loads(path.read_text())["sales"] == []
+
+
 # -- the shipped config file ------------------------------------------------
 
 
@@ -649,3 +757,179 @@ class TestFromTitle:
             "--player", "Caleb Williams", "--price", "348", "--date", "2026-08-15",
             "--path", str(path),
         ]) == 0
+
+
+# -- scripts/add_sold_comp.py --paste ----------------------------------------
+
+
+PASTED_PAGE = """\
+2024 Panini Prizm Caleb Williams Silver Prizm RC #301 PSA 10
+Pre-Owned
+$344.00
++$5.99 shipping
+Sold  Aug 15, 2026
+
+2024 Prizm Caleb Williams Silver #301 PSA 10
+Pre-Owned
+$375.00
+Free shipping
+Sold  Jul 28, 2026
+"""
+
+
+class TestPasteMode:
+    """Seeding one card costs one paste instead of one invocation per sale --
+    which is the difference between the sold-comp store being populated and
+    staying empty. It is also the one place a PARSER decides what a sale was,
+    so nothing reaches the file until the user has seen every row."""
+
+    def _identity(self, path):
+        return [
+            "--paste-file", None,  # filled in by callers
+            "--player", "Caleb Williams",
+            "--year", "2024",
+            "--set", "Prizm",
+            "--parallel", "Silver Prizm",
+            "--card-number", "301",
+            "--grader", "PSA",
+            "--grade", "10",
+            "--path", str(path),
+        ]
+
+    def _run(self, tmp_path, path, text=PASTED_PAGE, extra=()):
+        source = tmp_path / "pasted.txt"
+        source.write_text(text)
+        argv = self._identity(path)
+        argv[1] = str(source)
+        return add_sold_comp.main(argv + list(extra))
+
+    def test_preview_is_the_default_and_writes_nothing(self, tmp_path, capsys):
+        path = tmp_path / "s.json"
+
+        assert self._run(tmp_path, path) == 0
+
+        assert not path.exists()
+        printed = capsys.readouterr().out
+        assert "Preview only" in printed
+        assert "344.00" in printed and "375.00" in printed
+
+    def test_confirm_writes_every_row_under_the_one_identity(self, tmp_path):
+        path = tmp_path / "s.json"
+
+        assert self._run(tmp_path, path, extra=["--confirm"]) == 0
+
+        stored = sold_comps.load(path)
+        assert [entry["price"] for entry in stored] == [344.00, 375.00]
+        assert {entry["date"] for entry in stored} == {"2026-08-15", "2026-07-28"}
+        assert {entry["player"] for entry in stored} == {"Caleb Williams"}
+
+    def test_a_second_import_of_the_same_page_adds_nothing(self, tmp_path, capsys):
+        """Re-pasting after adding one more sale to the page must not double
+        every comp already banked -- the engine would read the duplicates as
+        independent evidence and tighten its dispersion gate on them."""
+        path = tmp_path / "s.json"
+        self._run(tmp_path, path, extra=["--confirm"])
+
+        assert self._run(tmp_path, path, extra=["--confirm"]) == 0
+
+        assert len(sold_comps.load(path)) == 2
+        assert "Nothing new to add." in capsys.readouterr().out
+
+    def test_an_active_listing_page_is_refused_and_nothing_is_written(self, tmp_path, capsys):
+        path = tmp_path / "s.json"
+
+        assert self._run(
+            tmp_path, path, text="Caleb Williams PSA 10\n$425.00\nBuy It Now\n", extra=["--confirm"]
+        ) == 2
+
+        assert not path.exists()
+        assert "Refused to import" in capsys.readouterr().err
+
+    def test_text_with_no_readable_pairs_says_so_rather_than_writing_nothing_quietly(
+        self, tmp_path, capsys
+    ):
+        path = tmp_path / "s.json"
+
+        assert self._run(tmp_path, path, text="Sold items\nno numbers here\n", extra=["--confirm"]) == 2
+
+        assert not path.exists()
+        assert "no date-and-price pair" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("flag,value", [
+        ("--price", "348"),
+        ("--date", "2026-08-15"),
+        ("--shipping", "5.99"),
+    ])
+    def test_per_sale_flags_are_refused_alongside_paste(self, tmp_path, capsys, flag, value):
+        """--price with --paste reads as "use this price", and it cannot mean
+        that for a block of sales that each carry their own. --shipping is
+        the same shape and was writing one figure onto every parsed row."""
+        path = tmp_path / "s.json"
+
+        assert self._run(tmp_path, path, extra=[flag, value]) == 2
+
+        assert not path.exists()
+        assert "{} describes one sale".format(flag) in capsys.readouterr().err
+
+    def test_dry_run_and_confirm_together_are_refused_rather_than_one_winning(self, tmp_path, capsys):
+        """--confirm --dry-run wrote the file: add_pasted never looked at
+        dry_run. Two words for the same thing pointing opposite ways is a
+        question for the user, not something to resolve silently."""
+        path = tmp_path / "s.json"
+
+        assert self._run(tmp_path, path, extra=["--confirm", "--dry-run"]) == 2
+
+        assert not path.exists()
+        assert "--dry-run" in capsys.readouterr().err
+
+    def test_a_file_that_is_not_text_is_refused_rather_than_crashing(self, tmp_path, capsys):
+        path = tmp_path / "s.json"
+        binary = tmp_path / "binary.bin"
+        binary.write_bytes(b"\xff\xfe\x00\x01")
+
+        argv = self._identity(path)
+        argv[1] = str(binary)
+
+        assert add_sold_comp.main(argv + ["--confirm"]) == 2
+        assert not path.exists()
+        assert "Could not read" in capsys.readouterr().err
+
+    def test_an_inferred_year_is_flagged_in_the_preview(self, tmp_path, capsys):
+        path = tmp_path / "s.json"
+
+        self._run(tmp_path, path, text="Sold  Aug 15\n$344.00\n")
+
+        assert "YEAR ASSUMED" in capsys.readouterr().out
+
+    def test_a_corrupt_file_is_never_overwritten(self, tmp_path, capsys):
+        path = tmp_path / "s.json"
+        path.write_text("{not json")
+
+        assert self._run(tmp_path, path, extra=["--confirm"]) == 2
+
+        assert path.read_text() == "{not json"
+        assert "Refusing to write" in capsys.readouterr().err
+
+    def test_existing_sales_survive_the_import(self, tmp_path):
+        path = _write(tmp_path / "s.json", [_sale(price=300.0, date="2026-07-01")])
+
+        assert self._run(tmp_path, path, extra=["--confirm"]) == 0
+
+        document = json.loads(path.read_text())
+        assert document["_comment"] == "hand-edited"
+        assert [entry["price"] for entry in document["sales"]] == [300.0, 344.00, 375.00]
+
+    def test_confirm_without_paste_is_refused_rather_than_ignored(self, tmp_path):
+        path = tmp_path / "s.json"
+
+        assert add_sold_comp.main(_argv(path) + ["--confirm"]) == 2
+
+        assert not path.exists()
+
+    def test_missing_price_without_paste_is_refused(self, tmp_path, capsys):
+        path = tmp_path / "s.json"
+
+        assert add_sold_comp.main(_argv(path, **{"--price": None})) == 2
+
+        assert not path.exists()
+        assert "--price" in capsys.readouterr().err

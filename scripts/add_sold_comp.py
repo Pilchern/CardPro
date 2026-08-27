@@ -29,6 +29,19 @@ that exists nowhere else, so a half-written one is unacceptable.
 --date is required rather than defaulting to today: the date a card SOLD is
 almost never the date you got around to typing it in, and the comp engine
 weights by that date.
+
+MANY SALES AT ONCE. One card usually has several recent sales on the page
+you are already looking at, and typing them one invocation at a time is the
+friction this script exists to remove. Copy the results and paste them in:
+
+    python -m scripts.add_sold_comp --paste \\
+        --from-title "2024 Panini Prizm Caleb Williams Silver Prizm #301 PSA 10"
+
+That reads every date-and-price pair it can (src/sold_comp_import.py), files
+them all under the one identity, and prints the lot. It writes nothing until
+you add --confirm -- the opposite default to the single-sale form above,
+because there you typed the two numbers yourself and here a parser worked
+them out of a page.
 """
 from __future__ import annotations
 
@@ -38,7 +51,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src import card_identity, matcher, sold_comps  # noqa: E402
+from src import card_identity, matcher, sold_comp_import, sold_comps  # noqa: E402
 
 
 def identity_from_title(title: str) -> dict:
@@ -118,9 +131,34 @@ def build_parser() -> argparse.ArgumentParser:
         "(the same parser the daily scan uses). Anything you also pass explicitly "
         "wins over what it read. The extracted identity is printed before writing.",
     )
+    parser.add_argument(
+        "--paste",
+        action="store_true",
+        help="Read many sales of ONE card from text you copied off a sold-results page, "
+        "given on stdin. Nothing is written without --confirm.",
+    )
+    parser.add_argument(
+        "--paste-file",
+        dest="paste_file",
+        type=Path,
+        help="Same as --paste, reading the copied text from a file instead of stdin.",
+    )
+    parser.add_argument(
+        "--confirm",
+        action="store_true",
+        help="Actually write the pasted sales. Without it --paste only shows you what it read.",
+    )
     parser.add_argument("--player", help="Player name, spelled as on the watchlist.")
-    parser.add_argument("--price", required=True, type=float, help="Item price in USD, EXCLUDING shipping.")
-    parser.add_argument("--date", required=True, help="Date the card SOLD, YYYY-MM-DD.")
+    parser.add_argument(
+        "--price",
+        type=float,
+        help="Item price in USD, EXCLUDING shipping. Required unless --paste/--paste-file "
+        "is used, where the prices come out of the pasted text.",
+    )
+    parser.add_argument(
+        "--date",
+        help="Date the card SOLD, YYYY-MM-DD. Required unless --paste/--paste-file is used.",
+    )
     parser.add_argument("--year", type=int, help="Card year, e.g. 2024.")
     parser.add_argument("--set", dest="set_name", help='Set name, e.g. "Prizm".')
     parser.add_argument("--parallel", help='Parallel, e.g. "Silver". Omit for a base card you cannot confirm.')
@@ -141,8 +179,204 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _read_sales(path):
+    """``(document, sales)`` from ``path``, or ``None`` after printing why not.
+
+    Deliberately fatal where sold_comps.load() is forgiving: load() skips a
+    corrupt file so the daily scan still runs, but a writer that treated
+    "unreadable" as "empty" would replace hand-typed data that exists nowhere
+    else with whatever it was about to add.
+    """
+    try:
+        document = sold_comps.read_document(path)
+    except ValueError as exc:
+        print(f"Refusing to write: {exc}", file=sys.stderr)
+        print("Fix the file by hand first -- it holds data that exists nowhere else.", file=sys.stderr)
+        return None
+    sales = document.get("sales")
+    if sales is None:
+        sales = []
+    elif not isinstance(sales, list):
+        print(f"Refusing to write: 'sales' in {path} is not a list.", file=sys.stderr)
+        return None
+    return document, list(sales)
+
+
+def _pasted_text(args):
+    """The copied text, or None after saying why there is none."""
+    if args.paste_file:
+        try:
+            return args.paste_file.read_text()
+        except (OSError, UnicodeDecodeError) as exc:
+            # UnicodeDecodeError is a ValueError, not an OSError: without it
+            # a binary file handed to --paste-file tracebacked rather than
+            # refusing, which is the one failure shape this script does not
+            # allow itself.
+            print(f"Could not read {args.paste_file}: {exc}", file=sys.stderr)
+            return None
+    if sys.stdin.isatty():
+        print("Paste the copied sold results, then press Ctrl-D:\n", file=sys.stderr)
+    return sys.stdin.read()
+
+
+def _sale_from_row(args, row) -> dict:
+    """One JSON entry for one parsed row: the identity you gave once, the
+    price and date the page gave, and nothing invented in between."""
+    sale = build_sale(args)
+    sale["price"] = row.price
+    sale["date"] = row.date
+    return sale
+
+
+def add_pasted(args) -> int:
+    """Add every sale in a block of copied text, all for the one card named
+    by the identity flags.
+
+    Preview by default, write only with --confirm -- the opposite default to
+    the single-sale path in main(), and deliberately so. There you looked at one
+    card and typed its two numbers yourself; here a parser guessed how many
+    sales are in a page and which figure goes with which date, and a wrong
+    sold comp is worse than no sold comp. The extra keystroke buys you a
+    look at every row before any of it becomes market value.
+    """
+    text = _pasted_text(args)
+    if text is None:
+        return 2
+    if not text.strip():
+        print("Nothing pasted -- no text on stdin.", file=sys.stderr)
+        return 2
+
+    try:
+        rows = sold_comp_import.parse_pasted_sales(text)
+    except sold_comp_import.ImportRefused as refusal:
+        print(f"\nRefused to import.\n\n{refusal}\n", file=sys.stderr)
+        return 2
+
+    if not rows:
+        print(
+            "That text mentions sold items, but no date-and-price pair could be read out of it.\n"
+            "Copying the results list (rather than the whole page) usually parses cleanly.",
+            file=sys.stderr,
+        )
+        return 2
+
+    sales = [_sale_from_row(args, row) for row in rows]
+    for sale in sales:
+        problem = sold_comps.validation_error(sale)
+        if problem is not None:
+            # All-or-nothing: a partial import leaves you unsure which rows
+            # off the page you now hold, which is the state this whole
+            # script exists to avoid.
+            print(f"Refusing to add any of these sales: one of them {problem}.", file=sys.stderr)
+            print(f"  {sold_comps.describe(sale)}", file=sys.stderr)
+            return 2
+
+    read = _read_sales(args.path)
+    if read is None:
+        return 2
+    document, existing = read
+
+    # A sale already in the file, and a row the page listed twice, are both
+    # "do not add again" -- but they are different mistakes to have made, so
+    # the preview names them differently.
+    known = {sold_comps.sale_id(sale) for sale in existing if isinstance(sale, dict)}
+    seen_here = set()
+    fresh, states, duplicates = [], [], 0
+    for sale, row in zip(sales, rows):
+        identifier = sold_comps.sale_id(sale)
+        if identifier in known:
+            states.append("already in the file")
+            duplicates += 1
+        elif identifier in seen_here:
+            states.append("repeat of a row above")
+            duplicates += 1
+        else:
+            seen_here.add(identifier)
+            states.append("new")
+            fresh.append((sale, row))
+
+    # The card, not the first sale: describe() ends with one row's price and
+    # date, which over a table of three reads as three sales at that price.
+    print(f"\nRead {len(rows)} sale(s) for {sold_comps.describe_card(sales[0])}")
+    print("-" * 68)
+    for row, state in zip(rows, states):
+        flag = "  <- YEAR ASSUMED, check this" if row.year_inferred else ""
+        print(f"  {row.date}   ${row.price:>10,.2f}   {state}{flag}")
+    print("-" * 68)
+    if any(row.year_inferred for row in rows):
+        print(
+            "\n  Some dates carried no year in the source and this year was assumed.\n"
+            "  A wrong year makes a stale sale look fresh, and freshness is what\n"
+            "  decides whether a comp counts at all -- check those rows."
+        )
+    if duplicates:
+        print(f"\n  {duplicates} of these will not be added again.")
+
+    if not fresh:
+        print("\nNothing new to add.")
+        return 0
+
+    if not args.confirm:
+        print(
+            f"\nPreview only -- nothing written. {len(fresh)} sale(s) would be added.\n"
+            "Check the rows above against the page, then re-run with --confirm."
+        )
+        return 0
+
+    document["sales"] = existing + [sale for sale, _ in fresh]
+    sold_comps.write_document(args.path, document)
+    print(f"\nAdded {len(fresh)} sold comp(s) to {args.path}.")
+    print("  basis:  sold  -- outranks every asking price in the corpus")
+    print(f"  total:  {len(document['sales'])} sold comp(s)")
+    return 0
+
+
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
+
+    pasting = bool(args.paste or args.paste_file)
+    if args.paste and args.paste_file:
+        print("Give --paste (stdin) or --paste-file, not both.", file=sys.stderr)
+        return 2
+    if pasting:
+        # Silently ignoring these would be worse: --price with --paste reads
+        # like "use this price", and it cannot mean that for a block of
+        # sales that each carry their own. Shipping is per-sale for the same
+        # reason -- unguarded, it wrote one figure onto every parsed row.
+        per_sale = [
+            "--" + name for name in ("price", "date", "shipping")
+            if getattr(args, name) is not None
+        ]
+        if per_sale:
+            print(
+                "{} describe{} one sale. With --paste, every sale carries its own -- "
+                "drop them, or enter that sale on its own without --paste.".format(
+                    " and ".join(per_sale), "s" if len(per_sale) == 1 else ""
+                ),
+                file=sys.stderr,
+            )
+            return 2
+        if args.dry_run:
+            # Two words for the same thing, pointing opposite ways when both
+            # are given. --paste is a preview already; --dry-run is what the
+            # single-sale form calls one.
+            print(
+                "--paste previews by default, so --dry-run is what you get without "
+                "--confirm. Drop one of them.",
+                file=sys.stderr,
+            )
+            return 2
+    if not pasting:
+        missing = [name for name in ("price", "date") if getattr(args, name) is None]
+        if missing:
+            print(
+                f"Missing required argument(s): {', '.join('--' + name for name in missing)}.",
+                file=sys.stderr,
+            )
+            return 2
+    if args.confirm and not pasting:
+        print("--confirm only applies to --paste; a single sale writes unless --dry-run.", file=sys.stderr)
+        return 2
 
     read = {}
     if args.from_title:
@@ -171,6 +405,9 @@ def main(argv=None) -> int:
         )
         return 2
 
+    if pasting:
+        return add_pasted(args)
+
     sale = build_sale(args)
 
     problem = sold_comps.validation_error(sale)
@@ -179,22 +416,11 @@ def main(argv=None) -> int:
         print(f"  {sold_comps.describe(sale)}", file=sys.stderr)
         return 2
 
-    try:
-        document = sold_comps.read_document(args.path)
-    except ValueError as exc:
-        # Deliberately fatal, unlike sold_comps.load(): overwriting a corrupt
-        # file would destroy every sold comp already typed into it.
-        print(f"Refusing to write: {exc}", file=sys.stderr)
-        print("Fix the file by hand first -- it holds data that exists nowhere else.", file=sys.stderr)
+    read_file = _read_sales(args.path)
+    if read_file is None:
         return 2
-
-    sales = document.get("sales")
-    if not isinstance(sales, list):
-        if sales is not None:
-            print(f"Refusing to write: 'sales' in {args.path} is not a list.", file=sys.stderr)
-            return 2
-        sales = []
-    sales = list(sales) + [sale]
+    document, sales = read_file
+    sales = sales + [sale]
     document["sales"] = sales
 
     observation = sold_comps.to_observation(sale)
