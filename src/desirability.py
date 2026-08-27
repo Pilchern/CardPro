@@ -88,7 +88,17 @@ def attributes_of(listing) -> tuple:
             found.append(PATCH)
         elif identity.is_memorabilia.value:
             found.append(MEMORABILIA)
-        if identity.serial_number.value is not None or _print_run(identity) is not None:
+        # is_serial_numbered survives a truncated title where the numbers do
+        # not: eBay's cut turns "/250" into "/2", so card_identity throws the
+        # NUMBER away and keeps the slash. "This card is serial numbered" is
+        # still readable and still worth showing -- losing it would trade one
+        # correction for the loss of a fact that was never in doubt.
+        if (
+            identity.serial_number.value is not None
+            or _print_run(identity) is not None
+            or getattr(identity, "is_serial_numbered", None) is not None
+            and identity.is_serial_numbered.value
+        ):
             found.append(SERIAL_NUMBERED)
         if identity.parallel.value is not None:
             found.append(PARALLEL)

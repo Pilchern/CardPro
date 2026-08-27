@@ -1,3 +1,5 @@
+import pytest
+
 from src import card_identity
 
 
@@ -914,3 +916,112 @@ class TestNegativeSignalsBlockTheBaseAssertion:
 
     def test_an_ordinary_base_card_is_unaffected(self):
         assert extract("2024 Panini Prizm Caleb Williams #301 RC").is_base.value is True
+
+
+# ---------------------------------------------------------------------------
+# eBay's cut
+# ---------------------------------------------------------------------------
+
+
+class TestFieldsThatRunIntoTheCut:
+    """Measured on the live corpus: twenty stored rows held a value that ends
+    exactly where eBay truncated the title. Each was written into the 180-day
+    comp corpus as a known field, and card_number and parallel are the keys
+    for the only two comp levels allowed to declare a deal.
+    """
+
+    @pytest.mark.parametrize("title,field", [
+        ("Caleb Williams 2024 Score #40…", "card_number"),
+        ("Kyle Teel 2025 Bowman Chrome Prospects #B...", "card_number"),
+        ("2022-23 Flux JOSH GIDDEY #EA...", "card_number"),
+        ("Matas Buzelis /249 Rookie Red…", "parallel"),
+        ("Luther Burden III Blue Hyper...", "parallel"),
+        ("KYLE TEEL 2026 TOPPS CHROME...", "set_name"),
+    ])
+    def test_a_value_ending_at_the_cut_is_unknown(self, title, field):
+        identity = card_identity.extract_card_identity(title)
+
+        assert getattr(identity, field).value is None
+        assert getattr(identity, field).confidence == "none"
+
+    def test_a_colour_one_word_from_the_cut_is_unknown_too(self):
+        """"White S..." is a White Sox card, and the whole word "White" reads
+        as a parallel. Team masking exists to catch exactly this, and the cut
+        walks straight past the masking -- so a parallel needs a complete
+        word between it and the cut, not just its own last letter."""
+        whole = card_identity.extract_card_identity("Munetaka Murakami RC White Sox")
+        cut = card_identity.extract_card_identity("Munetaka Murakami RC White S...")
+
+        assert whole.parallel.value is None
+        assert cut.parallel.value is None
+
+    def test_a_print_run_ending_at_the_cut_is_unknown(self):
+        """"/2…" is /250. Read as 2 it is not merely wrong, it is scored as
+        the scarcest thing the ranking knows about."""
+        identity = card_identity.extract_card_identity("Caleb Williams 2022 Bowman Chrome /2…")
+
+        assert identity.print_run.value is None
+        assert identity.serial_number.value is None
+
+    def test_the_slash_survives_the_cut_even_though_the_number_does_not(self):
+        """"This card is serial numbered" is readable off "/2…" and "this
+        card is one of 2" is not. The browse sections show a card for what it
+        IS, so losing the first to a correction about the second would trade
+        a certainty for nothing."""
+        identity = card_identity.extract_card_identity("Caleb Williams 2022 Bowman Chrome /2…")
+
+        assert identity.is_serial_numbered.value is True
+
+    def test_a_whole_title_is_not_second_guessed(self):
+        identity = card_identity.extract_card_identity(
+            "2024 Panini Prizm Caleb Williams Silver Prizm #301 PSA 10"
+        )
+
+        assert identity.set_name.value == "Prizm"
+        assert identity.parallel.value == "Silver Prizm"
+        assert identity.card_number.value == "301"
+
+    def test_a_field_the_cut_did_not_reach_survives(self):
+        """The rule is about the fragment, not about the title being cut --
+        blanket-dropping every field on a truncated title would throw away
+        the 98% of readable evidence that arrives that way."""
+        identity = card_identity.extract_card_identity(
+            "2024 Topps Chrome Kyle Teel Refractor #150 PSA 9 Gem Mi..."
+        )
+
+        assert identity.set_name.value == "Topps Chrome"
+        assert identity.parallel.value == "Refractor"
+        assert identity.card_number.value == "150"
+
+    def test_a_set_two_tokens_from_the_cut_survives(self):
+        """A card number between the set and the cut proves the set was
+        finished. Only the parallel needs the wider berth."""
+        identity = card_identity.extract_card_identity(
+            "Kyle Teel 2025 Bowman Chrome Prospects #B..."
+        )
+
+        assert identity.set_name.value == "Bowman Chrome Prospects"
+
+
+class TestSerialNumbersBorrowedFromCardNumbers:
+    def test_a_hyphenated_card_number_does_not_become_the_copy_number(self):
+        """"BCP-83 /150" has no copy number in it. It was read as copy 83 of
+        150, and the report then printed "(83/150)" on a card whose title
+        says no such thing."""
+        identity = card_identity.extract_card_identity(
+            "2024 Bowman Chrome Colson Montgomery 1st Auto BCP-83 /150"
+        )
+
+        assert identity.card_number.value == "BCP-83"
+        assert identity.serial_number.value is None
+        assert identity.print_run.value == 150
+
+    @pytest.mark.parametrize("title", [
+        "2024 Topps Chrome Kyle Teel Gold 23/99 PSA 10",
+        "2024 Prizm Silver #23/99",
+    ])
+    def test_a_real_serial_still_parses(self, title):
+        identity = card_identity.extract_card_identity(title)
+
+        assert identity.serial_number.value == "23/99"
+        assert identity.print_run.value == 99

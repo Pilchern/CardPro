@@ -233,7 +233,12 @@ PREFIXED_CARD_NUMBER_RE = re.compile(
 # "23/99" -- a numerator makes it a serial number AND tells us the print run.
 # The lookbehind keeps us off "9.5/10" (grade) and the lookahead off date
 # chains like "12/25/2024".
-SERIAL_NUMBER_RE = re.compile(r"(?<![\d./])(\d{1,4})\s*/\s*(\d{1,5})(?!\s*[/.]?\d)\b")
+# The lookbehind bars a letter and a hyphen as well as a digit, because a
+# card number runs straight into the print run on a great many titles:
+# "BCP-83 /150" was read as copy 83 of 150, and the report then stated
+# "(83/150)" on a card whose title says no such thing. A serial that has
+# to borrow the card number for its numerator is not a serial.
+SERIAL_NUMBER_RE = re.compile(r"(?<![\w./-])(\d{1,4})\s*/\s*(\d{1,5})(?!\s*[/.]?\d)\b")
 # Bare "/99" or "/ 99" -- print run only, no serial. Must start at a space
 # or bracket so we don't fire on "9.5/10" or "w/99".
 BARE_PRINT_RUN_RE = re.compile(r"(?:(?<=\s)|(?<=\()|^)/\s*(\d{1,5})(?!\s*[/.]?\d)\b")
@@ -473,6 +478,11 @@ class CardIdentity:
     card_number: Field = dataclass_field(default_factory=Field)
     serial_number: Field = dataclass_field(default_factory=Field)  # value e.g. "23/99"
     print_run: Field = dataclass_field(default_factory=Field)  # value e.g. 99 (int)
+    # True when the title shows a "/N" print run, even where the number
+    # itself was cut off. "This card is serial numbered" and "this card is
+    # one of 2" are different claims, and eBay's cut leaves us able to make
+    # the first and not the second -- see _tokens_before_the_cut.
+    is_serial_numbered: Field = dataclass_field(default_factory=lambda: Field(None, "none"))
     is_autograph: Field = dataclass_field(default_factory=lambda: Field(False, "high"))
     is_memorabilia: Field = dataclass_field(default_factory=lambda: Field(False, "high"))
     is_patch: Field = dataclass_field(default_factory=lambda: Field(False, "high"))
@@ -762,6 +772,53 @@ _BARE_INTEGER_RE = re.compile(r"\d{1,5}$")
 def _is_truncated(title: str) -> bool:
     """eBay cut the title off, so the words we would need are unreadable."""
     return title.rstrip().endswith(("\u2026", "..."))
+
+
+def _tokens_before_the_cut(title: str) -> tuple:
+    """The words eBay's cut left dangling, or () for a whole title.
+
+    The last of these is a FRAGMENT of a word -- "White S" is "White Sox",
+    "/2" is "/250", "Topps Chrome" is "Topps Chrome Update" -- and the
+    fields read out of it are the ones that key comp buckets. Measured on
+    the live corpus, twenty stored rows held a value ending exactly at the
+    cut: card_number "B", parallel "Red", print run 2 on a card numbered to
+    250. Each was written into the 180-day corpus as a known field, and a
+    print run of 2 is scored as top-tier scarcity.
+
+    Principle 4 is that a missing value is unknown and never a guess, and a
+    value the cut may have changed is a guess. Returning the tokens rather
+    than a verdict lets each field decide how much room it needs -- see
+    _reaches_the_cut.
+    """
+    stripped = title.rstrip()
+    for marker in ("\u2026", "..."):
+        if stripped.endswith(marker):
+            return tuple(stripped[: -len(marker)].rstrip().split())
+    return ()
+
+
+def _reaches_the_cut(value, tokens: tuple, depth: int = 1) -> bool:
+    """Whether ``value`` was read out of the last ``depth`` tokens.
+
+    depth=1 asks "did the fragment itself produce this", which is the
+    minimum any field needs. Parallels use depth=2 because they are phrases
+    and the fragment usually EXTENDS them rather than forming them: "White
+    S" gives parallel "White" off a whole word, and the whole word is wrong
+    -- the card is a White Sox card. That trap is the reason team masking
+    exists at all, and the cut walks straight past the masking.
+    """
+    if not tokens or value is None:
+        return False
+    words = {word.strip("#/-.,").lower() for word in str(value).split()}
+    words.discard("")
+    if not words:
+        return False
+    return any(token.strip("#/-.,").lower() in words for token in tokens[-depth:])
+
+
+def _print_run_reaches_the_cut(tokens: tuple) -> bool:
+    """Whether the "/N" the print run came from is the cut-off fragment."""
+    return bool(tokens) and re.search(r"/\s*\d", tokens[-1]) is not None
 
 
 def _is_number_anchor(token: str, first: bool) -> bool:
@@ -1149,7 +1206,32 @@ def extract_card_identity(title: str) -> CardIdentity:
             title, set_masked, manufacturer_field.value, card_number_field.value
         )
     parallel_field = _extract_parallel(masked)
+
+    # Everything above read the title as if it were whole. Where eBay cut it,
+    # any field whose evidence runs into the cut is a fragment wearing a
+    # value's clothes, and goes back to unknown -- see _tokens_before_the_cut.
+    dangling = _tokens_before_the_cut(title)
+    serial_seen = serial_field.value is not None or print_run_field.value is not None
+    if _print_run_reaches_the_cut(dangling):
+        serial_field = Field(value=None, confidence="none", source="title")
+        print_run_field = Field(value=None, confidence="none", source="title")
+    if _reaches_the_cut(card_number_field.value, dangling):
+        card_number_field = Field(value=None, confidence="none", source="title")
+    if _reaches_the_cut(set_field.value, dangling):
+        set_field = Field(value=None, confidence="none", source="title")
+    if _reaches_the_cut(parallel_field.value, dangling, depth=2):
+        parallel_field = Field(value=None, confidence="none", source="title")
+    # The slash is visible even when the number after it is not, so "this
+    # card is serial numbered" survives a cut that "one of 250" does not.
+    # The browse sections show a card for what it IS and would otherwise
+    # lose a real, readable fact to a correction about a different one.
+    is_serial_numbered = (
+        Field(value=True, confidence="high", source="title") if serial_seen
+        else Field(value=None, confidence="none", source="title")
+    )
+
     return CardIdentity(
+        is_serial_numbered=is_serial_numbered,
         year=year_field,
         season=season_field,
         manufacturer=manufacturer_field,
