@@ -2394,3 +2394,39 @@ class TestATargetHitIsNotPrintedTwiceInFull:
         later = body[body.index("COOL CARDS"):]
         assert "shown above under TARGET CARD HITS" in later
         assert "Cost" not in later
+
+
+class TestBrowseSectionsWithAFlagEligibleCompNearby:
+    """The rule is "no market value, no discount, no ROI, EVEN WHEN a comp
+    exists". Every earlier test of it built its fixture with
+    flag_eligible=False, so the interesting half was never exercised -- and
+    a flag-eligible comp is now what keeps a card OUT of these sections
+    entirely, which is a different guarantee and worth pinning separately."""
+
+    def test_a_sold_basis_comp_moves_the_card_out_rather_than_being_printed(self):
+        deal = carded(AUTO, 42.0)
+        deal.comp_match = make_match(level="exact", confidence="high", median=200.0)
+        deal.market_value = 200.0
+        deal.dollar_savings = 150.0
+        deal.pct_under_market = 75.0
+        sections = report.classify_sections([deal], threshold_pct=30)
+        assert sections[report.SECTION_COOL_CARDS] == []
+        # WATCH rather than DEALS, because is_opportunity is the pipeline's
+        # call and this fixture does not set it. What matters is that it
+        # landed somewhere the number prints.
+        assert sections[report.SECTION_WATCH] == [deal]
+        assert "75.0%" in flat(body_of([deal]))
+
+    def test_and_if_one_is_rendered_anyway_it_still_prints_no_price(self):
+        # Belt and braces: the block itself must not depend on the
+        # classification to keep its promise.
+        deal = carded(AUTO, 42.0)
+        deal.comp_match = make_match(level="exact", confidence="high", median=200.0)
+        deal.market_value = 200.0
+        deal.dollar_savings = 150.0
+        deal.pct_under_market = 75.0
+        deal.economics = make_economics()
+        block = report._interest_block(1, deal)
+        assert "Market" not in block
+        assert "Discount" not in block
+        assert "ROI" not in block
