@@ -2080,3 +2080,57 @@ class TestTheEmailSaysWhatItHas:
     def test_a_real_deal_still_leads(self):
         subject = report.build_report([make_listing()], 30, RUN_DATE)[0]
         assert "opportunity" in subject
+
+
+class TestYoungCore:
+    """The old rule was `young_core AND is_opportunity`, and is_opportunity
+    requires a flag-eligible comp -- which has never once existed in this
+    project's production data. The section for the players the watchlist is
+    built around could not fire, ever."""
+
+    def _young(self, title, price, **overrides):
+        return carded(title, price, player_tier="young_core", **overrides)
+
+    def test_a_young_core_card_with_something_to_it_now_appears(self):
+        # One weak attribute: a parallel and nothing else, so COOL CARDS
+        # (which wants a standout) does not take it, and it is over the
+        # pocket-change ceiling so CHEAP FINDS does not either.
+        deal = self._young(
+            "2024 Panini Prizm Caleb Williams Silver Prizm #301", 30.0, is_rookie_card=False
+        )
+        sections = report.classify_sections([deal], cheap_find_ceiling=15.0)
+        assert len(sections[report.SECTION_INVESTMENT]) == 1
+
+    def test_a_young_core_base_common_does_not(self):
+        deal = self._young("2024 Topps Caleb Williams #150", 30.0, is_rookie_card=False)
+        sections = report.classify_sections([deal], cheap_find_ceiling=15.0)
+        assert sections[report.SECTION_INVESTMENT] == []
+
+    def test_a_legend_is_not_young_core(self):
+        deal = carded(
+            "2024 Panini Prizm Michael Jordan Silver Prizm #301", 30.0,
+            player="Michael Jordan", player_tier="legend", is_rookie_card=False,
+        )
+        sections = report.classify_sections([deal], cheap_find_ceiling=15.0)
+        assert sections[report.SECTION_INVESTMENT] == []
+
+    def test_cool_cards_still_claims_a_standout_first(self):
+        # A young-core autograph belongs at the top of the email, not in a
+        # tier-labelled section further down. The headline carries a
+        # [YOUNG CORE] tag either way, so nothing is lost by claiming it.
+        deal = self._young(AUTO, 42.0)
+        sections = report.classify_sections([deal], cheap_find_ceiling=15.0)
+        assert len(sections[report.SECTION_COOL_CARDS]) == 1
+        assert sections[report.SECTION_INVESTMENT] == []
+
+    def test_the_block_makes_no_valuation_claim(self):
+        deal = self._young(
+            "2024 Panini Prizm Caleb Williams Silver Prizm #301", 30.0, is_rookie_card=False
+        )
+        deal.comp_match = make_match(flag_eligible=False, blocked=("context_only_level",))
+        deal.market_value = 200.0
+        deal.dollar_savings = 170.0
+        deal.pct_under_market = 85.0
+        body = body_of([deal])
+        assert "YOUNG CORE" in body
+        assert "85.0%" not in body

@@ -97,11 +97,11 @@ SECTION_ORDER = (
     SECTION_ACT_NOW,
     SECTION_TOP_OPPORTUNITIES,
     SECTION_TARGET_HITS,
-    SECTION_INVESTMENT,
     SECTION_AUCTIONS,
-    SECTION_OFFERS,
     SECTION_COOL_CARDS,
     SECTION_CHEAP_FINDS,
+    SECTION_INVESTMENT,
+    SECTION_OFFERS,
     SECTION_WATCH,
     SECTION_NEEDS_REVIEW,
     SECTION_PRICE_DROPS,
@@ -146,7 +146,7 @@ SECTION_TITLES = {
     SECTION_ACT_NOW: "\U0001f6a8 ACT NOW",
     SECTION_TOP_OPPORTUNITIES: "⭐ DEALS",
     SECTION_TARGET_HITS: "\U0001f3af TARGET CARD HITS",
-    SECTION_INVESTMENT: "\U0001f4c8 INVESTMENT WATCHLIST",
+    SECTION_INVESTMENT: "\U0001f4c8 YOUNG CORE",
     SECTION_AUCTIONS: "\U0001f528 AUCTIONS ENDING SOON",
     SECTION_OFFERS: "\U0001f4ac OFFER OPPORTUNITIES",
     SECTION_COOL_CARDS: "\U0001f60e COOL CARDS",
@@ -175,8 +175,9 @@ SECTION_SUBTITLES = {
         "also appear in a section above; that is deliberate, they answer different questions."
     ),
     SECTION_INVESTMENT: (
-        "Young-core players you are holding for the long run, where the comp is too weak "
-        "to call it an act-now buy but the card is still worth your attention."
+        "The players you are betting on for the long run (watchlist.json -> player_tiers). "
+        "Cards with something to them that did not make a section above. No valuation "
+        "claim -- this is about who is on the card, not what it is worth."
     ),
     SECTION_AUCTIONS: (
         "A current bid is NOT a price and nothing in this section is a confirmed deal. "
@@ -1262,12 +1263,6 @@ def classify_sections(
         key=lambda d: (not getattr(d.target_hit, "in_buy_zone", False), -_savings(d), d.id),
     )
 
-    for deal in ranked:
-        if deal.id in claimed:
-            continue
-        if deal.player_tier == "young_core" and deal.is_opportunity:
-            take(SECTION_INVESTMENT, deal)
-
     auctions = []
     for deal in ranked:
         if deal.id in claimed:
@@ -1312,6 +1307,23 @@ def classify_sections(
             take(SECTION_CHEAP_FINDS, deal)
     sections[SECTION_CHEAP_FINDS].sort(
         key=lambda d: (_price_for_sort(d), -desirability.interest_score(d), d.id)
+    )
+
+    # Young core, after COOL CARDS and CHEAP FINDS have taken their pick.
+    #
+    # The old rule was `young_core AND is_opportunity`, and is_opportunity
+    # requires a flag-eligible comp -- which has never once existed in this
+    # project's production data. So the section for the players the watchlist
+    # is actually built around could not fire, ever. It now catches the
+    # young-core cards with something to them that no earlier section took,
+    # and makes no claim about their value.
+    for deal in ranked:
+        if deal.id in claimed:
+            continue
+        if deal.player_tier == "young_core" and desirability.attributes_of(deal):
+            take(SECTION_INVESTMENT, deal)
+    sections[SECTION_INVESTMENT].sort(
+        key=lambda d: (-desirability.interest_score(d), _price_for_sort(d), d.id)
     )
 
     for deal in ranked:
@@ -1464,7 +1476,7 @@ def _render_section(key: str, deals: list, threshold_pct: float, ending_soon_hou
                                                                    min_savings_dollars), seen_in))
             lines.append("")
             continue
-        if key in (SECTION_ACT_NOW, SECTION_TOP_OPPORTUNITIES, SECTION_TARGET_HITS, SECTION_INVESTMENT):
+        if key in (SECTION_ACT_NOW, SECTION_TOP_OPPORTUNITIES, SECTION_TARGET_HITS):
             block = _thesis_block(index, deal, ending_soon_hours)
         elif key == SECTION_AUCTIONS:
             block = _auction_block(index, deal, ending_soon_hours)
@@ -1474,7 +1486,7 @@ def _render_section(key: str, deals: list, threshold_pct: float, ending_soon_hou
             block = _compact_block(
                 index, deal, why=_needs_review_why(deal), ending_soon_hours=ending_soon_hours
             )
-        elif key in (SECTION_COOL_CARDS, SECTION_CHEAP_FINDS):
+        elif key in (SECTION_COOL_CARDS, SECTION_CHEAP_FINDS, SECTION_INVESTMENT):
             block = _interest_block(index, deal, ending_soon_hours)
         elif key == SECTION_PRICE_DROPS:
             block = _price_drop_block(index, deal)
@@ -1523,7 +1535,7 @@ def _summary_line(sections) -> str:
         (SECTION_ACT_NOW, "act now", "act now"),
         (SECTION_TOP_OPPORTUNITIES, "opportunity", "opportunities"),
         (SECTION_TARGET_HITS, "target hit", "target hits"),
-        (SECTION_INVESTMENT, "investment watch", "investment watches"),
+        (SECTION_INVESTMENT, "young core", "young core"),
         (SECTION_AUCTIONS, "auction", "auctions"),
         (SECTION_OFFERS, "offer candidate", "offer candidates"),
         (SECTION_COOL_CARDS, "cool card", "cool cards"),
@@ -2163,8 +2175,7 @@ def build_report(
         SECTION_ACT_NOW,
         SECTION_TOP_OPPORTUNITIES,
         SECTION_TARGET_HITS,
-        SECTION_INVESTMENT,
-        # COOL CARDS and CHEAP FINDS count as content. They make no claim
+        # COOL CARDS, CHEAP FINDS and YOUNG CORE count as content. They make no claim
         # about value, so they do not make it a day with deals -- but a page
         # of autographs and numbered rookies under the heading "NOTHING
         # CLEARED THE BAR TODAY" is the email contradicting itself, and the
@@ -2172,6 +2183,7 @@ def build_report(
         # with eleven cards below them needs to read first.
         SECTION_COOL_CARDS,
         SECTION_CHEAP_FINDS,
+        SECTION_INVESTMENT,
     )
     has_decision_content = any(sections[key] for key in decision_sections)
 
@@ -2183,8 +2195,7 @@ def build_report(
     # exists to prevent.
     browsable_only = has_decision_content and not any(
         sections[key]
-        for key in (SECTION_ACT_NOW, SECTION_TOP_OPPORTUNITIES, SECTION_TARGET_HITS,
-                    SECTION_INVESTMENT)
+        for key in (SECTION_ACT_NOW, SECTION_TOP_OPPORTUNITIES, SECTION_TARGET_HITS)
     )
     if browsable_only:
         blocks.append(
