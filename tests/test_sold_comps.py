@@ -649,3 +649,150 @@ class TestFromTitle:
             "--player", "Caleb Williams", "--price", "348", "--date", "2026-08-15",
             "--path", str(path),
         ]) == 0
+
+
+# -- scripts/add_sold_comp.py --paste ----------------------------------------
+
+
+PASTED_PAGE = """\
+2024 Panini Prizm Caleb Williams Silver Prizm RC #301 PSA 10
+Pre-Owned
+$344.00
++$5.99 shipping
+Sold  Aug 15, 2026
+
+2024 Prizm Caleb Williams Silver #301 PSA 10
+Pre-Owned
+$375.00
+Free shipping
+Sold  Jul 28, 2026
+"""
+
+
+class TestPasteMode:
+    """Seeding one card costs one paste instead of one invocation per sale --
+    which is the difference between the sold-comp store being populated and
+    staying empty. It is also the one place a PARSER decides what a sale was,
+    so nothing reaches the file until the user has seen every row."""
+
+    def _identity(self, path):
+        return [
+            "--paste-file", None,  # filled in by callers
+            "--player", "Caleb Williams",
+            "--year", "2024",
+            "--set", "Prizm",
+            "--parallel", "Silver Prizm",
+            "--card-number", "301",
+            "--grader", "PSA",
+            "--grade", "10",
+            "--path", str(path),
+        ]
+
+    def _run(self, tmp_path, path, text=PASTED_PAGE, extra=()):
+        source = tmp_path / "pasted.txt"
+        source.write_text(text)
+        argv = self._identity(path)
+        argv[1] = str(source)
+        return add_sold_comp.main(argv + list(extra))
+
+    def test_preview_is_the_default_and_writes_nothing(self, tmp_path, capsys):
+        path = tmp_path / "s.json"
+
+        assert self._run(tmp_path, path) == 0
+
+        assert not path.exists()
+        printed = capsys.readouterr().out
+        assert "Preview only" in printed
+        assert "344.00" in printed and "375.00" in printed
+
+    def test_confirm_writes_every_row_under_the_one_identity(self, tmp_path):
+        path = tmp_path / "s.json"
+
+        assert self._run(tmp_path, path, extra=["--confirm"]) == 0
+
+        stored = sold_comps.load(path)
+        assert [entry["price"] for entry in stored] == [344.00, 375.00]
+        assert {entry["date"] for entry in stored} == {"2026-08-15", "2026-07-28"}
+        assert {entry["player"] for entry in stored} == {"Caleb Williams"}
+
+    def test_a_second_import_of_the_same_page_adds_nothing(self, tmp_path, capsys):
+        """Re-pasting after adding one more sale to the page must not double
+        every comp already banked -- the engine would read the duplicates as
+        independent evidence and tighten its dispersion gate on them."""
+        path = tmp_path / "s.json"
+        self._run(tmp_path, path, extra=["--confirm"])
+
+        assert self._run(tmp_path, path, extra=["--confirm"]) == 0
+
+        assert len(sold_comps.load(path)) == 2
+        assert "Nothing new to add." in capsys.readouterr().out
+
+    def test_an_active_listing_page_is_refused_and_nothing_is_written(self, tmp_path, capsys):
+        path = tmp_path / "s.json"
+
+        assert self._run(
+            tmp_path, path, text="Caleb Williams PSA 10\n$425.00\nBuy It Now\n", extra=["--confirm"]
+        ) == 2
+
+        assert not path.exists()
+        assert "Refused to import" in capsys.readouterr().err
+
+    def test_text_with_no_readable_pairs_says_so_rather_than_writing_nothing_quietly(
+        self, tmp_path, capsys
+    ):
+        path = tmp_path / "s.json"
+
+        assert self._run(tmp_path, path, text="Sold items\nno numbers here\n", extra=["--confirm"]) == 2
+
+        assert not path.exists()
+        assert "no date-and-price pair" in capsys.readouterr().err
+
+    def test_price_and_date_are_refused_alongside_paste(self, tmp_path, capsys):
+        """--price with --paste reads as "use this price", and it cannot mean
+        that for a block of sales that each carry their own."""
+        path = tmp_path / "s.json"
+
+        assert self._run(tmp_path, path, extra=["--price", "348"]) == 2
+
+        assert not path.exists()
+        assert "--price and --date describe one sale" in capsys.readouterr().err
+
+    def test_an_inferred_year_is_flagged_in_the_preview(self, tmp_path, capsys):
+        path = tmp_path / "s.json"
+
+        self._run(tmp_path, path, text="Sold  Aug 15\n$344.00\n")
+
+        assert "YEAR ASSUMED" in capsys.readouterr().out
+
+    def test_a_corrupt_file_is_never_overwritten(self, tmp_path, capsys):
+        path = tmp_path / "s.json"
+        path.write_text("{not json")
+
+        assert self._run(tmp_path, path, extra=["--confirm"]) == 2
+
+        assert path.read_text() == "{not json"
+        assert "Refusing to write" in capsys.readouterr().err
+
+    def test_existing_sales_survive_the_import(self, tmp_path):
+        path = _write(tmp_path / "s.json", [_sale(price=300.0, date="2026-07-01")])
+
+        assert self._run(tmp_path, path, extra=["--confirm"]) == 0
+
+        document = json.loads(path.read_text())
+        assert document["_comment"] == "hand-edited"
+        assert [entry["price"] for entry in document["sales"]] == [300.0, 344.00, 375.00]
+
+    def test_confirm_without_paste_is_refused_rather_than_ignored(self, tmp_path):
+        path = tmp_path / "s.json"
+
+        assert add_sold_comp.main(_argv(path) + ["--confirm"]) == 2
+
+        assert not path.exists()
+
+    def test_missing_price_without_paste_is_refused(self, tmp_path, capsys):
+        path = tmp_path / "s.json"
+
+        assert add_sold_comp.main(_argv(path, **{"--price": None})) == 2
+
+        assert not path.exists()
+        assert "--price" in capsys.readouterr().err
