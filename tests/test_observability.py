@@ -72,13 +72,35 @@ def test_top_reasons_are_labelled_in_english():
     assert "2x" in footer
 
 
-def test_categories_are_summarised():
+def test_categories_are_summarised_once_the_reasons_stop_fitting():
+    # The roll-up and the reasons are the same data at two granularities.
+    # It only earns a line when the reasons no longer cover everything --
+    # otherwise the footer says one thing twice on consecutive lines.
+    stats = _stats(listings_matched_to_watchlist=2)
+    for reason in (
+        reasons.Reason.REPRINT,
+        reasons.Reason.STALE_COMPS,
+        reasons.Reason.THIN_SAMPLE,
+        reasons.Reason.DISPERSED_COMPS,
+        reasons.Reason.NO_COMP_AT_ANY_LEVEL,
+        reasons.Reason.LOT,
+    ):
+        stats.rejections.record(reason)
+    footer = "\n".join(stats.health_lines())
+    assert "policy" in footer
+    assert "data quality" in footer
+
+
+def test_a_short_reason_list_is_not_also_summarised_by_category():
     stats = _stats(listings_matched_to_watchlist=2)
     stats.rejections.record(reasons.Reason.REPRINT)
     stats.rejections.record(reasons.Reason.STALE_COMPS)
     footer = "\n".join(stats.health_lines())
-    assert "policy" in footer
-    assert "data quality" in footer
+    assert "by category" not in footer
+    # Both reasons are still named -- nothing is hidden, it is just not
+    # counted twice.
+    assert reasons.label(reasons.Reason.REPRINT) in footer
+    assert reasons.label(reasons.Reason.STALE_COMPS) in footer
 
 
 def test_warnings_are_surfaced_in_the_footer():

@@ -24,6 +24,8 @@ from typing import Optional
 
 from src import reasons
 
+TOP_REASONS_SHOWN = 5
+
 
 def _pct(part: int, whole: int) -> Optional[float]:
     """None when there's nothing to take a percentage of. A "0%" printed
@@ -171,16 +173,27 @@ class RunStats:
         if self.sold_comps_summary:
             lines.append(self.sold_comps_summary)
 
+        # The category roll-up and the top reasons are the same data at two
+        # granularities, and printing both on consecutive lines is a footer
+        # saying one thing twice. The reasons are the useful half -- "94x no
+        # comparable listing at any level" tells you what to go and fix,
+        # "94 valuation" does not -- so the roll-up only earns its line when
+        # the top five do not already cover everything.
+        all_reasons = list(self.rejections.counts().items())
         by_category = self.rejections.counts_by_category()
-        if by_category:
+        if by_category and len(all_reasons) > TOP_REASONS_SHOWN:
             lines.append(
                 "Not reported, by category: "
                 + ", ".join("{} {}".format(count, name.replace("_", " ")) for name, count in by_category.items())
             )
 
-        top = list(self.rejections.counts().items())[:5]
+        top = all_reasons[:TOP_REASONS_SHOWN]
         if top:
-            lines.append("Top reasons: " + "; ".join("{}x {}".format(c, reasons.label(r)) for r, c in top))
+            label = "Top reasons" if len(all_reasons) > TOP_REASONS_SHOWN else "Not reported"
+            lines.append(
+                "{}: ".format(label)
+                + "; ".join("{}x {}".format(c, reasons.label(r)) for r, c in top)
+            )
 
         unexplained = self.unexplained_count()
         if unexplained:
