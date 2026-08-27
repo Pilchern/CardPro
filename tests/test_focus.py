@@ -450,3 +450,52 @@ def test_one_card_omitted_for_two_different_reasons_is_counted_once():
     selection = focus.select([expensive, auction], RULES)
     assert selection.kept == []
     assert selection.omitted_total == 1
+
+
+def test_a_scarce_card_gets_a_higher_ceiling_than_the_shopping_ceiling():
+    """"Is this the cheap end I shop at" and "is this a card worth looking
+    at" are different questions. A $60 autograph fails the first and passes
+    the second, and it goes to COOL CARDS, which prints no market value, no
+    discount and no ROI -- so letting it through is not a valuation claim."""
+    from src import card_identity
+
+    title = "2024 Topps Chrome Caleb Williams Auto Refractor /99"
+    listing = make_listing(price=60.0)
+    listing.title = title
+    listing.card_identity = card_identity.extract_card_identity(title)
+    rules = focus.FocusRules(price_ceiling=40.0, cool_cards_price_ceiling=100.0)
+    assert focus.omission_reason(listing, rules) is None
+
+
+def test_an_ordinary_card_over_the_ceiling_is_still_left_out():
+    from src import card_identity
+
+    title = "2024 Topps Caleb Williams #150"
+    listing = make_listing(price=60.0)
+    listing.title = title
+    listing.card_identity = card_identity.extract_card_identity(title)
+    listing.is_rookie_card = False
+    rules = focus.FocusRules(price_ceiling=40.0, cool_cards_price_ceiling=100.0)
+    assert focus.omission_reason(listing, rules) == focus.ABOVE_CEILING
+
+
+def test_a_scarce_card_over_the_higher_ceiling_is_left_out_too():
+    from src import card_identity
+
+    title = "2024 Topps Chrome Caleb Williams Auto Refractor /99"
+    listing = make_listing(price=250.0)
+    listing.title = title
+    listing.card_identity = card_identity.extract_card_identity(title)
+    rules = focus.FocusRules(price_ceiling=40.0, cool_cards_price_ceiling=100.0)
+    assert focus.omission_reason(listing, rules) == focus.ABOVE_CEILING
+
+
+def test_setting_the_two_ceilings_equal_switches_the_exemption_off():
+    from src import card_identity
+
+    title = "2024 Topps Chrome Caleb Williams Auto Refractor /99"
+    listing = make_listing(price=60.0)
+    listing.title = title
+    listing.card_identity = card_identity.extract_card_identity(title)
+    rules = focus.FocusRules(price_ceiling=40.0, cool_cards_price_ceiling=40.0)
+    assert focus.omission_reason(listing, rules) == focus.ABOVE_CEILING

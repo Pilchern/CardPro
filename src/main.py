@@ -854,6 +854,7 @@ def run(args: argparse.Namespace) -> None:
             listings, sold, min_comps_required=cfg.valuation_min_comps_required
         ),
         unidentified_listings=comp_requests.unidentified_count(listings),
+        cheap_find_ceiling=cfg.cheap_find_ceiling,
     )
     subject = f"{cfg.email_subject_prefix} {subject}"
 

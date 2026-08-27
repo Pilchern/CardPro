@@ -95,6 +95,11 @@ class Config:
     # "cheap_cards" comment and src/desirability.py.
     cheap_cards_enabled: bool
     cheap_price_ceiling: float
+    # What counts as pocket change for the CHEAP FINDS section, and the
+    # higher ceiling a genuinely scarce card is allowed to reach. Neither
+    # makes any claim about value -- see config/settings.json "report".
+    cheap_find_ceiling: float
+    cool_cards_price_ceiling: float
     cheap_min_discount_pct: float
     cheap_min_savings_dollars: float
     cheap_require_desirable_attribute: bool
@@ -198,6 +203,10 @@ def load_config() -> Config:
         immediate_alert_min_discount_pct=float(alerts.get("immediate_alert_min_discount_pct", 40.0)),
         cheap_cards_enabled=bool(cheap.get("enabled", True)),
         cheap_price_ceiling=float(cheap.get("price_ceiling", 10.0)),
+        cheap_find_ceiling=float(_section(settings, "report").get("cheap_find_ceiling", 15.0)),
+        cool_cards_price_ceiling=float(
+            _section(settings, "focus").get("cool_cards_price_ceiling", 100.0)
+        ),
         cheap_min_discount_pct=float(cheap.get("min_discount_pct", 50.0)),
         cheap_min_savings_dollars=float(cheap.get("min_savings_dollars", 3.0)),
         cheap_require_desirable_attribute=bool(cheap.get("require_desirable_attribute", True)),
@@ -221,6 +230,9 @@ def load_config() -> Config:
                 ),
                 max_listings=int(focus_settings.get("max_listings", 40)),
                 max_per_section=int(focus_settings.get("max_per_section", 10)),
+                cool_cards_price_ceiling=float(
+                    focus_settings.get("cool_cards_price_ceiling", 100.0)
+                ),
             )
             if focus_settings
             else focus.OFF

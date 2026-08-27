@@ -67,6 +67,8 @@ from collections import Counter, OrderedDict
 from dataclasses import dataclass, field
 from typing import Optional
 
+from src import desirability
+
 #: Why a listing did not make the email. Distinct strings rather than one
 #: "filtered" bucket because the report says which happened, and "12 above
 #: your ceiling" and "12 auctions already bid past your maximum" call for
@@ -93,6 +95,12 @@ class FocusRules:
     require_auction_bidding_room: bool = True
     max_listings: int = 40
     max_per_section: int = 10
+    #: A higher ceiling for cards with something genuinely scarce about them
+    #: -- a signature, a patch, a serial number. "Is this the cheap end I
+    #: shop at" and "is this a card worth looking at" are different
+    #: questions, and a $60 autograph fails the first while passing the
+    #: second. Set equal to price_ceiling to switch this off.
+    cool_cards_price_ceiling: float = 100.0
 
 
 #: Focus disabled: every listing kept, no cap. The default for
@@ -197,7 +205,15 @@ def omission_reason(listing, rules: FocusRules) -> Optional[str]:
         return PRICE_UNKNOWN
     if price <= rules.price_ceiling:
         return None
-    return None if is_exceptional(listing, rules) else ABOVE_CEILING
+    if is_exceptional(listing, rules):
+        return None
+    # A dearer card can also earn its place by being a genuinely scarce
+    # object rather than a good price. That is not a valuation and is not
+    # treated as one -- it puts the card in COOL CARDS, which prints no
+    # market value, no discount and no ROI.
+    if price <= rules.cool_cards_price_ceiling and desirability.is_standout(listing):
+        return None
+    return ABOVE_CEILING
 
 
 def select(deals, rules: FocusRules) -> Selection:

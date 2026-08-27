@@ -14,7 +14,7 @@ Two things are being protected here, and they are different:
 from datetime import date
 from types import SimpleNamespace
 
-from src import desirability, focus, reasons, report
+from src import card_identity, desirability, focus, reasons, report
 from src.card_identity import CardIdentity, Field
 from src.comps import CompMatch, CompStatsV2
 from src.models import Listing
@@ -411,6 +411,16 @@ def test_each_section_renders_when_it_has_content():
         make_listing(id="auction", listing_type="auction", is_opportunity=False, bid_count=2,
                      time_left_text="0d 05h", max_rational_bid=150.0),
         make_listing(id="offer", has_best_offer=True, is_opportunity=False, pct_under_market=5.0),
+        make_listing(id="cool", is_opportunity=False, pct_under_market=1.0, dollar_savings=2.0,
+                     title="2024 Panini Prizm Caleb Williams Auto RC #301 /99",
+                     card_identity=card_identity.extract_card_identity(
+                         "2024 Panini Prizm Caleb Williams Auto RC #301 /99"),
+                     is_rookie_card=True, price=60.0, card_type="raw", grader=None, grade=None),
+        make_listing(id="cheap", is_opportunity=False, pct_under_market=1.0, dollar_savings=2.0,
+                     title="2024 Panini Prizm Caleb Williams Silver Prizm #301",
+                     card_identity=card_identity.extract_card_identity(
+                         "2024 Panini Prizm Caleb Williams Silver Prizm #301"),
+                     price=4.0, card_type="raw", grader=None, grade=None),
         make_listing(id="watch", is_opportunity=False, pct_under_market=25.0, dollar_savings=50.0),
         make_listing(id="review", is_opportunity=False, pct_under_market=1.0,
                      comp_match=make_match(flag_eligible=False, blocked=("context_only_level",))),
@@ -1939,3 +1949,134 @@ class TestACardIsNotPrintedTwiceInFull:
         body = body_of([context_only_deal()])
         assert "shown above" not in body
         assert "Cost" in body[body.index("WATCH"):]
+
+
+# ---------------------------------------------------------------------------
+# COOL CARDS and CHEAP FINDS
+#
+# The report used to answer one question -- "is this underpriced against a
+# grade-matched comp" -- and on this project's data it can almost never
+# answer it. So the body of the email was a list of things it could not
+# value, under headings that read as junk drawers. These two sections answer
+# questions it CAN answer from a title: what is this card, and is it cheap.
+# Neither makes any claim about price, which is why neither can produce the
+# false confidence the valuation rules exist to prevent.
+# ---------------------------------------------------------------------------
+
+
+def carded(title, price, **overrides):
+    identity = card_identity.extract_card_identity(title)
+    fields = dict(
+        # id from a hash of the title, not a prefix of it: two 2024 Panini
+        # cards share their first twelve characters, and a shared id makes
+        # the second one look like a duplicate of the first.
+        id=str(abs(hash(title))), title=title, price=price, card_identity=identity,
+        card_type="raw", grader=None, grade=None, is_opportunity=False,
+        comp_match=None, market_value=None, pct_under_market=None, dollar_savings=None,
+        is_rookie_card="RC" in title or "Rookie" in title,
+    )
+    fields.update(overrides)
+    return make_listing(**fields)
+
+
+AUTO = "2024 Topps Chrome Pete Crow-Armstrong Auto Refractor /499 #RA-PCA"
+CHEAP_ROOKIE = "2024 Panini Donruss Caleb Williams #301 RC"
+BASE_COMMON = "2024 Topps Caleb Williams #150"
+
+
+class TestCoolCards:
+    def test_a_signed_numbered_card_gets_a_section_of_its_own(self):
+        sections = report.classify_sections([carded(AUTO, 42.0)])
+        assert [d.title for d in sections[report.SECTION_COOL_CARDS]] == [AUTO]
+
+    def test_a_base_common_is_not_a_cool_card(self):
+        sections = report.classify_sections([carded(BASE_COMMON, 42.0, is_rookie_card=False)])
+        assert sections[report.SECTION_COOL_CARDS] == []
+
+    def test_the_scarcest_card_comes_first(self):
+        plain = "2024 Panini Prizm Caleb Williams Silver Prizm RC #301"
+        sections = report.classify_sections([carded(plain, 9.0), carded(AUTO, 42.0)])
+        assert sections[report.SECTION_COOL_CARDS][0].title == AUTO
+
+    def test_the_block_prints_no_market_value_and_no_discount(self):
+        # The whole point: this section is about what the card IS. A
+        # discount here would be a valuation claim wearing a browse label.
+        deal = carded(AUTO, 42.0)
+        deal.comp_match = make_match(flag_eligible=False, blocked=("context_only_level",))
+        deal.market_value = 200.0
+        deal.dollar_savings = 150.0
+        deal.pct_under_market = 75.0
+        block = report._interest_block(1, deal)
+        assert "Market" not in block
+        assert "Discount" not in block
+        assert "What it is" in block
+
+    def test_an_auction_still_gets_the_auction_block(self):
+        deal = carded(AUTO, 42.0, listing_type="auction", bid_count=3)
+        assert "CURRENT BID, not an asking price" in flat(report._interest_block(1, deal))
+
+
+class TestCheapFinds:
+    def test_pocket_change_with_something_to_it_is_shown(self):
+        sections = report.classify_sections([carded(CHEAP_ROOKIE, 1.99)], cheap_find_ceiling=15.0)
+        assert [d.title for d in sections[report.SECTION_CHEAP_FINDS]] == [CHEAP_ROOKIE]
+
+    def test_a_cheap_card_with_nothing_to_it_is_not(self):
+        # Being cheap is not a reason on its own -- the cheap end of the
+        # hobby is mostly base commons and printing them all is the pile
+        # this section exists to filter.
+        sections = report.classify_sections(
+            [carded(BASE_COMMON, 1.99, is_rookie_card=False)], cheap_find_ceiling=15.0
+        )
+        assert sections[report.SECTION_CHEAP_FINDS] == []
+
+    def test_the_ceiling_is_on_total_cost_not_the_asking_price(self):
+        deal = carded(CHEAP_ROOKIE, 14.0, shipping_price=5.0)
+        sections = report.classify_sections([deal], cheap_find_ceiling=15.0)
+        assert sections[report.SECTION_CHEAP_FINDS] == []
+
+    def test_cheapest_first(self):
+        dearer = carded("2024 Panini Select Matas Buzelis Concourse RC #45", 9.0)
+        sections = report.classify_sections(
+            [dearer, carded(CHEAP_ROOKIE, 1.99)], cheap_find_ceiling=15.0
+        )
+        assert sections[report.SECTION_CHEAP_FINDS][0].title == CHEAP_ROOKIE
+
+    def test_a_cool_card_is_not_also_a_cheap_find(self):
+        # One card, one section. COOL CARDS is claimed first.
+        cheap_auto = carded("2024 Topps Chrome Caleb Williams Auto RC", 5.0)
+        sections = report.classify_sections([cheap_auto], cheap_find_ceiling=15.0)
+        assert len(sections[report.SECTION_COOL_CARDS]) == 1
+        assert sections[report.SECTION_CHEAP_FINDS] == []
+
+
+class TestTheEmailSaysWhatItHas:
+    def _browsable_day(self):
+        return [carded(AUTO, 42.0), carded(CHEAP_ROOKIE, 1.99)]
+
+    def test_the_subject_names_the_cards_not_the_absence_of_deals(self):
+        # It is the line most likely to be the only thing read, and "No
+        # opportunities today" above a page of autographs is the subject
+        # arguing with its own contents.
+        subject = report.build_report(self._browsable_day(), 30, RUN_DATE)[0]
+        assert "No opportunities" not in subject
+        assert "cool card" in subject and "cheap find" in subject
+
+    def test_the_counts_line_names_them_too(self):
+        body = body_of(self._browsable_day())
+        assert "1 cool card | 1 cheap find" in body
+
+    def test_it_still_says_there_was_no_deal(self):
+        # Dropping the statement would let browsable cards read as
+        # opportunities, which is the confusion the engine exists to prevent.
+        body = flat(body_of(self._browsable_day()))
+        assert "No deal today" in body
+        assert "NOTHING CLEARED THE BAR TODAY." not in body
+
+    def test_a_genuinely_empty_day_still_gets_the_full_explanation(self):
+        body = flat(body_of([]))
+        assert "NOTHING CLEARED THE BAR TODAY." in body
+
+    def test_a_real_deal_still_leads(self):
+        subject = report.build_report([make_listing()], 30, RUN_DATE)[0]
+        assert "opportunity" in subject

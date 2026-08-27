@@ -102,3 +102,67 @@ class TestDescribe:
 
     def test_empty_when_there_are_none(self):
         assert desirability.describe(()) == ""
+
+
+# ---------------------------------------------------------------------------
+# Interest ranking
+#
+# This orders a list. It is never a price, a discount or a score, and the
+# tests below are about relative order rather than any absolute number --
+# asserting a specific total would turn a ranking hint into a contract.
+# ---------------------------------------------------------------------------
+
+
+def listing_for(title, **overrides):
+    from src import card_identity, matcher
+    from src.models import Listing
+
+    grade_info = matcher.detect_grade_details(title)
+    fields = dict(
+        id="1", source="ebay", title=title, price=25.0, url="u",
+        player="Caleb Williams", card_type=grade_info.card_type,
+        grader=grade_info.grader, grade=grade_info.grade,
+        card_identity=card_identity.extract_card_identity(title),
+        is_rookie_card=matcher.detect_rookie_card(title),
+    )
+    fields.update(overrides)
+    return Listing(**fields)
+
+
+class TestInterestScore:
+    def test_a_signed_numbered_rookie_outranks_a_graded_base_parallel(self):
+        signed = listing_for("2024 Panini Prizm Caleb Williams Auto RC #301 /99")
+        graded = listing_for("2024 Panini Prizm Caleb Williams Silver Prizm #301 PSA 9")
+        assert desirability.interest_score(signed) > desirability.interest_score(graded)
+
+    def test_scarcity_compounds(self):
+        one_of_one = listing_for("2024 Panini Prizm Caleb Williams Gold Vinyl #301 1/1")
+        of_499 = listing_for("2024 Panini Prizm Caleb Williams Gold #301 /499")
+        assert desirability.interest_score(one_of_one) > desirability.interest_score(of_499)
+
+    def test_a_base_common_scores_nothing(self):
+        assert desirability.interest_score(listing_for("2024 Topps Caleb Williams #150")) == 0
+
+    def test_a_listing_with_no_identity_does_not_crash(self):
+        assert desirability.interest_score(listing_for("x", card_identity=None)) == 0
+
+
+class TestIsStandout:
+    def test_one_strong_attribute_is_enough(self):
+        # An autograph is an autograph whatever else is true of the listing.
+        assert desirability.is_standout(listing_for("2024 Topps Chrome Caleb Williams Auto"))
+
+    def test_one_common_attribute_is_not(self):
+        # A bare parallel describes most of the hobby, and a section that
+        # prints most of the hobby is the pile the reader is already in.
+        assert not desirability.is_standout(
+            listing_for("2024 Panini Prizm Caleb Williams Silver Prizm #301", is_rookie_card=False)
+        )
+
+    def test_two_common_attributes_are(self):
+        assert desirability.is_standout(
+            listing_for("2024 Panini Prizm Caleb Williams Silver Prizm RC #301")
+        )
+
+    def test_a_base_common_is_not(self):
+        assert not desirability.is_standout(listing_for("2024 Topps Caleb Williams #150"))

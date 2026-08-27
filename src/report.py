@@ -87,6 +87,8 @@ SECTION_TARGET_HITS = "target_hits"
 SECTION_INVESTMENT = "investment_watchlist"
 SECTION_AUCTIONS = "auctions_ending_soon"
 SECTION_OFFERS = "offer_opportunities"
+SECTION_COOL_CARDS = "cool_cards"
+SECTION_CHEAP_FINDS = "cheap_finds"
 SECTION_WATCH = "watch"
 SECTION_NEEDS_REVIEW = "needs_review"
 SECTION_PRICE_DROPS = "price_drops"
@@ -98,6 +100,8 @@ SECTION_ORDER = (
     SECTION_INVESTMENT,
     SECTION_AUCTIONS,
     SECTION_OFFERS,
+    SECTION_COOL_CARDS,
+    SECTION_CHEAP_FINDS,
     SECTION_WATCH,
     SECTION_NEEDS_REVIEW,
     SECTION_PRICE_DROPS,
@@ -119,6 +123,8 @@ BUDGET_ORDER = (
     SECTION_TARGET_HITS,
     SECTION_AUCTIONS,
     SECTION_OFFERS,
+    SECTION_COOL_CARDS,
+    SECTION_CHEAP_FINDS,
     SECTION_INVESTMENT,
     SECTION_WATCH,
     SECTION_PRICE_DROPS,
@@ -138,11 +144,13 @@ BUDGET_NO_LEFTOVERS = (SECTION_NEEDS_REVIEW,)
 
 SECTION_TITLES = {
     SECTION_ACT_NOW: "\U0001f6a8 ACT NOW",
-    SECTION_TOP_OPPORTUNITIES: "⭐ TOP OPPORTUNITIES",
+    SECTION_TOP_OPPORTUNITIES: "⭐ DEALS",
     SECTION_TARGET_HITS: "\U0001f3af TARGET CARD HITS",
     SECTION_INVESTMENT: "\U0001f4c8 INVESTMENT WATCHLIST",
     SECTION_AUCTIONS: "\U0001f528 AUCTIONS ENDING SOON",
     SECTION_OFFERS: "\U0001f4ac OFFER OPPORTUNITIES",
+    SECTION_COOL_CARDS: "\U0001f60e COOL CARDS",
+    SECTION_CHEAP_FINDS: "\U0001f4b0 CHEAP FINDS",
     SECTION_WATCH: "\U0001f440 WATCH",
     SECTION_NEEDS_REVIEW: "\U0001f9ea LOW CONFIDENCE / NEEDS REVIEW",
     SECTION_PRICE_DROPS: "\U0001f4c9 PRICE DROPS",
@@ -178,6 +186,17 @@ SECTION_SUBTITLES = {
         "Not deals at the asking price -- but they accept offers, and a negotiated price "
         "could get there. Offer figures are flat percentages off market, stated on each card."
     ),
+    SECTION_COOL_CARDS: (
+        "No valuation claim here at all -- CardPro cannot tell you what these are worth, and "
+        "says so. What it CAN tell you from a title is what the card IS: signed, patched, "
+        "numbered, a rookie, a real parallel. Ordered by how scarce or wanted the card is, "
+        "never by price."
+    ),
+    SECTION_CHEAP_FINDS: (
+        "Cheap enough to buy for the fun of it, with something about them worth having. "
+        "Being cheap is not the same as being underpriced and this section claims neither -- "
+        "it is the pocket-change end of the hobby, filtered so it is not all base commons."
+    ),
     SECTION_WATCH: (
         "Real, but not strong enough to act on: low confidence, or close to your thresholds "
         "without clearing them."
@@ -197,6 +216,11 @@ SECTION_SUBTITLES = {
 DEFAULT_IMMEDIATE_MIN_SAVINGS = 150.0
 DEFAULT_IMMEDIATE_MIN_DISCOUNT_PCT = 40.0
 DEFAULT_ENDING_SOON_HOURS = 24
+
+#: What counts as pocket change. A card at or under this is shown for being
+#: cheap and interesting, with no claim that it is underpriced -- those are
+#: different questions and this section answers the easier one.
+DEFAULT_CHEAP_FIND_CEILING = 15.0
 
 #: How close to your discount threshold a non-opportunity has to be to earn
 #: a WATCH slot. 0.75 means "within a quarter of the way off" -- close
@@ -1016,6 +1040,33 @@ def _compact_block(index: int, deal: Listing, *, why: Optional[str] = None,
     return "\n".join(lines)
 
 
+def _interest_block(index: int, deal: Listing,
+                    ending_soon_hours: float = DEFAULT_ENDING_SOON_HOURS) -> str:
+    """A card shown for what it IS, not for what it is worth.
+
+    Deliberately shorter than a thesis block and deliberately missing the
+    Market and Discount lines even when a comp exists. There is a thesis
+    block for cards CardPro can value; the point of this one is that it does
+    not pretend to. What it prints is the cost, what makes the card
+    interesting, anything that might make it not the card it appears to be,
+    and a link.
+    """
+    if deal.is_auction:
+        return _auction_block(index, deal, ending_soon_hours)
+    lines = [_headline(index, deal), _field_line("Cost", _cost_text(deal))]
+    described = desirability.describe(desirability.attributes_of(deal))
+    if described:
+        lines.append(_field_line("What it is", described))
+    risks = _risks(deal)
+    if risks:
+        lines.append(_field_line("Risks", "; ".join(risks)))
+    title_line = _title_line(deal)
+    if title_line:
+        lines.append(title_line)
+    lines.append(_link_line(deal))
+    return "\n".join(lines)
+
+
 def _price_drop_block(index: int, deal: Listing) -> str:
     if deal.is_auction:
         # An auction's number is a CURRENT BID. Rendering it under "Asking"
@@ -1145,6 +1196,7 @@ def classify_sections(
     immediate_min_savings: float = DEFAULT_IMMEDIATE_MIN_SAVINGS,
     immediate_min_discount_pct: float = DEFAULT_IMMEDIATE_MIN_DISCOUNT_PCT,
     ending_soon_hours: float = DEFAULT_ENDING_SOON_HOURS,
+    cheap_find_ceiling: float = DEFAULT_CHEAP_FIND_CEILING,
 ) -> "OrderedDict":
     """Sort listings into report sections. Separate from rendering because
     this is the part most likely to be wrong, and a classification bug is
@@ -1231,6 +1283,37 @@ def classify_sections(
         if deal.has_best_offer and not deal.is_opportunity and _is_real_comp(deal):
             take(SECTION_OFFERS, deal)
 
+    # COOL CARDS and CHEAP FINDS sit above WATCH and NEEDS REVIEW on purpose.
+    #
+    # Everything below this point in the order is a section about a
+    # valuation: too weak to act on, or missing, or untrustworthy. On the
+    # data this project actually has, that is almost every listing -- so a
+    # report ordered only by valuation strength is a report whose entire
+    # body is a list of things it could not value, which is what it had
+    # become. These two sections answer questions the system CAN answer from
+    # a title alone: what is this card, and is it cheap. Neither makes any
+    # claim about price, so neither can produce the false confidence the
+    # valuation rules exist to prevent -- and between them they are the part
+    # of the email with something in it on an ordinary day.
+    for deal in ranked:
+        if deal.id in claimed:
+            continue
+        if desirability.is_standout(deal):
+            take(SECTION_COOL_CARDS, deal)
+    sections[SECTION_COOL_CARDS].sort(
+        key=lambda d: (-desirability.interest_score(d), _price_for_sort(d), d.id)
+    )
+
+    for deal in ranked:
+        if deal.id in claimed:
+            continue
+        price = deal.total_cost
+        if price is not None and price <= cheap_find_ceiling and desirability.attributes_of(deal):
+            take(SECTION_CHEAP_FINDS, deal)
+    sections[SECTION_CHEAP_FINDS].sort(
+        key=lambda d: (_price_for_sort(d), -desirability.interest_score(d), d.id)
+    )
+
     for deal in ranked:
         if deal.id in claimed:
             continue
@@ -1252,6 +1335,15 @@ def classify_sections(
             take(SECTION_PRICE_DROPS, deal)
 
     return sections
+
+
+def _price_for_sort(deal: Listing) -> float:
+    """Total cost for ordering, with unknown sorting last rather than free.
+
+    A listing whose price could not be read is not a $0 card, and putting it
+    at the top of a section ordered by cheapness would say exactly that."""
+    price = deal.total_cost
+    return price if price is not None else float("inf")
 
 
 def _is_close_but_under(deal: Listing, threshold_pct: float, big_dollar_savings: float) -> bool:
@@ -1382,6 +1474,8 @@ def _render_section(key: str, deals: list, threshold_pct: float, ending_soon_hou
             block = _compact_block(
                 index, deal, why=_needs_review_why(deal), ending_soon_hours=ending_soon_hours
             )
+        elif key in (SECTION_COOL_CARDS, SECTION_CHEAP_FINDS):
+            block = _interest_block(index, deal, ending_soon_hours)
         elif key == SECTION_PRICE_DROPS:
             block = _price_drop_block(index, deal)
         else:
@@ -1432,6 +1526,8 @@ def _summary_line(sections) -> str:
         (SECTION_INVESTMENT, "investment watch", "investment watches"),
         (SECTION_AUCTIONS, "auction", "auctions"),
         (SECTION_OFFERS, "offer candidate", "offer candidates"),
+        (SECTION_COOL_CARDS, "cool card", "cool cards"),
+        (SECTION_CHEAP_FINDS, "cheap find", "cheap finds"),
         (SECTION_WATCH, "watch", "watch"),
         (SECTION_NEEDS_REVIEW, "needs review", "needs review"),
         (SECTION_PRICE_DROPS, "price drop", "price drops"),
@@ -1476,6 +1572,20 @@ def _subject(sections, date_short: str, stats=None) -> str:
         return "{} to review ({})".format(_plural(auctions, "auction"), date_short)
     if getattr(stats, "breakage_warnings", None):
         return "CHECK THIS -- today's scan may be broken ({})".format(date_short)
+    # No deal today does not mean nothing to look at. Leading with "No
+    # opportunities" above an email holding a dozen autographs and numbered
+    # rookies is the subject line arguing with its own contents, and it is
+    # the line most likely to be the only thing read.
+    cool = len(sections[SECTION_COOL_CARDS])
+    cheap = len(sections[SECTION_CHEAP_FINDS])
+    if cool and cheap:
+        return "{} + {} ({})".format(
+            _plural(cool, "cool card"), _plural(cheap, "cheap find"), date_short
+        )
+    if cool:
+        return "{} to look at ({})".format(_plural(cool, "cool card"), date_short)
+    if cheap:
+        return "{} ({})".format(_plural(cheap, "cheap find"), date_short)
     return "No opportunities today ({})".format(date_short)
 
 
@@ -1979,6 +2089,7 @@ def build_report(
     focus_rules: Optional[focus.FocusRules] = None,
     comp_requests_list=(),
     unidentified_listings: int = 0,
+    cheap_find_ceiling: float = DEFAULT_CHEAP_FIND_CEILING,
 ) -> tuple:
     """Returns ``(subject, body)`` -- a plain-text email, no HTML.
 
@@ -2037,6 +2148,7 @@ def build_report(
         immediate_min_savings=immediate_min_savings,
         immediate_min_discount_pct=immediate_min_discount_pct,
         ending_soon_hours=ending_soon_hours,
+        cheap_find_ceiling=cheap_find_ceiling,
     )
     sections, trimmed = focus.trim(
         sections, BUDGET_ORDER, focus_rules, no_leftovers=BUDGET_NO_LEFTOVERS
@@ -2052,10 +2164,37 @@ def build_report(
         SECTION_TOP_OPPORTUNITIES,
         SECTION_TARGET_HITS,
         SECTION_INVESTMENT,
+        # COOL CARDS and CHEAP FINDS count as content. They make no claim
+        # about value, so they do not make it a day with deals -- but a page
+        # of autographs and numbered rookies under the heading "NOTHING
+        # CLEARED THE BAR TODAY" is the email contradicting itself, and the
+        # long explanation of why zero deals is normal is not what a reader
+        # with eleven cards below them needs to read first.
+        SECTION_COOL_CARDS,
+        SECTION_CHEAP_FINDS,
     )
     has_decision_content = any(sections[key] for key in decision_sections)
 
     blocks = [header]
+    # A day with cool cards and no deals still has to SAY there were no
+    # deals -- just in one line rather than six paragraphs. Dropping the
+    # statement entirely would let a page of browsable cards read as a page
+    # of opportunities, which is the confusion the whole valuation engine
+    # exists to prevent.
+    browsable_only = has_decision_content and not any(
+        sections[key]
+        for key in (SECTION_ACT_NOW, SECTION_TOP_OPPORTUNITIES, SECTION_TARGET_HITS,
+                    SECTION_INVESTMENT)
+    )
+    if browsable_only:
+        blocks.append(
+            textwrap.fill(
+                "No deal today: nothing had a comp CardPro will stand behind AND a big "
+                "enough discount. Everything below is shown for what the card IS, not for "
+                "what it is worth -- there is no valuation attached to any of it.",
+                width=_WRAP_WIDTH,
+            )
+        )
     if not has_decision_content:
         has_other_content = any(sections[key] for key in SECTION_ORDER)
         blocks.append(
