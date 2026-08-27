@@ -1019,15 +1019,32 @@ doing better:
   Kyle Teel (2026 Topps Chrome Red White Blue raw) -- 1 listing waiting, 3 sales still needed
       search: "2026 Topps Chrome Kyle Teel Red White Blue"
       example: https://www.ebay.com/itm/178427169565
+      add:    python -m scripts.add_sold_comp --player "Kyle Teel" --year 2026 --set "Topps Chrome" --parallel "Red White Blue" --price ? --date ?
 ```
 
-Then:
+The `add:` line is the command with everything CardPro already knows filled
+in, leaving the two fields only the lookup can produce. Paste it, replace the
+two question marks, run it.
+
+If you would rather not think about flags at all, paste the listing title
+instead and let the same parser the daily scan uses read the identity out of
+it:
 
 ```bash
-python -m scripts.add_sold_comp --player "Kyle Teel" --year 2026 \
-    --set "Topps Chrome" --parallel "Red White Blue" \
-    --price <what it sold for> --date <when it sold> --source 130point
+python -m scripts.add_sold_comp \
+    --from-title "2026 Topps Chrome Kyle Teel Red White Blue Refractor #RA-KT" \
+    --price 34.00 --date 2026-08-20
 ```
+
+It prints what it read before it writes anything, and any flag you pass
+explicitly wins over what it read -- you looked at the card, the parser only
+looked at the title.
+
+The typing saved is not really the point. A comp entered either of these ways
+is keyed **exactly** the way the listings it will be matched against are
+keyed. A hand-typed `--parallel Silver` against an extracted `Silver Prizm`
+is a sold comp that silently never matches anything, which looks like
+progress and is worse than not entering it at all.
 
 Entries land in `config/sold_comps.json` (`settings.json` -> `sold_comps.path`),
 are validated before writing rather than repaired, and are the only comps in
