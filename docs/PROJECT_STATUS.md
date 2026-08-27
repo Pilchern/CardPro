@@ -371,20 +371,36 @@ that would bring it back.
 
 ## 8. Known limitations (open, acknowledged)
 
-- **Identity extraction is the binding constraint, and it is now measured.**
-  99.2% of stored observations cannot form a key at the narrowest level
-  allowed to declare a deal; the set name is the first missing field for
-  66% of them. See §0 for the full KPI and `python -m scripts.replay_corpus`
-  to re-run it. Everything else on this list is downstream of that.
+- **Identity extraction is the binding constraint, it is now measured, and
+  the repair is unmeasured.** 99.2% of stored observations cannot form a key
+  at the narrowest level allowed to declare a deal; the set name is the
+  first missing field for 66% of them. See §0 for the full KPI and
+  `python -m scripts.replay_corpus` to re-run it.
+
+  The extractor was substantially repaired after those numbers were taken --
+  six values that were confidently wrong, thirty-odd missing products, a
+  guarded flagship-base-set path, card numbers without a hash. **None of
+  that shows in the KPI, and will not for several days.** The corpus stores
+  the fields the extractor produced on the day each row was written, not the
+  titles it produced them from, so a stored row cannot be re-parsed. Titles
+  are now recorded, and `python -m scripts.replay_corpus --reextract`
+  replays them through the current parser -- but only rows written from
+  today onward have one. Until enough of those accumulate, the honest
+  statement is that the extraction work is expected to help and has not been
+  shown to.
+
+  Everything else on this list is downstream of this one.
 - **No confirmed sold prices anywhere.** Structural: 100% of the corpus is
   asking prices. The hand-entry path now exists (`src/sold_comps.py`,
   `python -m scripts.add_sold_comp`) and the report ranks which lookups
   would unlock the most listings (`src/comp_requests.py`), but nothing has
   been entered yet, and hand entry tops out around twenty comps. Card Ladder
   remains the paid alternative and is still not bought.
-- **The corpus is five days deep**, and `min_comp_span_days` is 7, so no
-  bucket in it can currently clear the sample-span gate. That resolves with
-  time and nothing else.
+- **The corpus is only a few days deep**, and `min_comp_span_days` is 7, so
+  no bucket in it can currently clear the sample-span gate. That resolves
+  with time and nothing else. It also means a replay showing zero flags is
+  not, on its own, evidence about the valuation rules -- the gate fires on
+  everything regardless of how good the comps are.
 - **Graded coverage is almost nil** — 11 of 907 observations, 1.2%. The
   saved-search strategy is the cause; `src/search_terms.py` generates the
   queries that would fix it, but creating them on eBay is a manual step.
@@ -393,6 +409,20 @@ that would bring it back.
   than guessing.
 - **No seller-risk signals.** Not present in alert emails; unverified whether
   they can be obtained at all.
+- **`is_base` and the flagship set do not key a comp bucket.** Both are
+  inferences, both are recorded, and both are deliberately one step short of
+  being valued off. `replay_corpus` prints the upper bound on what promoting
+  `is_base` would unlock (same_card: 0 usable observations to at most 67,
+  7.4%) so that promotion can be a measured decision rather than an argued
+  one. The evidence that would justify it: a corpus several weeks wide, with
+  titles, showing that the buckets it creates contain what they claim to.
+- **A lot changed in one session.** The report structure, the extractor, the
+  economics and the reliability behaviour were all reworked on the same day
+  by several agents. The suite went from 671 tests to 938 and CI is green on
+  3.9 and 3.12, but green tests are evidence about the cases someone thought
+  to write down. `python -m scripts.rehearse_run` renders the real pipeline
+  against the real config, and is the cheapest way to check the email still
+  reads correctly after a change.
 - **No image intelligence, no LLM layer, no dashboard, no portfolio
   tracking.** All deliberately deferred behind trustworthy valuation.
 
