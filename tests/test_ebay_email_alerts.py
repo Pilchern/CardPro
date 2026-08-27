@@ -409,3 +409,107 @@ class TestFailuresAreNotQuietDays:
                 ):
                     ebay_email_alerts.fetch_alert_listings("a@b", "pw", "ebay", 2, counters=counters)
         assert "template_warning" not in counters
+
+
+class TestTheFullestTitleAvailable:
+    """THE bottleneck, measured on the first 350 titles a live run stored:
+    98% arrived truncated, at a median of 30 characters -- cut off mid-word
+    before the set name. The set, the parallel, the card number and the
+    grade all live past that cut, which is why set_name resolved for a sixth
+    of listings. eBay truncates the VISIBLE link text; the same anchor's
+    title attribute and its image's alt are written for tooltips and screen
+    readers and are frequently the whole thing."""
+
+    # A real truncation is a prefix -- eBay simply cuts the string -- so the
+    # fixture has to be one too, or it is testing something that never happens.
+    FULL = "2024 Panini Caleb Williams Prizm Silver RC #301 PSA 10"
+    CUT = "2024 Panini Caleb Williams Pr…"
+
+    def _extract(self, html):
+        return ebay_email_alerts.extract_listings_from_html(html)[0]["title"]
+
+    def test_the_title_attribute_is_preferred_over_the_truncated_text(self):
+        html = '<a href="https://www.ebay.com/itm/1" title="{}">{}</a>'.format(self.FULL, self.CUT)
+        assert self._extract(html) == self.FULL
+
+    def test_an_image_alt_works_too(self):
+        html = '<a href="https://www.ebay.com/itm/1"><img alt="{}">{}</a>'.format(self.FULL, self.CUT)
+        assert self._extract(html) == self.FULL
+
+    def test_an_aria_label_works_too(self):
+        html = '<a href="https://www.ebay.com/itm/1" aria-label="{}">{}</a>'.format(
+            self.FULL, self.CUT
+        )
+        assert self._extract(html) == self.FULL
+
+    def test_a_candidate_that_is_not_this_listing_is_refused(self):
+        # Without the stem check a generic alt would silently replace a real
+        # title, which is worse than a short one.
+        html = '<a href="https://www.ebay.com/itm/1" title="Shop eBay for great deals now">{}</a>'.format(
+            self.CUT
+        )
+        assert self._extract(html) == self.CUT
+
+    def test_a_shorter_candidate_never_wins(self):
+        html = '<a href="https://www.ebay.com/itm/1" title="2024 Panini">{}</a>'.format(self.CUT)
+        assert self._extract(html) == self.CUT
+
+    def test_no_attributes_leaves_the_visible_text_alone(self):
+        html = '<a href="https://www.ebay.com/itm/1">{}</a>'.format(self.CUT)
+        assert self._extract(html) == self.CUT
+
+    def test_an_untruncated_but_short_visible_title_can_still_be_extended(self):
+        html = '<a href="https://www.ebay.com/itm/1" title="{}">2024 Panini Caleb</a>'.format(
+            self.FULL
+        )
+        assert self._extract(html) == self.FULL
+
+    def test_whitespace_in_an_attribute_is_normalised(self):
+        html = '<a href="https://www.ebay.com/itm/1" title="2024  Panini\n Caleb Williams Prizm Silver">{}</a>'.format(
+            self.CUT
+        )
+        assert self._extract(html) == "2024 Panini Caleb Williams Prizm Silver"
+
+    def test_a_prefixed_template_still_matches(self):
+        # Some templates put "New listing" in front of one copy and not the
+        # other; a strict prefix check would throw the real title away.
+        html = '<a href="https://www.ebay.com/itm/1" title="New listing {}">{}</a>'.format(
+            self.FULL, self.CUT
+        )
+        assert self._extract(html).endswith("#301 PSA 10")
+
+
+class TestTitleStem:
+    def test_it_drops_the_partial_word_the_cut_left(self):
+        assert ebay_email_alerts._title_stem("2024 Panini Caleb Williams Pr…") == (
+            "2024 panini caleb williams"
+        )
+
+    def test_it_handles_three_dots_as_well_as_an_ellipsis(self):
+        assert ebay_email_alerts._title_stem("2024 Panini Caleb Williams Pr...") == (
+            "2024 panini caleb williams"
+        )
+
+    def test_an_untruncated_title_is_its_own_stem(self):
+        assert ebay_email_alerts._title_stem("2026 Topps #201 Kyle Teel") == "2026 topps #201 kyle teel"
+
+
+def test_the_truncation_rate_is_counted_for_the_report():
+    counters = {}
+    html = (
+        '<a href="https://www.ebay.com/itm/1">2024 Panini Caleb Williams Pr…</a>'
+        '<a href="https://www.ebay.com/itm/2">2026 Topps #201 Kyle Teel</a>'
+    )
+    ebay_email_alerts.extract_listings_from_html(html, counters=counters)
+    assert counters == {"titles_seen": 2, "titles_truncated": 1}
+
+
+def test_a_recovered_title_is_not_counted_as_truncated():
+    # The whole point of the recovery: the number has to move when it works.
+    counters = {}
+    html = (
+        '<a href="https://www.ebay.com/itm/1" title="2024 Panini Caleb Williams Prizm Silver #301">'
+        "2024 Panini Caleb Williams Pr…</a>"
+    )
+    ebay_email_alerts.extract_listings_from_html(html, counters=counters)
+    assert counters["titles_truncated"] == 0

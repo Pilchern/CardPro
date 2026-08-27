@@ -212,6 +212,17 @@ def fetch_ebay_alert_active(cfg, stats) -> list:
     # that says every number below it is a fabricated quiet day.
     if counters.get("template_warning"):
         stats.warn(counters["template_warning"], broken=True)
+    seen = counters.get("titles_seen", 0)
+    cut = counters.get("titles_truncated", 0)
+    if seen:
+        # The measured bottleneck, reported every run so a change to title
+        # recovery is visible the next morning rather than argued about. A
+        # truncated title is missing its set, parallel, card number and
+        # grade -- everything the comp key needs -- so this number is close
+        # to a ceiling on what the valuation engine can ever do.
+        stats.titles_truncated_pct = 100.0 * cut / seen
+        logger.info("Titles: %d seen, %d still truncated (%.0f%%)", seen, cut, stats.titles_truncated_pct)
+
     if counters.get("fetch_failures"):
         stats.warn(
             "{} alert email(s) could not be read from the mailbox and were skipped, so "

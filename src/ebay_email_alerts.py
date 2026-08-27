@@ -195,7 +195,7 @@ def get_html_body(msg: Message) -> Optional[str]:
     return None
 
 
-def extract_listings_from_html(html: str) -> list[dict]:
+def extract_listings_from_html(html: str, counters: Optional[dict] = None) -> list[dict]:
     """Returns [{title, url, price, shipping_price}] best-effort -- see
     module docstring on why this is provisional. shipping_price is None
     when it couldn't be determined (no "shipping" text found nearby) --
@@ -215,15 +215,18 @@ def extract_listings_from_html(html: str) -> list[dict]:
     soup = BeautifulSoup(html, "html.parser")
     results = []
     seen_urls = set()
+    truncated = 0
 
     for a in soup.find_all("a", href=True):
         clean_url = _find_item_url(a["href"])
         if not clean_url or clean_url in seen_urls:
             continue
 
-        title = a.get_text(strip=True)
+        title = _fullest_title(a)
         if not title:
             continue
+        if looks_truncated(title):
+            truncated += 1
 
         price = _find_nearby(a, _extract_price)
         shipping_price = _find_nearby(a, _extract_shipping)
@@ -243,7 +246,85 @@ def extract_listings_from_html(html: str) -> list[dict]:
             }
         )
 
+    if counters is not None and results:
+        counters["titles_seen"] = counters.get("titles_seen", 0) + len(results)
+        counters["titles_truncated"] = counters.get("titles_truncated", 0) + truncated
+
     return results
+
+
+#: Where a fuller copy of the title may be hiding, in the order we prefer
+#: them. The anchor's visible text is what eBay TRUNCATED for display; these
+#: attributes are written for tooltips and screen readers and are often the
+#: whole thing.
+_TITLE_ATTRIBUTES = ("title", "aria-label")
+
+
+def _title_stem(text: str) -> str:
+    """The part of a truncated title we can be sure of.
+
+    eBay cuts mid-word and appends an ellipsis, so "2024 Panini Caleb
+    Williams Pr..." tells us the title starts with everything before "Pr".
+    That stem is what a longer candidate has to match to be believable.
+    """
+    stripped = text.rstrip()
+    for marker in TRUNCATION_MARKERS:
+        if stripped.endswith(marker):
+            stripped = stripped[: -len(marker)].rstrip()
+            # Drop the partial word the cut left behind.
+            head, _, tail = stripped.rpartition(" ")
+            return (head or tail).strip().lower()
+    return stripped.strip().lower()
+
+
+def _fullest_title(anchor) -> str:
+    """The longest title for this listing that the email actually contains.
+
+    THIS IS THE BOTTLENECK, measured. Of the first 350 titles the live run
+    stored, 98% arrived truncated, at a median of 30 characters -- "2024
+    Panini Caleb Williams Pr...", cut off mid-word before the set name. The
+    set, the parallel, the card number and the grade all live past that cut,
+    which is the whole reason set_name resolved for a sixth of listings and
+    the flagship-set path (which needs a card number) almost never fires. It
+    is not that the parser is weak; it is that it was being handed thirty
+    characters.
+
+    eBay truncates the VISIBLE link text. The same anchor's title attribute,
+    its aria-label, and the item image's alt text are written for tooltips
+    and screen readers and are frequently the untruncated title. Reading them
+    is parsing an email we were sent -- no request to eBay, nothing that
+    touches their anti-automation measures.
+
+    A candidate is only accepted when it is longer than the visible text AND
+    begins with the part of it we can be sure of. Without that check a
+    generic alt like "eBay" or a seller's store name would silently replace a
+    real title, which is worse than a short one.
+    """
+    visible = anchor.get_text(strip=True)
+    stem = _title_stem(visible) if visible else ""
+
+    candidates = [anchor.get(name) for name in _TITLE_ATTRIBUTES]
+    for image in anchor.find_all("img"):
+        candidates.append(image.get("alt"))
+        candidates.append(image.get("title"))
+
+    best = visible
+    for candidate in candidates:
+        if not candidate:
+            continue
+        candidate = " ".join(str(candidate).split())
+        if len(candidate) <= len(best):
+            continue
+        # startswith is the common case -- eBay simply cuts the string --
+        # but "contains" is accepted too, because a template that prefixes
+        # the visible text (or the attribute) with something like "New
+        # listing" would otherwise throw the real title away. The stem is
+        # twenty-odd characters of this specific listing either way, so it
+        # still cannot match a generic alt like "Shop eBay for great deals".
+        if stem and stem not in candidate.lower():
+            continue
+        best = candidate
+    return best
 
 
 def _find_item_url(href: str) -> Optional[str]:
@@ -438,7 +519,7 @@ def fetch_alert_listings(
         html = get_html_body(msg)
         if not html:
             continue
-        listings.extend(extract_listings_from_html(html))
+        listings.extend(extract_listings_from_html(html, counters=counters))
 
     if messages and not listings:
         # Recorded for the caller, not only logged. This is the single

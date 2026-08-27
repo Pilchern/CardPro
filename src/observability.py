@@ -78,6 +78,10 @@ class RunStats:
     #: matters more than any single day's contents -- a gap values things
     #: slightly wrong for the whole retention window afterwards.
     days_since_last_run: Optional[int] = None
+    #: What share of alert titles arrived cut short by eBay. The set,
+    #: parallel, card number and grade all live past that cut, so this is
+    #: close to a ceiling on what the valuation engine can ever do.
+    titles_truncated_pct: Optional[float] = None
 
     rejections: reasons.RejectionLog = field(default_factory=reasons.RejectionLog)
     warnings: list = field(default_factory=list)
@@ -183,6 +187,13 @@ class RunStats:
                 "workflows under load.".format(
                     self.days_since_last_run, self.days_since_last_run - 1
                 )
+            )
+
+        if self.titles_truncated_pct is not None:
+            lines.append(
+                "Titles: {:.0f}% arrived truncated by eBay -- a cut title is missing its set, "
+                "parallel, card number and grade, which is most of why comps do not "
+                "form".format(self.titles_truncated_pct)
             )
 
         if self.sold_comps_summary:
