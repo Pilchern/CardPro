@@ -990,3 +990,61 @@ class TestRunEndToEnd:
         subject, body = sent[0]
         assert "CHECK THIS" in subject
         assert "eBay changed their email template" in body
+
+
+class TestSearchCoverageEvidence:
+    """What gets recorded here is what makes a suggestion stop being
+    suggested. Under-recording means being nagged forever to create a search
+    you already have."""
+
+    def _observed(self, *titles, **overrides):
+        listings = [make_listing(t, 25.0, listing_id=str(i), **overrides)
+                    for i, t in enumerate(titles)]
+        captured = {}
+
+        def capture(players, observed, *args, **kwargs):
+            captured.update(observed)
+            return {}
+
+        cfg = fake_cfg()
+        with mock.patch.object(main_module.search_terms, "coverage_gaps", capture):
+            main_module.build_search_suggestions(cfg, listings)
+        return captured
+
+    def test_the_grader_is_recorded_by_name(self):
+        # "psa" for every slab marked a BGS card as PSA coverage, so the PSA
+        # suggestion went away on evidence that was about a different grader.
+        observed = self._observed("2024 Panini Prizm Caleb Williams #301 BGS 9.5")
+        assert "bgs" in observed["Caleb Williams"]
+        assert "psa" not in observed["Caleb Williams"]
+
+    def test_the_grade_is_recorded_alongside_the_grader(self):
+        observed = self._observed("2024 Panini Prizm Caleb Williams #301 PSA 10")
+        assert "psa 10" in observed["Caleb Williams"]
+
+    def test_an_unreadable_slab_still_counts_as_graded_evidence(self):
+        listings = [make_listing("2024 Panini Prizm Caleb Williams #301", 25.0)]
+        listings[0].card_type = "graded"
+        listings[0].grader = None
+        captured = {}
+        with mock.patch.object(
+            main_module.search_terms, "coverage_gaps",
+            lambda players, observed, *a, **k: captured.update(observed) or {},
+        ):
+            main_module.build_search_suggestions(fake_cfg(), listings)
+        assert captured["Caleb Williams"]
+
+    def test_the_set_is_recorded_so_product_queries_can_be_satisfied(self):
+        # The generator suggests product queries; without this they could
+        # never be marked covered by anything.
+        observed = self._observed("2024 Panini Prizm Caleb Williams Silver Prizm #301")
+        assert "prizm" in observed["Caleb Williams"]
+
+    def test_numbering_and_autographs_are_recorded(self):
+        observed = self._observed("2024 Topps Chrome Caleb Williams Auto #150 /99")
+        assert "auto" in observed["Caleb Williams"]
+        assert "/99" in observed["Caleb Williams"]
+
+    def test_a_plain_raw_card_records_nothing_to_go_on(self):
+        observed = self._observed("2024 Topps Caleb Williams")
+        assert not observed.get("Caleb Williams")

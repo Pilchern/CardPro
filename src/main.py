@@ -723,15 +723,43 @@ def build_craigslist_links(cfg, players) -> dict:
 
 def build_search_suggestions(cfg, listings) -> dict:
     """Saved searches worth adding, for the players where today's data shows
-    no sign of graded/auto/numbered coverage. See src/search_terms.py for
-    why this matters: 99.3% of everything observed so far has been raw."""
+    no sign of coverage. See src/search_terms.py for why this matters:
+    graded cards are about 1% of everything observed so far, and set_name
+    resolves for about a sixth of listings.
+
+    What is recorded here is what makes a suggestion stop being suggested, so
+    under-recording means being nagged forever to create a search you already
+    have. Every dimension the generator suggests on has to be recorded back:
+    the grader (by name -- "psa" alone marked a BGS slab as PSA coverage),
+    the grade, the set, and the auto/numbered attributes.
+
+    Still only ever evidence of ABSENCE. eBay's alert emails do not say which
+    saved search produced a listing, so a match here means "something arrived
+    that this search would have found", never "you have this search".
+    """
     observed = defaultdict(set)
     for listing in listings:
+        seen = observed[listing.player]
         if listing.card_type == "graded":
-            observed[listing.player].add("psa")
+            if listing.grader:
+                seen.add(listing.grader.lower())
+                if listing.grade:
+                    seen.add("{} {}".format(listing.grader, listing.grade).lower())
+            else:
+                # A slab we could not read the label on is still evidence that
+                # graded listings are reaching us for this player.
+                seen.add("psa")
         identity = listing.card_identity
-        if identity is not None and identity.is_autograph.value:
-            observed[listing.player].add("auto")
+        if identity is None:
+            continue
+        if identity.is_autograph.value:
+            seen.add("auto")
+        if identity.set_name.value:
+            seen.add(identity.set_name.value.lower())
+        if identity.print_run.value is not None or identity.serial_number.value is not None:
+            seen.add("/99")
+        if identity.parallel.value:
+            seen.add(identity.parallel.value.lower())
     return search_terms.coverage_gaps(cfg.players, observed)
 
 
