@@ -137,3 +137,18 @@ def test_the_ordinary_daily_cadence_is_not_warned_about():
 def test_an_unknown_gap_says_nothing():
     stats = _stats(listings_matched_to_watchlist=5)
     assert not any("since the last completed scan" in line for line in stats.health_lines())
+
+
+def test_the_truncation_rate_is_reported():
+    """The measured bottleneck. A cut title is missing its set, parallel,
+    card number and grade -- everything the comp key needs -- so this number
+    is close to a ceiling on what the valuation engine can ever do, and it
+    belongs in front of the reader every morning rather than in an audit."""
+    stats = _stats(listings_matched_to_watchlist=5)
+    stats.titles_truncated_pct = 98.0
+    assert any("98% arrived truncated" in line for line in stats.health_lines())
+
+
+def test_no_line_when_nothing_was_measured():
+    stats = _stats(listings_matched_to_watchlist=5)
+    assert not any("truncated by eBay" in line for line in stats.health_lines())
