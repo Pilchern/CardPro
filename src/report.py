@@ -820,7 +820,11 @@ def _thesis_block(index: int, deal: Listing, ending_soon_hours: float = DEFAULT_
     if deal.is_auction:
         return _auction_block(index, deal, ending_soon_hours)
 
-    lines = [_headline(index, deal), _field_line("Cost", _cost_text(deal))]
+    lines = [_headline(index, deal)]
+    drop = _price_drop_line(deal)
+    if drop:
+        lines.append(_field_line("Price drop", drop))
+    lines.append(_field_line("Cost", _cost_text(deal)))
     lines.append(_field_line("Market", _market_text(deal)))
     if _has_market(deal) and not _is_real_comp(deal):
         lines.append(_field_line("Context", CONTEXT_ONLY_TEXT))
@@ -1022,6 +1026,23 @@ def _offer_block(index: int, deal: Listing, threshold_pct: float) -> str:
     return "\n".join(lines)
 
 
+def _price_drop_line(deal: Listing) -> Optional[str]:
+    """"was X -> now Y", or None when it is not a drop.
+
+    Its own helper because more than one block type needs it. NEEDS REVIEW
+    claims almost every price drop -- a dropped card usually has no comp
+    worth standing behind, which is exactly what puts it there -- and until
+    now its block said nothing about the drop at all, so the one fact that
+    made the listing worth printing went missing.
+    """
+    if not deal.is_price_drop or deal.previous_price is None or deal.price is None:
+        return None
+    return "was {} -> now {} ({} lower)".format(
+        _money(deal.previous_price), _money(deal.price),
+        _money(deal.previous_price - deal.price),
+    )
+
+
 def _compact_block(index: int, deal: Listing, *, why: Optional[str] = None,
                    ending_soon_hours: float = DEFAULT_ENDING_SOON_HOURS) -> str:
     """Shorter block for the sections that are explicitly not
@@ -1029,7 +1050,15 @@ def _compact_block(index: int, deal: Listing, *, why: Optional[str] = None,
     just not laid out as a thesis, because there is no thesis."""
     if deal.is_auction:
         return _auction_block(index, deal, ending_soon_hours)
-    lines = [_headline(index, deal), _field_line("Cost", _cost_text(deal))]
+    lines = [_headline(index, deal)]
+    # NEEDS REVIEW claims almost every price drop -- a dropped card usually
+    # has no comp worth standing behind, which is exactly what puts it here
+    # -- and this block used to say nothing about the drop, so the one fact
+    # that made the listing worth printing went missing.
+    drop = _price_drop_line(deal)
+    if drop:
+        lines.append(_field_line("Price drop", drop))
+    lines.append(_field_line("Cost", _cost_text(deal)))
     lines.append(_field_line("Market", _market_text(deal)))
     if _has_market(deal) and not _is_real_comp(deal):
         lines.append(_field_line("Context", CONTEXT_ONLY_TEXT))
@@ -1062,7 +1091,11 @@ def _interest_block(index: int, deal: Listing,
     """
     if deal.is_auction:
         return _auction_block(index, deal, ending_soon_hours)
-    lines = [_headline(index, deal), _field_line("Cost", _cost_text(deal))]
+    lines = [_headline(index, deal)]
+    drop = _price_drop_line(deal)
+    if drop:
+        lines.append(_field_line("Price drop", drop))
+    lines.append(_field_line("Cost", _cost_text(deal)))
     described = desirability.describe(desirability.settled_attributes(deal))
     if described:
         lines.append(_field_line("What it is", described))
@@ -1087,17 +1120,9 @@ def _price_drop_block(index: int, deal: Listing) -> str:
         # the defect _auction_block exists to prevent comes straight back.
         return _auction_block(index, deal)
     lines = [_headline(index, deal)]
-    if deal.previous_price is not None and deal.price is not None:
-        lines.append(
-            _field_line(
-                "Price drop",
-                "was {} -> now {} ({} lower)".format(
-                    _money(deal.previous_price),
-                    _money(deal.price),
-                    _money(deal.previous_price - deal.price),
-                ),
-            )
-        )
+    drop = _price_drop_line(deal)
+    if drop:
+        lines.append(_field_line("Price drop", drop))
     lines.append(_field_line("Cost", _cost_text(deal)))
     lines.append(_field_line("Market", _market_text(deal)))
     if _has_market(deal) and not _is_real_comp(deal):
