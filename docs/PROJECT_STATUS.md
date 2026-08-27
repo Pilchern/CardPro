@@ -314,17 +314,18 @@ that would bring it back.
 
 ## 7. Infrastructure
 
-- **Scheduling: GitHub Actions** (`.github/workflows/daily-scan.yml`), daily
-  ~8am Central plus manual dispatch. State (`data/seen_listings.json`,
-  `data/ebay_alert_price_history.json`) is committed back to the repo after
-  each run because runners are ephemeral. The job has a `concurrency` group
-  (a manual dispatch cannot race the cron run into a rejected push), a
-  15-minute timeout, and it runs the test suite before the scan -- two
-  seconds of pytest against the alternative, which is emailing conclusions
-  drawn by broken code. The state-persisting step no longer swallows errors
-  from `git add`, and its push rebases and retries up to four times; a
-  rejected push used to mean the day's observations were lost, since past
-  the IMAP lookback window there is nothing to re-read.
+- **Scheduling: GitHub Actions** (`.github/workflows/daily-scan.yml`), 13:00
+  UTC daily, **plus a 17:00 UTC backup** and manual dispatch. The backup
+  passes `--skip-if-ran-today` and exits in seconds on the days the first
+  run worked. It exists because GitHub's scheduled workflows are
+  best-effort -- under load they are delayed by hours and sometimes dropped
+  outright, which happened on 2026-08-27 -- and a dropped run was the one
+  failure nothing here could see: no email, no failure notification, no red
+  job. The health footer also reports a gap since the last completed scan,
+  because eBay's alert emails only look back a couple of days, so a missed
+  day's listings are gone for good. State (`data/seen_listings.json`,
+  `data/ebay_alert_price_history.json`, `data/last_run.json`) is committed
+  back to the repo after each run because runners are ephemeral.
 - **Secrets**: `GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD`, `EMAIL_TO` (plus
   optional eBay keys) as GitHub repo secrets. Never in code, never logged.
 - **Testing**: pytest, CI on Python 3.9 and 3.12, and the same suite gates
