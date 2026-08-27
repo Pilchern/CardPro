@@ -464,6 +464,10 @@ def test_a_scarce_card_gets_a_higher_ceiling_than_the_shopping_ceiling():
     listing.title = title
     listing.card_identity = card_identity.extract_card_identity(title)
     listing.desirable_attributes = desirability.attributes_of(listing)
+    # No comp CardPro will stand behind, so this card will make no price
+    # claim wherever it lands. That is the condition the escape rests on --
+    # a card that WILL make one has to earn its slot on the price.
+    listing.comp_match = None
     rules = focus.FocusRules(price_ceiling=40.0, cool_cards_price_ceiling=100.0)
     assert focus.omission_reason(listing, rules) is None
 
@@ -501,4 +505,21 @@ def test_setting_the_two_ceilings_equal_switches_the_exemption_off():
     listing.card_identity = card_identity.extract_card_identity(title)
     listing.desirable_attributes = desirability.attributes_of(listing)
     rules = focus.FocusRules(price_ceiling=40.0, cool_cards_price_ceiling=40.0)
+    assert focus.omission_reason(listing, rules) == focus.ABOVE_CEILING
+
+
+def test_the_scarcity_escape_does_not_apply_to_a_card_that_will_be_valued():
+    """A card with a comp CardPro will stand behind is claimed by DEALS long
+    before the browse sections see it, and DEALS prints a full Market and
+    Discount block. Without this the email showed a $95 card at 24% off --
+    far short of the exceptional bar -- directly under a header saying
+    anything dearer than $40 needed 50%+ off and $100+ saved to get in."""
+    from src import card_identity
+
+    title = "2024 Topps Chrome Caleb Williams Auto Refractor /99"
+    listing = make_listing(price=95.0, pct_under_market=24.0, dollar_savings=30.0)
+    listing.title = title
+    listing.card_identity = card_identity.extract_card_identity(title)
+    listing.desirable_attributes = desirability.attributes_of(listing)
+    rules = focus.FocusRules(price_ceiling=40.0, cool_cards_price_ceiling=100.0)
     assert focus.omission_reason(listing, rules) == focus.ABOVE_CEILING

@@ -223,14 +223,19 @@ def test_low_confidence_opportunity_never_reaches_act_now_or_top():
     assert sections[report.SECTION_WATCH] == [deal]
 
 
-def test_young_core_low_confidence_opportunity_goes_to_investment_watchlist():
-    """Strong young-core opportunities stay in TOP -- burying the best card
-    of the day under a tier label would defeat the point. The investment
-    section is for the ones the comp isn't strong enough to act on."""
+def test_a_young_core_card_with_a_real_comp_keeps_its_numbers():
+    """It goes to WATCH, not YOUNG CORE.
+
+    YOUNG CORE prints no market value, no discount and no confidence -- that
+    is what makes it safe. It is therefore the wrong home for a card that
+    HAS a comp worth standing behind. This one is 50% under market against a
+    flag-eligible comp; filing it under a tier label would print none of
+    that, under a header saying no comp CardPro will stand behind was found.
+    """
     deal = make_listing(player_tier="young_core", comp_match=make_match(confidence="low"))
     sections = report.classify_sections([deal], threshold_pct=30)
-    assert sections[report.SECTION_INVESTMENT] == [deal]
-    assert sections[report.SECTION_WATCH] == []
+    assert sections[report.SECTION_INVESTMENT] == []
+    assert sections[report.SECTION_WATCH] == [deal]
 
 
 def test_strong_young_core_opportunity_stays_in_top_opportunities():
@@ -406,17 +411,25 @@ def test_each_section_renders_when_it_has_content():
         make_listing(id="top", dollar_savings=100.0, pct_under_market=50.0),
         make_listing(id="target", is_opportunity=False, pct_under_market=1.0, dollar_savings=2.0,
                      target_hit=make_target_hit()),
-        make_listing(id="invest", player_tier="young_core", comp_match=make_match(confidence="low"),
-                     dollar_savings=30.0),
+        make_listing(id="invest", player_tier="young_core", is_opportunity=False,
+                     comp_match=None, market_value=None, pct_under_market=None,
+                     dollar_savings=None, price=30.0,
+                     title="2024 Panini Prizm Caleb Williams Silver Prizm #301",
+                     card_identity=card_identity.extract_card_identity(
+                         "2024 Panini Prizm Caleb Williams Silver Prizm #301"),
+                     card_type="raw", grader=None, grade=None, is_rookie_card=False),
         make_listing(id="auction", listing_type="auction", is_opportunity=False, bid_count=2,
                      time_left_text="0d 05h", max_rational_bid=150.0),
         make_listing(id="offer", has_best_offer=True, is_opportunity=False, pct_under_market=5.0),
-        make_listing(id="cool", is_opportunity=False, pct_under_market=1.0, dollar_savings=2.0,
+        # No comp: a card with one belongs in a section that prints it.
+        make_listing(id="cool", is_opportunity=False, comp_match=None, market_value=None,
+                     pct_under_market=None, dollar_savings=None,
                      title="2024 Panini Prizm Caleb Williams Auto RC #301 /99",
                      card_identity=card_identity.extract_card_identity(
                          "2024 Panini Prizm Caleb Williams Auto RC #301 /99"),
                      is_rookie_card=True, price=60.0, card_type="raw", grader=None, grade=None),
-        make_listing(id="cheap", is_opportunity=False, pct_under_market=1.0, dollar_savings=2.0,
+        make_listing(id="cheap", is_opportunity=False, comp_match=None, market_value=None,
+                     pct_under_market=None, dollar_savings=None,
                      title="2024 Panini Prizm Caleb Williams Silver Prizm #301",
                      card_identity=card_identity.extract_card_identity(
                          "2024 Panini Prizm Caleb Williams Silver Prizm #301"),
@@ -2251,4 +2264,56 @@ class TestRejectedListingsNeverReachTheBrowseSections:
 
     def test_an_accepted_card_is_unaffected(self):
         deal = carded(AUTO, 42.0)
+        assert report.classify_sections([deal])[report.SECTION_COOL_CARDS] == [deal]
+
+
+class TestTheBrowseSectionsDoNotSwallowAValuation:
+    """COOL CARDS, CHEAP FINDS and YOUNG CORE print no market value, no
+    discount and no confidence -- that is what makes them safe, and it makes
+    them the wrong home for a card that HAS a comp worth standing behind.
+    They sit above WATCH and PRICE DROPS in the order, so without a guard a
+    card 70% under market against a flag-eligible exact comp was claimed as
+    a cool card and printed with none of that, under a header reading "No
+    deal today: nothing had a comp CardPro will stand behind"."""
+
+    def _standout(self, **overrides):
+        deal = carded(AUTO, 60.0, **overrides)
+        return deal
+
+    def test_a_flag_eligible_comp_keeps_the_card_out_of_cool_cards(self):
+        deal = self._standout(
+            comp_match=make_match(level="exact", confidence="low", median=200.0),
+            market_value=200.0, pct_under_market=70.0, dollar_savings=140.0,
+        )
+        sections = report.classify_sections([deal], threshold_pct=30)
+        assert sections[report.SECTION_COOL_CARDS] == []
+        assert sections[report.SECTION_WATCH] == [deal]
+
+    def test_and_the_numbers_actually_print(self):
+        deal = self._standout(
+            comp_match=make_match(level="exact", confidence="low", median=200.0),
+            market_value=200.0, pct_under_market=70.0, dollar_savings=140.0,
+        )
+        body = flat(body_of([deal]))
+        assert "70.0%" in body
+        assert "No deal today" not in body
+
+    def test_a_price_drop_is_not_swallowed_either(self):
+        deal = self._standout(
+            comp_match=None, market_value=None, pct_under_market=None, dollar_savings=None,
+            is_price_drop=True, previous_price=80.0,
+        )
+        deal.price = 45.0
+        sections = report.classify_sections([deal])
+        assert sections[report.SECTION_COOL_CARDS] == []
+        assert sections[report.SECTION_PRICE_DROPS] == [deal]
+        assert "was $80.00 -> now $45.00" in flat(body_of([deal]))
+
+    def test_a_context_only_comp_does_not_count_as_a_valuation(self):
+        # The whole point of the browse sections: these cards have no number
+        # anyone can stand behind, and that is the normal case.
+        deal = self._standout(
+            comp_match=make_match(flag_eligible=False, blocked=("context_only_level",)),
+            market_value=200.0,
+        )
         assert report.classify_sections([deal])[report.SECTION_COOL_CARDS] == [deal]

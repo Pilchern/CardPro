@@ -208,10 +208,23 @@ def omission_reason(listing, rules: FocusRules) -> Optional[str]:
     if is_exceptional(listing, rules):
         return None
     # A dearer card can also earn its place by being a genuinely scarce
-    # object rather than a good price. That is not a valuation and is not
-    # treated as one -- it puts the card in COOL CARDS, which prints no
-    # market value, no discount and no ROI.
-    if price <= rules.cool_cards_price_ceiling and desirability.is_standout(listing):
+    # object rather than a good price. That is not a valuation, and the
+    # flag-eligibility check is what keeps it from becoming one: a card with
+    # a comp CardPro will stand behind is claimed by DEALS long before the
+    # browse sections see it, so without this a $95 card at 24% off -- far
+    # short of the exceptional bar -- printed a full Market and Discount
+    # block directly underneath a header saying "cards at or under $40.00 ...
+    # anything dearer needed 50%+ off and $100.00+ saved to get in".
+    #
+    # A card that will make a price claim has to earn its slot on the price,
+    # which is what is_exceptional above already decides.
+    match = getattr(listing, "comp_match", None)
+    already_valued = match is not None and getattr(match, "flag_eligible", False)
+    if (
+        not already_valued
+        and price <= rules.cool_cards_price_ceiling
+        and desirability.is_standout(listing)
+    ):
         return None
     return ABOVE_CEILING
 

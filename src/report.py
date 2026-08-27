@@ -1299,7 +1299,7 @@ def classify_sections(
     # valuation rules exist to prevent -- and between them they are the part
     # of the email with something in it on an ordinary day.
     for deal in ranked:
-        if deal.id in claimed:
+        if deal.id in claimed or _owed_a_valuation(deal):
             continue
         if desirability.is_standout(deal):
             take(SECTION_COOL_CARDS, deal)
@@ -1308,7 +1308,7 @@ def classify_sections(
     )
 
     for deal in ranked:
-        if deal.id in claimed:
+        if deal.id in claimed or _owed_a_valuation(deal):
             continue
         price = deal.total_cost
         if price is not None and price <= cheap_find_ceiling and desirability.settled_attributes(deal):
@@ -1326,7 +1326,7 @@ def classify_sections(
     # young-core cards with something to them that no earlier section took,
     # and makes no claim about their value.
     for deal in ranked:
-        if deal.id in claimed:
+        if deal.id in claimed or _owed_a_valuation(deal):
             continue
         if deal.player_tier == "young_core" and desirability.settled_attributes(deal):
             take(SECTION_INVESTMENT, deal)
@@ -1355,6 +1355,26 @@ def classify_sections(
             take(SECTION_PRICE_DROPS, deal)
 
     return sections
+
+
+def _owed_a_valuation(deal: Listing) -> bool:
+    """Whether this listing has something the browse sections cannot say.
+
+    COOL CARDS, CHEAP FINDS and YOUNG CORE print no market value, no
+    discount and no confidence -- that is what makes them safe. It also
+    makes them the wrong home for a card that HAS a comp worth standing
+    behind, or a price that just dropped. They sit above WATCH and PRICE
+    DROPS in the order, so without this a card 70% under market against a
+    flag-eligible exact comp was claimed as a "cool card" and printed with
+    none of that, under a header reading "No deal today: nothing had a comp
+    CardPro will stand behind". The email would have been stating the
+    opposite of the data it held.
+
+    Dormant in production today, because no flag-eligible comp has ever
+    formed. It activates on the first day a real sold-comp bucket does,
+    which is exactly what the sold-comp work is building toward.
+    """
+    return _is_real_comp(deal) or bool(deal.is_price_drop)
 
 
 def _price_for_sort(deal: Listing) -> float:
