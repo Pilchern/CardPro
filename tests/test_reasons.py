@@ -73,7 +73,12 @@ def test_labels_are_distinct():
 
 
 def test_specific_labels_read_like_english():
-    assert REASON_LABELS[Reason.NO_COMP_AT_ANY_LEVEL] == "no comparable sales at any level"
+    # Not "sales". There have never been any -- every comp on this path is an
+    # asking price, and the card blocks say "listing". One email must not
+    # state the same fact two ways.
+    assert REASON_LABELS[Reason.NO_COMP_AT_ANY_LEVEL] == "no comparable listing at any level"
+    assert "sale" not in REASON_LABELS[Reason.NO_COMP_AT_ANY_LEVEL]
+    assert "sale" not in REASON_LABELS[Reason.THIN_SAMPLE]
     assert REASON_LABELS[Reason.STALE_COMPS] == (
         "comps are stale (newest is older than the freshness window)"
     )
@@ -219,7 +224,7 @@ def test_summary_lines_use_labels_and_counts():
         log.record(Reason.NO_COMP_AT_ANY_LEVEL)
     log.record(Reason.REPRINT)
     assert log.summary_lines() == [
-        "12 x no comparable sales at any level",
+        "12 x no comparable listing at any level",
         "1 x a reprint, not the original card",
     ]
 

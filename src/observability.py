@@ -24,6 +24,8 @@ from typing import Optional
 
 from src import reasons
 
+TOP_REASONS_SHOWN = 5
+
 
 def _pct(part: int, whole: int) -> Optional[float]:
     """None when there's nothing to take a percentage of. A "0%" printed
@@ -71,15 +73,37 @@ class RunStats:
     # price" is the single biggest caveat on everything above it, and it
     # should be visible on the days it is true, not only when it changes.
     sold_comps_summary: str = ""
+    #: Whole days since the last completed scan, or None when unknown. 1 is
+    #: the ordinary cadence; more than that is a hole in the corpus, which
+    #: matters more than any single day's contents -- a gap values things
+    #: slightly wrong for the whole retention window afterwards.
+    days_since_last_run: Optional[int] = None
 
     rejections: reasons.RejectionLog = field(default_factory=reasons.RejectionLog)
     warnings: list = field(default_factory=list)
+    #: The subset of `warnings` that mean the run may not have worked --
+    #: see warn(broken=True). Only these change the subject line.
+    breakage_warnings: list = field(default_factory=list)
 
-    def warn(self, message: str) -> None:
+    def warn(self, message: str, *, broken: bool = False) -> None:
         """A run-level concern worth surfacing in the email, not just the
         log file. Use sparingly -- a footer nobody reads is worse than no
-        footer."""
+        footer.
+
+        ``broken=True`` means "the run itself may not have worked, do not
+        trust the numbers below" -- eBay changed its email template, messages
+        could not be read. Those change the subject line and the top of the
+        email.
+
+        Everything else is a notable-but-normal state: no comp bucket is
+        strong enough to flag today, a gate has been configured off. Those
+        belong in the footer and nowhere else. The distinction is the whole
+        value of the alarm: "no flag-eligible bucket" is true on most days
+        right now, and an alarm that fires every morning is not an alarm.
+        """
         self.warnings.append(message)
+        if broken:
+            self.breakage_warnings.append(message)
 
     # --- derived rates -----------------------------------------------------
 
@@ -151,19 +175,40 @@ class RunStats:
             ),
         ]
 
+        if self.days_since_last_run is not None and self.days_since_last_run > 1:
+            lines.append(
+                "!! {} day(s) since the last completed scan -- {} day(s) of listings were "
+                "never seen and cannot be recovered (eBay's alert emails only look back "
+                "a couple of days). Check the Actions tab: GitHub drops scheduled "
+                "workflows under load.".format(
+                    self.days_since_last_run, self.days_since_last_run - 1
+                )
+            )
+
         if self.sold_comps_summary:
             lines.append(self.sold_comps_summary)
 
+        # The category roll-up and the top reasons are the same data at two
+        # granularities, and printing both on consecutive lines is a footer
+        # saying one thing twice. The reasons are the useful half -- "94x no
+        # comparable listing at any level" tells you what to go and fix,
+        # "94 valuation" does not -- so the roll-up only earns its line when
+        # the top five do not already cover everything.
+        all_reasons = list(self.rejections.counts().items())
         by_category = self.rejections.counts_by_category()
-        if by_category:
+        if by_category and len(all_reasons) > TOP_REASONS_SHOWN:
             lines.append(
                 "Not reported, by category: "
                 + ", ".join("{} {}".format(count, name.replace("_", " ")) for name, count in by_category.items())
             )
 
-        top = list(self.rejections.counts().items())[:5]
+        top = all_reasons[:TOP_REASONS_SHOWN]
         if top:
-            lines.append("Top reasons: " + "; ".join("{}x {}".format(c, reasons.label(r)) for r, c in top))
+            label = "Top reasons" if len(all_reasons) > TOP_REASONS_SHOWN else "Not reported"
+            lines.append(
+                "{}: ".format(label)
+                + "; ".join("{}x {}".format(c, reasons.label(r)) for r, c in top)
+            )
 
         unexplained = self.unexplained_count()
         if unexplained:

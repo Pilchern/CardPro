@@ -3,7 +3,11 @@ __pycache__/
 *.pyc
 .venv/
 venv/
-logs/*.log
+# scraper.log and the rotated scraper.log.1 .. .5. They carry every listing
+# title and price the run saw, and the address the report was sent to.
+# .gitignore has no trailing comments -- a pattern with one on the same
+# line matches nothing, which is how logs/scraper.log got committed.
+logs/*.log*
 .DS_Store
 
 # data/seen_listings.json and data/ebay_alert_price_history.json are

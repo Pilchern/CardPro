@@ -120,6 +120,97 @@ def is_commodity(listing, price_ceiling: float) -> bool:
     return not attributes_of(listing)
 
 
+#: How much each attribute counts toward "is this card interesting".
+#:
+#: THIS IS NOT A VALUATION AND MUST NEVER BE USED AS ONE. It answers a
+#: different question -- "would I want to look at this card" -- and it exists
+#: because that question is one CardPro can actually answer from a title,
+#: on a day when it cannot answer "is this underpriced" for anything at all.
+#: The weights are ordinary hobby knowledge: a signature or a patch is on
+#: the card itself and is why the card exists; a serial number caps how many
+#: copies there are; a parallel or a rookie designation is real but common;
+#: a grade says a third party looked at it, which matters least of the six
+#: because it says nothing about what the card IS.
+#:
+#: They are only ever compared against each other to sort a list. No number
+#: derived from them is ever printed as a price, a discount, or a score.
+INTEREST_WEIGHTS = {
+    AUTOGRAPH: 5,
+    PATCH: 4,
+    SERIAL_NUMBERED: 3,
+    MEMORABILIA: 2,
+    ROOKIE: 2,
+    SHORT_PRINT: 2,
+    PARALLEL: 1,
+    GRADED: 1,
+}
+
+#: An attribute at or above this weight makes a card worth showing on its
+#: own. Below it, a card needs more than one -- a bare parallel or a bare
+#: grade is not, by itself, an interesting card.
+STANDOUT_WEIGHT = 3
+
+
+def settled_attributes(listing) -> tuple:
+    """The attributes the PIPELINE settled on, not a fresh recount.
+
+    main.evaluate_listings fills `desirable_attributes` in only after a
+    listing has survived the hard rejections -- a break slot, a lot, a
+    custom, a multi-player card, a grade read off a truncated title. For
+    exactly those, the pipeline's answer is the empty tuple and a fresh call
+    to attributes_of() returns a full list, because the title of a break slot
+    still says "auto refractor /99".
+
+    Recounting is how a group-break slot became the top card in the email,
+    described as "rookie card, autograph, serial numbered". A break slot is
+    not a card you receive at all. Whoever asks this question wants the
+    pipeline's verdict about a real object, so that is what this returns.
+    """
+    return tuple(getattr(listing, "desirable_attributes", ()) or ())
+
+
+def interest_score(listing) -> int:
+    """How interesting this card is, for ordering a list. Never a price.
+
+    A serial-numbered rookie autograph outranks a graded base parallel, and
+    that is the whole claim being made. Scarcity compounds, so a low print
+    run adds on top: at or below SCARCE_PRINT_RUN it is worth another point,
+    and a one-of-one is worth several, because "there is exactly one" is the
+    strongest thing a title can say about a card.
+    """
+    score = sum(INTEREST_WEIGHTS.get(name, 0) for name in settled_attributes(listing))
+    if not score:
+        return 0
+    identity = getattr(listing, "card_identity", None)
+    print_run = _print_run(identity) if identity is not None else None
+    if print_run is not None:
+        if print_run == 1:
+            score += 5
+        elif print_run <= 25:
+            score += 3
+        elif print_run <= SCARCE_PRINT_RUN:
+            score += 1
+    return score
+
+
+def is_standout(listing) -> bool:
+    """Whether this card is interesting enough to show for its own sake.
+
+    One strong attribute is enough -- an autograph is an autograph whatever
+    else is true of the listing. Otherwise it takes at least two, because a
+    single common attribute describes most of the hobby and a section that
+    prints most of the hobby is the pile the reader is already drowning in.
+
+    Reads the pipeline's settled attributes, so a listing it rejected as not
+    being a single identifiable card is never a standout however good its
+    title sounds -- see settled_attributes.
+    """
+    attributes = settled_attributes(listing)
+    if any(INTEREST_WEIGHTS.get(name, 0) >= STANDOUT_WEIGHT for name in attributes):
+        return True
+    return len(attributes) >= 2
+
+
 def describe(attributes) -> str:
     """Human-readable list of attributes, for the "why this is interesting"
     line in the report. Empty string when there are none, so callers can omit

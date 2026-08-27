@@ -1,3 +1,8 @@
-requests>=2.31
-python-dotenv>=1.0
-beautifulsoup4>=4.12
+# Upper bounds are deliberate. The daily workflow pip-installs these fresh
+# on every run, so an unbounded constraint puts the next major release of a
+# parser straight into production with nothing in front of it -- and the
+# symptom would be zero listings extracted, which is indistinguishable from
+# a quiet day. Bump these on purpose, with the test suite as the gate.
+requests>=2.31,<3
+python-dotenv>=1.0,<2
+beautifulsoup4>=4.12,<5

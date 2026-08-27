@@ -21,14 +21,36 @@ on:
     # exact, or leave it -- a one-hour drift isn't worth the extra
     # complexity of a second seasonal schedule.
     - cron: "0 13 * * *"
+    # Backup, four hours later. GitHub's scheduled workflows are best-effort:
+    # under load they are delayed by hours and sometimes dropped outright,
+    # and a dropped run was the one failure nothing here could see -- no
+    # email, no failure notification, no red job, just silence that looks
+    # exactly like a day you were not looking. This run passes
+    # --skip-if-ran-today, so on the days the 13:00 run worked it exits in
+    # seconds having done nothing.
+    - cron: "0 17 * * *"
   workflow_dispatch: {}  # lets you trigger a run manually from the Actions tab
 
 permissions:
   contents: write  # needed to commit updated dedupe/comp-history state back to the repo
 
+# One scan at a time. Without this, a manual dispatch fired while the 13:00
+# cron run is in flight gives two jobs checked out at the same commit: the
+# second push is rejected non-fast-forward, and by then the email has already
+# gone out and the day's ~400 observations only exist on a runner that is
+# about to be deleted. cancel-in-progress stays false -- killing a run
+# mid-flight is the one thing worse than making it wait.
+concurrency:
+  group: daily-scan
+  cancel-in-progress: false
+
 jobs:
   scan:
     runs-on: ubuntu-latest
+    # The run has no business taking more than a few minutes. A cap means a
+    # stalled socket that somehow escapes the client-side timeouts still ends
+    # in a failed job you get told about, rather than burning six hours.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -36,7 +58,15 @@ jobs:
         with:
           python-version: "3.12"
 
-      - run: pip install -r requirements.txt
+      - run: pip install -r requirements-dev.txt
+
+      # The scan reads your inbox and emails you conclusions. Running it on
+      # code that does not pass its own tests produces a report that looks
+      # exactly like a good one and is not, so the suite (about two seconds)
+      # gates the run. A failure here means no report today and a red job you
+      # get told about -- deliberately preferred over a confident wrong email.
+      - name: Tests must pass before anything is emailed
+        run: pytest -q
 
       - name: Run daily scan
         env:
@@ -45,7 +75,19 @@ jobs:
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
           EBAY_CLIENT_ID: ${{ secrets.EBAY_CLIENT_ID }}
           EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
-        run: python -m src.main
+          SCHEDULE: ${{ github.event.schedule }}
+        # The 17:00 backup passes --skip-if-ran-today and exits in seconds
+        # when the 13:00 run already completed. Keyed on WHICH cron fired,
+        # not on the clock: GitHub delays scheduled runs by hours, so a
+        # 13:00 run that starts at 17:30 would skip itself under a
+        # wall-clock test -- which is the exact failure this exists to fix.
+        # A manual dispatch has no schedule and therefore always scans.
+        run: |
+          if [ "${SCHEDULE}" = "0 17 * * *" ]; then
+            python -m src.main --skip-if-ran-today
+          else
+            python -m src.main
+          fi
 
       - name: Persist dedupe + comp-history state
         # The runner is thrown away after every run, so data/seen_listings.json
@@ -56,12 +98,31 @@ jobs:
         # side effects (if any) aren't lost.
         if: always()
         run: |
+          set -euo pipefail
           git config user.name "cardpro-bot"
           git config user.email "actions@users.noreply.github.com"
-          git add data/seen_listings.json data/ebay_alert_price_history.json 2>/dev/null || true
-          if ! git diff --cached --quiet; then
-            git commit -m "Update dedupe/comp-history state [skip ci]"
-            git push
-          else
+          # No `2>/dev/null || true` here any more. It used to swallow a
+          # missing or renamed state path, after which `git diff --cached
+          # --quiet` succeeded, the step printed "No state changes" and the
+          # job went green having persisted nothing at all.
+          git add data/seen_listings.json data/ebay_alert_price_history.json data/last_run.json
+          if git diff --cached --quiet; then
             echo "No state changes to commit."
+            exit 0
           fi
+          git commit -m "Update dedupe/comp-history state [skip ci]"
+          # Rebase before pushing. The branch can have moved since checkout
+          # (a merged PR, an overlapping manual dispatch), and a rejected
+          # push means the day's observations are gone for good -- past the
+          # IMAP lookback window there is nothing to re-read. Retry a few
+          # times so a race with another writer resolves instead of failing.
+          for attempt in 1 2 3 4; do
+            if git push; then
+              exit 0
+            fi
+            echo "Push rejected (attempt $attempt) -- rebasing onto the latest state and retrying."
+            git pull --rebase --autostash origin "${GITHUB_REF_NAME}"
+            sleep $((attempt * 5))
+          done
+          echo "Could not push updated state after 4 attempts." >&2
+          exit 1

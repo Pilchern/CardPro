@@ -101,3 +101,86 @@ def test_unknown_total_cost_reports_a_hit_with_no_band():
 def test_matching_is_case_and_whitespace_insensitive():
     fields = dict(FULL_MATCH, player=" caleb williams ", parallel="silver", set_name="prizm")
     assert targets.best_hit(_targets(), total_cost=290, **fields).band == targets.BAND_IMMEDIATE
+
+
+def _target():
+    return targets.TargetCard(label="CW Prizm", player="Caleb Williams", buy_zone=150.0)
+
+
+def test_an_unreadable_price_is_not_the_same_as_above_every_band():
+    """They were the same value, so the report printed "above every price
+    band you set" about a card whose price it did not know -- a price claim
+    made out of an unknown."""
+    unknown = targets.match_target(_target(), player="Caleb Williams", total_cost=None)
+    above = targets.match_target(_target(), player="Caleb Williams", total_cost=9999.0)
+    assert unknown.label != above.label
+    assert unknown.label == "PRICE UNKNOWN"
+    assert above.label == "ABOVE BUY ZONE"
+    assert unknown.price_known is False and above.price_known is True
+
+
+def test_a_priced_hit_is_still_price_known():
+    hit = targets.match_target(_target(), player="Caleb Williams", total_cost=100.0)
+    assert hit.price_known is True
+    assert hit.in_buy_zone is True
+
+
+def test_thresholds_are_inclusive_at_exactly_the_band():
+    # The <= is correct today; nothing stopped a future < from silently
+    # moving every band by a penny.
+    target = targets.TargetCard(
+        label="CW Prizm", player="Caleb Williams",
+        buy_zone=400.0, great_buy=350.0, immediate_alert=300.0,
+    )
+    for total, expected in ((300.0, "immediate_alert"), (350.0, "great_buy"), (400.0, "buy_zone")):
+        hit = targets.match_target(target, player="Caleb Williams", total_cost=total)
+        assert hit.band == expected, total
+    assert targets.match_target(target, player="Caleb Williams", total_cost=400.01).band is None
+
+
+
+
+def test_bands_written_out_of_order_are_refused_rather_than_mislabelled():
+    """match_target walks the bands strongest-first and takes the first
+    threshold the cost clears. With the ladder inverted, a $250 card came
+    back IMMEDIATE -- the strongest band there is -- at a price the same
+    target's own buy zone calls too dear. A typo in a personal config file
+    produced a confident wrong label, which is the one outcome this project
+    ranks below an error."""
+    loaded = targets.load_targets([{
+        "label": "Inverted", "player": "Caleb Williams",
+        "buy_zone": 100.0, "great_buy": 200.0, "immediate_alert": 300.0,
+    }])
+    assert loaded == []
+
+
+def test_a_correct_ladder_loads():
+    loaded = targets.load_targets([{
+        "label": "Sane", "player": "Caleb Williams",
+        "buy_zone": 400.0, "great_buy": 350.0, "immediate_alert": 300.0,
+    }])
+    assert [t.label for t in loaded] == ["Sane"]
+
+
+def test_equal_thresholds_are_a_ladder():
+    # Setting two bands to the same number is a legitimate way to say "these
+    # two mean the same thing to me", not a typo.
+    loaded = targets.load_targets([{
+        "player": "Caleb Williams", "buy_zone": 300.0, "great_buy": 300.0,
+    }])
+    assert len(loaded) == 1
+
+
+def test_a_partial_ladder_is_fine():
+    # Leaving bands out is normal. Only the ones that are set take part.
+    loaded = targets.load_targets([
+        {"player": "Caleb Williams", "buy_zone": 400.0},
+        {"player": "Connor Bedard", "immediate_alert": 50.0, "buy_zone": 400.0},
+    ])
+    assert len(loaded) == 2
+
+
+def test_an_entry_with_no_player_is_still_skipped(caplog):
+    with caplog.at_level("WARNING"):
+        assert targets.load_targets([{"buy_zone": 100.0}]) == []
+    assert "no player" in caplog.text

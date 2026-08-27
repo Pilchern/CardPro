@@ -29,8 +29,12 @@ avoids.
 """
 from __future__ import annotations
 
+import logging
+
 from dataclasses import dataclass
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 # Ordered best -> worst. A listing is assigned the strongest band whose
 # threshold its total cost clears.
@@ -77,6 +81,11 @@ class TargetHit:
     target: TargetCard
     band: Optional[str]  # None when it matched the card but is above every price band
     threshold: Optional[float]
+    # False when the listing had no readable price. Without this, "we do not
+    # know what it costs" and "it costs more than every band you set" were
+    # the same value, and the report printed the second sentence for the
+    # first situation -- a price claim manufactured out of an unknown.
+    price_known: bool = True
 
     @property
     def in_buy_zone(self) -> bool:
@@ -84,20 +93,55 @@ class TargetHit:
 
     @property
     def label(self) -> str:
+        if not self.price_known:
+            return "PRICE UNKNOWN"
         return BAND_LABELS.get(self.band, "ABOVE BUY ZONE")
+
+
+def _thresholds_are_ordered(immediate, great, buy_zone) -> bool:
+    """Whether the thresholds mean what their names say.
+
+    The three bands are a ladder: immediate_alert is the price at which you
+    want to be told at once, buy_zone is the most you would pay at all, so
+    immediate <= great <= buy_zone. Nothing enforced that, and match_target
+    walks the bands strongest-first and takes the first threshold the cost
+    clears -- so `buy_zone: 100, great_buy: 200, immediate_alert: 300` labels
+    a $250 card IMMEDIATE, the strongest band you have, at a price your own
+    buy zone calls too dear. A typo produced a confident wrong label instead
+    of an error.
+
+    Only the thresholds that are actually set take part; leaving one out is
+    normal, not an error.
+    """
+    ladder = [value for value in (immediate, great, buy_zone) if value is not None]
+    return all(earlier <= later for earlier, later in zip(ladder, ladder[1:]))
 
 
 def load_targets(raw_targets: list) -> list:
     """Builds TargetCards from the raw JSON list in config/watchlist.json.
 
-    Entries missing a `player` are skipped rather than raising: a typo in a
-    personal config file shouldn't take down the daily scan, and the entry
-    is visible in the config for you to notice and fix.
+    Entries missing a `player`, or whose price bands are not a ladder, are
+    skipped rather than raising: a typo in a personal config file shouldn't
+    take down the daily scan, and the entry is visible in the config for you
+    to notice and fix. Both skips are logged -- a target you thought you had
+    and do not is worth a line in the log.
     """
     targets = []
     for entry in raw_targets or []:
         player = entry.get("player")
         if not player:
+            logger.warning("Skipping a target_cards entry with no player: %r", entry)
+            continue
+        buy_zone = _as_float(entry.get("buy_zone"))
+        great_buy = _as_float(entry.get("great_buy"))
+        immediate_alert = _as_float(entry.get("immediate_alert"))
+        if not _thresholds_are_ordered(immediate_alert, great_buy, buy_zone):
+            logger.warning(
+                "Skipping target %r: its price bands are not a ladder "
+                "(immediate_alert %s <= great_buy %s <= buy_zone %s). Labelling a card "
+                "from these would name a band its price does not earn.",
+                entry.get("label") or player, immediate_alert, great_buy, buy_zone,
+            )
             continue
         targets.append(
             TargetCard(
@@ -110,9 +154,9 @@ def load_targets(raw_targets: list) -> list:
                 grader=entry.get("grader"),
                 grade=entry.get("grade"),
                 card_type=entry.get("card_type"),
-                buy_zone=_as_float(entry.get("buy_zone")),
-                great_buy=_as_float(entry.get("great_buy")),
-                immediate_alert=_as_float(entry.get("immediate_alert")),
+                buy_zone=buy_zone,
+                great_buy=great_buy,
+                immediate_alert=immediate_alert,
             )
         )
     return targets
@@ -154,6 +198,11 @@ def match_target(
     else None. A hit is returned even when the price is above every band
     (band=None) so the report can show "your target card is listed, but
     above your buy zone" -- that is useful information, not noise.
+
+    A listing with no readable price is a hit too, with ``price_known=False``.
+    That is a different answer from "above every band" and has to stay
+    different: they were the same value, and the report printed the
+    above-every-band sentence for a card whose price it did not know.
     """
     if player.strip().lower() != target.player.strip().lower():
         return None
@@ -170,7 +219,7 @@ def match_target(
         return None
 
     if total_cost is None:
-        return TargetHit(target=target, band=None, threshold=None)
+        return TargetHit(target=target, band=None, threshold=None, price_known=False)
 
     for band in BAND_ORDER:
         threshold = target.thresholds()[band]

@@ -54,6 +54,23 @@ from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
+#: Socket timeout for every IMAP operation. Without one the socket blocks
+#: forever: a server that accepts the connection and then stalls mid-FETCH
+#: raises nothing, so main's failure-notification handler never fires and the
+#: job hangs until GitHub's six-hour cap kills it. That is the only path in
+#: the system that produces no report AND no failure email -- the one place
+#: "never go silent" genuinely did not hold.
+IMAP_TIMEOUT_SECONDS = 60
+
+
+class AlertFetchFailed(Exception):
+    """The mailbox could not be read, as distinct from having nothing in it.
+
+    The two used to be the same value -- an empty list -- which is how a
+    server error became a report that said "nothing new today" with full
+    confidence. Raising means the failure-notification path handles it.
+    """
+
 IMAP_HOST = "imap.gmail.com"
 IMAP_PORT = 993
 
@@ -106,6 +123,7 @@ def fetch_alert_messages(
     sender_contains: str,
     lookback_days: int,
     mailbox: str = DEFAULT_MAILBOX,
+    counters: Optional[dict] = None,
 ) -> list[Message]:
     """Logs into Gmail read-only over IMAP and returns parsed Message
     objects for recent emails from `sender_contains`. Never deletes,
@@ -115,7 +133,7 @@ def fetch_alert_messages(
     -- see DEFAULT_MAILBOX.
     """
     messages: list[Message] = []
-    with imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT) as imap:
+    with imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT, timeout=IMAP_TIMEOUT_SECONDS) as imap:
         imap.login(gmail_address, gmail_app_password)
         # imaplib doesn't quote the mailbox name itself -- a name containing
         # a space (like the default "[Gmail]/All Mail") gets sent to the
@@ -126,12 +144,30 @@ def fetch_alert_messages(
 
         since = _imap_date(lookback_days)
         status, data = imap.search(None, f'(SINCE {since} FROM "{sender_contains}")')
-        if status != "OK" or not data or not data[0]:
+        # A NO/BAD from SEARCH is a server error, and it used to return an
+        # empty list -- which the report then rendered as "Emails scanned: 0,
+        # Listings parsed: 0", internally consistent and indistinguishable
+        # from a genuinely quiet day, directly above prose telling you the
+        # counts are the proof it looked. Raise instead: the failure email is
+        # the honest output here.
+        if status != "OK":
+            raise AlertFetchFailed(
+                "IMAP SEARCH returned {} rather than OK. Treating this as an empty "
+                "inbox would report a quiet day that never happened.".format(status)
+            )
+        if not data or not data[0]:
             return messages
 
         for num in data[0].split():
             status, msg_data = imap.fetch(num, "(RFC822)")
             if status != "OK" or not msg_data or not msg_data[0]:
+                # One bad message out of twenty is not worth losing the run
+                # over, but it must not vanish either: a silently skipped
+                # message shrinks the "scanned" count with nothing to explain
+                # the gap. Counted, and surfaced in the health footer.
+                if counters is not None:
+                    counters["fetch_failures"] = counters.get("fetch_failures", 0) + 1
+                logger.warning("IMAP FETCH of message %s returned %s -- skipping it", num, status)
                 continue
             messages.append(email.message_from_bytes(msg_data[0][1]))
     return messages
@@ -392,7 +428,9 @@ def fetch_alert_listings(
     this, "the parser silently stopped working" and "no new listings
     today" look identical in the report/logs -- see docs/AUDIT_AND_ROADMAP.md.
     """
-    messages = fetch_alert_messages(gmail_address, gmail_app_password, sender_contains, lookback_days, mailbox)
+    messages = fetch_alert_messages(
+        gmail_address, gmail_app_password, sender_contains, lookback_days, mailbox, counters=counters
+    )
     if counters is not None:
         counters["messages"] = len(messages)
     listings = []
@@ -403,6 +441,17 @@ def fetch_alert_listings(
         listings.extend(extract_listings_from_html(html))
 
     if messages and not listings:
+        # Recorded for the caller, not only logged. This is the single
+        # highest-value alarm in the system -- eBay changed their template
+        # and every downstream number is now a fabricated quiet day -- and
+        # until now it went exclusively to a log file on an ephemeral runner.
+        if counters is not None:
+            counters["template_warning"] = (
+                "Read {} eBay alert email(s) and extracted 0 listings from all of them. "
+                "That combination almost always means eBay changed their email template "
+                "and extract_listings_from_html needs updating -- not that there was "
+                "nothing new. Run `python -m scripts.test_ebay_alerts --raw` to check."
+            ).format(len(messages))
         logger.warning(
             "Found %d eBay alert email(s) but extracted 0 listings from any of them -- "
             "this usually means eBay changed their email template and extract_listings_from_html "

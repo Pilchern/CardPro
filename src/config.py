@@ -53,6 +53,9 @@ class Config:
     ebay_alert_price_history_max_age_days: int
 
     seen_listings_path: Path
+    # When the daily scan last completed. Read by the backup scheduled run
+    # so it can skip a day that already ran -- see src/run_marker.py.
+    last_run_path: Path
     prune_after_days: int
 
     email_subject_prefix: str
@@ -95,6 +98,11 @@ class Config:
     # "cheap_cards" comment and src/desirability.py.
     cheap_cards_enabled: bool
     cheap_price_ceiling: float
+    # What counts as pocket change for the CHEAP FINDS section, and the
+    # higher ceiling a genuinely scarce card is allowed to reach. Neither
+    # makes any claim about value -- see config/settings.json "report".
+    cheap_find_ceiling: float
+    cool_cards_price_ceiling: float
     cheap_min_discount_pct: float
     cheap_min_savings_dollars: float
     cheap_require_desirable_attribute: bool
@@ -184,6 +192,9 @@ def load_config() -> Config:
         valuation_min_distinct_comp_dates=int(valuation.get("min_distinct_comp_dates", 3)),
         valuation_min_comp_span_days=int(valuation.get("min_comp_span_days", 7)),
         sold_comps_path=ROOT_DIR / sold.get("path", "config/sold_comps.json"),
+        last_run_path=ROOT_DIR / _section(settings, "dedupe").get(
+            "last_run_path", "data/last_run.json"
+        ),
         require_flag_eligible_comp=bool(valuation.get("require_flag_eligible_comp", True)),
         fee_marketplace_pct=float(economics.get("marketplace_fee_pct", 13.25)),
         fee_marketplace_fixed=float(economics.get("marketplace_fixed_fee", 0.30)),
@@ -198,6 +209,10 @@ def load_config() -> Config:
         immediate_alert_min_discount_pct=float(alerts.get("immediate_alert_min_discount_pct", 40.0)),
         cheap_cards_enabled=bool(cheap.get("enabled", True)),
         cheap_price_ceiling=float(cheap.get("price_ceiling", 10.0)),
+        cheap_find_ceiling=float(_section(settings, "report").get("cheap_find_ceiling", 15.0)),
+        cool_cards_price_ceiling=float(
+            _section(settings, "focus").get("cool_cards_price_ceiling", 100.0)
+        ),
         cheap_min_discount_pct=float(cheap.get("min_discount_pct", 50.0)),
         cheap_min_savings_dollars=float(cheap.get("min_savings_dollars", 3.0)),
         cheap_require_desirable_attribute=bool(cheap.get("require_desirable_attribute", True)),
@@ -221,6 +236,9 @@ def load_config() -> Config:
                 ),
                 max_listings=int(focus_settings.get("max_listings", 40)),
                 max_per_section=int(focus_settings.get("max_per_section", 10)),
+                cool_cards_price_ceiling=float(
+                    focus_settings.get("cool_cards_price_ceiling", 100.0)
+                ),
             )
             if focus_settings
             else focus.OFF

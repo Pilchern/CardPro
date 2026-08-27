@@ -14,7 +14,9 @@ Three rules, all yours, all in ``config/settings.json`` -> ``focus``:
   it is not being called a bad card -- it is being called not-what-you-shop-
   for, and it has to be exceptional (a big percentage AND a big dollar
   figure, off a comp CardPro is willing to stand behind) to take a slot
-  away from the cheap ones.
+  away from the cheap ones. A listing whose price cannot be read fails
+  this rule too, under its own reason: there is no cost to hold against
+  the ceiling and no valuation behind it either.
 * **Bidding room on auctions.** An auction whose current bid already sits
   above your max rational bid is not a card you can win at a price that
   works. It is a finished story, and it costs the same eight lines to
@@ -36,15 +38,36 @@ Three things this module deliberately does NOT do:
   The whole point of a shorter email is that you trust what is missing
   from it.
 
-Targets are exempt from the ceiling. A target card is one you asked for by
-name, at a price you set yourself (see src/targets.py) -- a second price
-opinion from this module would be overruling you with your own settings.
+Targets are exempt from both price rules above, not just the ceiling (the
+length cap still applies to them, because that one is about how long the
+email is and not about the card). A target card is one you asked for by
+name at a price you set yourself (see src/targets.py), and both price rules
+here are CardPro's own opinion about price: the ceiling is the cheap end
+you usually shop at, and the max rational bid is a comp median less fees
+less the margin in your config. Your own price test has already been
+applied to a target -- the hit carries the band it landed in, or says it is
+above every band you set -- so a second opinion from this module would only
+overrule you with your own settings. The bidding-room rule is where that
+bites hardest: on a target with a $400 buy zone the rational ceiling sits
+nearer $235, because it is a resale-margin figure and a target is
+explicitly allowed to be a bad flip ("you're paying up for something you
+specifically want"), so applying it here would hide the card you named
+across most of the range you said you would pay for it. The unreadable
+price goes the same way for a weaker but sufficient reason: "a copy of the
+card you asked for is listed right now" is worth eight lines on its own,
+and the report says exactly that rather than inventing a cost for it.
+
+None of that is a promotion. A target hit still had to be produced
+upstream, focus only declines to remove it, and the report still prints the
+max bid and the band side by side so both numbers are in front of you.
 """
 from __future__ import annotations
 
 from collections import Counter, OrderedDict
 from dataclasses import dataclass, field
 from typing import Optional
+
+from src import desirability
 
 #: Why a listing did not make the email. Distinct strings rather than one
 #: "filtered" bucket because the report says which happened, and "12 above
@@ -72,6 +95,12 @@ class FocusRules:
     require_auction_bidding_room: bool = True
     max_listings: int = 40
     max_per_section: int = 10
+    #: A higher ceiling for cards with something genuinely scarce about them
+    #: -- a signature, a patch, a serial number. "Is this the cheap end I
+    #: shop at" and "is this a card worth looking at" are different
+    #: questions, and a $60 autograph fails the first while passing the
+    #: second. Set equal to price_ceiling to switch this off.
+    cool_cards_price_ceiling: float = 100.0
 
 
 #: Focus disabled: every listing kept, no cap. The default for
@@ -146,10 +175,15 @@ def _has_bidding_room(listing, rules: FocusRules) -> bool:
     ceiling = getattr(listing, "max_rational_bid", None)
     if ceiling is None:
         return True
-    price = _price(listing)
-    if price is None:
+    # The BID, not the total cost. economics.max_rational_bid has already
+    # subtracted inbound shipping to arrive at its ceiling, so comparing a
+    # shipping-inclusive total against it charges shipping twice and drops
+    # auctions you could still win -- on a $60 card with $4.99 shipping, a
+    # $24 bid with $1.76 of room left was being reported as having none.
+    bid = getattr(listing, "price", None)
+    if bid is None:
         return True
-    return price <= ceiling
+    return bid <= ceiling
 
 
 def omission_reason(listing, rules: FocusRules) -> Optional[str]:
@@ -157,7 +191,10 @@ def omission_reason(listing, rules: FocusRules) -> Optional[str]:
     if not rules.enabled:
         return None
     if getattr(listing, "target_hit", None) is not None:
-        return None  # you asked for this card by name, at your own price
+        # You asked for this card by name at your own price, and
+        # src/targets.py has already applied that price test -- every rule
+        # below is CardPro's price opinion. See the module docstring.
+        return None
     if not _has_bidding_room(listing, rules):
         return NO_BIDDING_ROOM
     price = _price(listing)
@@ -168,7 +205,28 @@ def omission_reason(listing, rules: FocusRules) -> Optional[str]:
         return PRICE_UNKNOWN
     if price <= rules.price_ceiling:
         return None
-    return None if is_exceptional(listing, rules) else ABOVE_CEILING
+    if is_exceptional(listing, rules):
+        return None
+    # A dearer card can also earn its place by being a genuinely scarce
+    # object rather than a good price. That is not a valuation, and the
+    # flag-eligibility check is what keeps it from becoming one: a card with
+    # a comp CardPro will stand behind is claimed by DEALS long before the
+    # browse sections see it, so without this a $95 card at 24% off -- far
+    # short of the exceptional bar -- printed a full Market and Discount
+    # block directly underneath a header saying "cards at or under $40.00 ...
+    # anything dearer needed 50%+ off and $100.00+ saved to get in".
+    #
+    # A card that will make a price claim has to earn its slot on the price,
+    # which is what is_exceptional above already decides.
+    match = getattr(listing, "comp_match", None)
+    already_valued = match is not None and getattr(match, "flag_eligible", False)
+    if (
+        not already_valued
+        and price <= rules.cool_cards_price_ceiling
+        and desirability.is_standout(listing)
+    ):
+        return None
+    return ABOVE_CEILING
 
 
 def select(deals, rules: FocusRules) -> Selection:
@@ -178,22 +236,25 @@ def select(deals, rules: FocusRules) -> Selection:
     """
     kept = []
     kept_ids = set()
-    omitted_ids = {}
+    reason_by_id = {}
     for listing in deals:
         reason = omission_reason(listing, rules)
         if reason is None:
             kept.append(listing)
             kept_ids.add(listing.id)
             continue
-        omitted_ids.setdefault(reason, set()).add(listing.id)
-    # The same eBay item can arrive twice in one run (two saved searches,
-    # one card) with different data each time -- one copy in focus, one out.
-    # It is one card and it is being shown, so it must not also be counted
-    # as left out: the footer's buckets have to add up to what CardPro saw.
+        # First reason wins. The same eBay item can arrive twice in one run
+        # (two saved searches, one card) with different data each time, and
+        # the two copies can be omitted for DIFFERENT reasons -- one over the
+        # price ceiling, one an auction past its max bid. Counting both makes
+        # the footer claim two cards were left out and print two sentences
+        # about one.
+        reason_by_id.setdefault(listing.id, reason)
+    # A card that is being shown must not also be counted as left out: the
+    # footer's buckets have to add up to what CardPro saw.
     omitted = Counter(
-        {reason: len(ids - kept_ids) for reason, ids in omitted_ids.items()}
+        reason for listing_id, reason in reason_by_id.items() if listing_id not in kept_ids
     )
-    omitted += Counter()  # drop reasons that netted zero
     return Selection(kept=kept, omitted=omitted)
 
 

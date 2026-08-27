@@ -46,6 +46,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src import (
     card_identity,
+    comp_requests,
     comps,
     craigslist_links,
     dedupe,
@@ -59,6 +60,7 @@ from src import (
     price_history,
     reasons,
     report,
+    run_marker,
     sold_comps,
     search_terms,
     targets,
@@ -134,6 +136,7 @@ def _build_listing(cfg, *, listing_id, source, title, price, url, players, shipp
         card_type=grade_info.card_type,
         grader=grade_info.grader,
         grade=grade_info.grade,
+        qualifier=grade_info.qualifier,
         player_tier=cfg.player_tiers.get(matched[0], "legend"),
         is_rookie_card=matcher.detect_rookie_card(title),
         card_identity=identity,
@@ -204,6 +207,19 @@ def fetch_ebay_alert_active(cfg, stats) -> list:
     )
     stats.alert_emails_scanned += counters.get("messages", 0)
     stats.listings_extracted += len(items)
+    # Both of these used to exist only in a log file on a runner GitHub
+    # deletes minutes later. The template warning in particular is the alarm
+    # that says every number below it is a fabricated quiet day.
+    if counters.get("template_warning"):
+        stats.warn(counters["template_warning"], broken=True)
+    if counters.get("fetch_failures"):
+        stats.warn(
+            "{} alert email(s) could not be read from the mailbox and were skipped, so "
+            "the scanned count below understates what eBay actually sent.".format(
+                counters["fetch_failures"]
+            ),
+            broken=True,
+        )
 
     listings = []
     for item in items:
@@ -368,6 +384,9 @@ def record_observations(listings, history, today_str: str) -> int:
             grade=listing.grade,
             qualifier=grade_info.qualifier,
             print_run=identity.print_run.value if identity else None,
+            manufacturer=identity.manufacturer.value if identity else None,
+            is_base=identity.is_base.value if identity else None,
+            title=listing.title,
             basis=comps.BASIS_ASKING,
         )
         recorded += 1
@@ -584,8 +603,6 @@ def evaluate_listings(listings, engine, cfg, stats) -> None:
         listing.comp_is_fallback = match.stats.basis == comps.BASIS_ASKING
         listing.comp_level_matched = match.level
         listing.comp_confidence = match.confidence
-        listing.dollar_savings = match.stats.median - listing.total_cost
-        listing.pct_under_market = listing.dollar_savings / match.stats.median * 100 if match.stats.median else 0.0
         listing.economics = economics.evaluate(
             economics.Acquisition(
                 price=listing.price, shipping=listing.shipping_price, sales_tax_pct=cfg.sales_tax_pct
@@ -594,6 +611,14 @@ def evaluate_listings(listings, engine, cfg, stats) -> None:
             fees,
             resale_haircut_pct=cfg.resale_haircut_pct,
         )
+        # Take the discount from economics rather than recomputing it here.
+        # The two used different acquisition costs -- this one excluded sales
+        # tax, economics.Acquisition includes it -- so at any non-zero
+        # sales_tax_pct one card block printed two different totals: a Cost
+        # line saying $32.50 above a profit figure whose arithmetic only
+        # works at $35.10. One card, one acquisition cost.
+        listing.dollar_savings = listing.economics.gross_discount
+        listing.pct_under_market = listing.economics.discount_pct
         # Below roughly $10 a card, postage and fees eat the whole spread, so
         # a negative profit here is arithmetic, not a warning. The report says
         # "collector buy" rather than showing a scary ROI on a card nobody
@@ -606,7 +631,15 @@ def evaluate_listings(listings, engine, cfg, stats) -> None:
                 required_margin_pct=cfg.auction_required_margin_pct,
                 shipping_in=listing.shipping_price,
                 fees=fees,
+                # The same haircut evaluate() applies. Without it the two
+                # disagree about the same card, and the ceiling comes out
+                # high -- which is the expensive direction to be wrong in.
+                resale_haircut_pct=cfg.resale_haircut_pct,
             )
+            # Unknown shipping makes the ceiling an upper bound, not a
+            # figure. The report has to be able to say so; the bare float
+            # cannot carry that.
+            listing.max_rational_bid_shipping_known = listing.shipping_price is not None
             # A current bid is not a price, so an auction is never a
             # confirmed deal no matter how far under market it sits. It gets
             # its own report section and its own math instead.
@@ -691,15 +724,43 @@ def build_craigslist_links(cfg, players) -> dict:
 
 def build_search_suggestions(cfg, listings) -> dict:
     """Saved searches worth adding, for the players where today's data shows
-    no sign of graded/auto/numbered coverage. See src/search_terms.py for
-    why this matters: 99.3% of everything observed so far has been raw."""
+    no sign of coverage. See src/search_terms.py for why this matters:
+    graded cards are about 1% of everything observed so far, and set_name
+    resolves for about a sixth of listings.
+
+    What is recorded here is what makes a suggestion stop being suggested, so
+    under-recording means being nagged forever to create a search you already
+    have. Every dimension the generator suggests on has to be recorded back:
+    the grader (by name -- "psa" alone marked a BGS slab as PSA coverage),
+    the grade, the set, and the auto/numbered attributes.
+
+    Still only ever evidence of ABSENCE. eBay's alert emails do not say which
+    saved search produced a listing, so a match here means "something arrived
+    that this search would have found", never "you have this search".
+    """
     observed = defaultdict(set)
     for listing in listings:
+        seen = observed[listing.player]
         if listing.card_type == "graded":
-            observed[listing.player].add("psa")
+            if listing.grader:
+                seen.add(listing.grader.lower())
+                if listing.grade:
+                    seen.add("{} {}".format(listing.grader, listing.grade).lower())
+            else:
+                # A slab we could not read the label on is still evidence that
+                # graded listings are reaching us for this player.
+                seen.add("psa")
         identity = listing.card_identity
-        if identity is not None and identity.is_autograph.value:
-            observed[listing.player].add("auto")
+        if identity is None:
+            continue
+        if identity.is_autograph.value:
+            seen.add("auto")
+        if identity.set_name.value:
+            seen.add(identity.set_name.value.lower())
+        if identity.print_run.value is not None or identity.serial_number.value is not None:
+            seen.add("/99")
+        if identity.parallel.value:
+            seen.add(identity.parallel.value.lower())
     return search_terms.coverage_gaps(cfg.players, observed)
 
 
@@ -716,6 +777,8 @@ def run(args: argparse.Namespace) -> None:
     today = datetime.now(timezone.utc)
     today_str = today.strftime("%Y-%m-%d")
     stats = observability.RunStats()
+    # Read BEFORE the run writes its own marker, or the answer is always 0.
+    stats.days_since_last_run = run_marker.gap_days(cfg.last_run_path, today_str)
 
     ebay_api_enabled = bool(cfg.ebay_client_id and cfg.ebay_client_secret)
     ebay_data_available = ebay_api_enabled or cfg.ebay_alerts_enabled
@@ -818,6 +881,11 @@ def run(args: argparse.Namespace) -> None:
         immediate_min_discount_pct=cfg.immediate_alert_min_discount_pct,
         ending_soon_hours=cfg.auction_ending_soon_hours,
         focus_rules=cfg.focus_rules,
+        comp_requests_list=comp_requests.build_requests(
+            listings, sold, min_comps_required=cfg.valuation_min_comps_required
+        ),
+        unidentified_listings=comp_requests.unidentified_count(listings),
+        cheap_find_ceiling=cfg.cheap_find_ceiling,
     )
     subject = f"{cfg.email_subject_prefix} {subject}"
 
@@ -832,6 +900,11 @@ def run(args: argparse.Namespace) -> None:
         price_history.save(cfg.ebay_alert_price_history_path, history)
     seen = dedupe.prune_old(seen, cfg.prune_after_days, today)
     dedupe.save_seen(cfg.seen_listings_path, seen)
+    # Last, and only on the path where the email actually went out. The
+    # marker's one job is to answer "did today's scan complete", and writing
+    # it before the send would let a failed send record a run that never
+    # reached anybody.
+    run_marker.save(cfg.last_run_path, today_str, len(listings))
     logger.info("Done")
 
 
@@ -873,12 +946,28 @@ def main() -> None:
     parser.add_argument(
         "--dry-run", action="store_true", help="Print the report instead of emailing it; don't write state files"
     )
+    parser.add_argument(
+        "--skip-if-ran-today",
+        action="store_true",
+        help="Exit without doing anything if a scan already completed today. For the "
+        "backup scheduled run -- GitHub drops scheduled workflows under load, and a "
+        "dropped run is the one failure nothing else here can see.",
+    )
     args = parser.parse_args()
 
     setup_logging()
     logger = logging.getLogger("main")
 
     try:
+        if args.skip_if_ran_today:
+            from src.config import ROOT_DIR as _root
+
+            marker = _root / "data" / "last_run.json"
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            if run_marker.ran_on(marker, today):
+                logger.info("A scan already completed on %s -- nothing to do.", today)
+                return
+            logger.info("No scan recorded for %s yet -- running the backup scan.", today)
         run(args)
     except Exception:
         logger.exception("Card deal scan failed with an unhandled error")

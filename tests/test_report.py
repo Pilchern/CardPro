@@ -12,8 +12,9 @@ Two things are being protected here, and they are different:
   on purpose: the exact words are the product.
 """
 from datetime import date
+from types import SimpleNamespace
 
-from src import desirability, focus, reasons, report
+from src import card_identity, desirability, focus, reasons, report
 from src.card_identity import CardIdentity, Field
 from src.comps import CompMatch, CompStatsV2
 from src.models import Listing
@@ -222,14 +223,19 @@ def test_low_confidence_opportunity_never_reaches_act_now_or_top():
     assert sections[report.SECTION_WATCH] == [deal]
 
 
-def test_young_core_low_confidence_opportunity_goes_to_investment_watchlist():
-    """Strong young-core opportunities stay in TOP -- burying the best card
-    of the day under a tier label would defeat the point. The investment
-    section is for the ones the comp isn't strong enough to act on."""
+def test_a_young_core_card_with_a_real_comp_keeps_its_numbers():
+    """It goes to WATCH, not YOUNG CORE.
+
+    YOUNG CORE prints no market value, no discount and no confidence -- that
+    is what makes it safe. It is therefore the wrong home for a card that
+    HAS a comp worth standing behind. This one is 50% under market against a
+    flag-eligible comp; filing it under a tier label would print none of
+    that, under a header saying no comp CardPro will stand behind was found.
+    """
     deal = make_listing(player_tier="young_core", comp_match=make_match(confidence="low"))
     sections = report.classify_sections([deal], threshold_pct=30)
-    assert sections[report.SECTION_INVESTMENT] == [deal]
-    assert sections[report.SECTION_WATCH] == []
+    assert sections[report.SECTION_INVESTMENT] == []
+    assert sections[report.SECTION_WATCH] == [deal]
 
 
 def test_strong_young_core_opportunity_stays_in_top_opportunities():
@@ -405,11 +411,29 @@ def test_each_section_renders_when_it_has_content():
         make_listing(id="top", dollar_savings=100.0, pct_under_market=50.0),
         make_listing(id="target", is_opportunity=False, pct_under_market=1.0, dollar_savings=2.0,
                      target_hit=make_target_hit()),
-        make_listing(id="invest", player_tier="young_core", comp_match=make_match(confidence="low"),
-                     dollar_savings=30.0),
+        make_listing(id="invest", player_tier="young_core", is_opportunity=False,
+                     comp_match=None, market_value=None, pct_under_market=None,
+                     dollar_savings=None, price=30.0,
+                     title="2024 Panini Prizm Caleb Williams Silver Prizm #301",
+                     card_identity=card_identity.extract_card_identity(
+                         "2024 Panini Prizm Caleb Williams Silver Prizm #301"),
+                     card_type="raw", grader=None, grade=None, is_rookie_card=False),
         make_listing(id="auction", listing_type="auction", is_opportunity=False, bid_count=2,
                      time_left_text="0d 05h", max_rational_bid=150.0),
         make_listing(id="offer", has_best_offer=True, is_opportunity=False, pct_under_market=5.0),
+        # No comp: a card with one belongs in a section that prints it.
+        make_listing(id="cool", is_opportunity=False, comp_match=None, market_value=None,
+                     pct_under_market=None, dollar_savings=None,
+                     title="2024 Panini Prizm Caleb Williams Auto RC #301 /99",
+                     card_identity=card_identity.extract_card_identity(
+                         "2024 Panini Prizm Caleb Williams Auto RC #301 /99"),
+                     is_rookie_card=True, price=60.0, card_type="raw", grader=None, grade=None),
+        make_listing(id="cheap", is_opportunity=False, comp_match=None, market_value=None,
+                     pct_under_market=None, dollar_savings=None,
+                     title="2024 Panini Prizm Caleb Williams Silver Prizm #301",
+                     card_identity=card_identity.extract_card_identity(
+                         "2024 Panini Prizm Caleb Williams Silver Prizm #301"),
+                     price=4.0, card_type="raw", grader=None, grade=None),
         make_listing(id="watch", is_opportunity=False, pct_under_market=25.0, dollar_savings=50.0),
         make_listing(id="review", is_opportunity=False, pct_under_market=1.0,
                      comp_match=make_match(flag_eligible=False, blocked=("context_only_level",))),
@@ -763,7 +787,7 @@ def test_blocked_reasons_are_not_repeated_when_already_described():
     risks = [line for line in flat(body).split("Risks")[1].split("Title")[0].split("; ")]
     assert any(item.strip().startswith("thin sample (n=3)") for item in risks)
     assert flat(body).count("thin sample (n=3)") == 1
-    assert "too few comparable sales to trust a median" not in flat(body)
+    assert "too few comparable observations to trust a median" not in flat(body)
 
 
 def test_context_only_blocked_reason_is_surfaced_in_english():
@@ -1087,7 +1111,7 @@ def test_empty_state_lists_the_top_rejection_reasons_from_run_stats():
 
     _, body = report.build_report([], 30, RUN_DATE, stats=stats)
     assert "Top reasons listings did not qualify:" in body
-    assert "12 x no comparable sales at any level" in body
+    assert "12 x no comparable listing at any level" in body
     assert "3 x discount is below your threshold" in body
     assert "Looked at 40 listings matched to your watchlist; 12 had no comp at any level." in flat(body)
 
@@ -1154,7 +1178,9 @@ def test_system_health_footer_rendered_from_run_stats():
     body = body_of([make_listing()], stats=stats)
     assert "SYSTEM HEALTH" in body
     for line in stats.health_lines():
-        assert line in body
+        # Compared flattened: the footer wraps like every other block, and
+        # where textwrap breaks a line is a layout decision, not a contract.
+        assert flat(line) in flat(body)
 
 
 def test_no_system_health_footer_when_no_stats_passed():
@@ -1602,3 +1628,805 @@ def test_empty_state_does_not_claim_completeness_under_focus():
     assert "Everything CardPro did see" not in focused
     assert "The best of what CardPro did see" in focused
     assert "Everything CardPro did see" in flat(body_of(deals))
+
+
+# ---------------------------------------------------------------------------
+# "Sold comps worth adding" -- where a few minutes of your time buys the most
+# ---------------------------------------------------------------------------
+
+
+def a_request(**overrides):
+    from src.comp_requests import CompRequest
+
+    defaults = dict(
+        player="Caleb Williams",
+        year=2024,
+        set_name="Prizm",
+        parallel="Silver Prizm",
+        market=("graded", "PSA", "10", None),
+        listings_waiting=6,
+        sold_on_file=1,
+        still_needed=2,
+        example_url="https://www.ebay.com/itm/123",
+    )
+    defaults.update(overrides)
+    return CompRequest(**defaults)
+
+
+class TestSoldCompRequestsSection:
+    def test_nothing_to_ask_for_prints_nothing(self):
+        assert report._sold_comp_requests_section([], 0) == ""
+
+    def test_names_the_card_the_market_and_the_cost_of_the_ask(self):
+        text = flat(report._sold_comp_requests_section([a_request()], 0))
+        assert "Caleb Williams (2024 Prizm Silver Prizm PSA 10)" in text
+        assert "6 listings waiting" in text
+        assert "2 sales still needed" in text
+
+    def test_gives_a_query_that_can_be_pasted_straight_in(self):
+        text = report._sold_comp_requests_section([a_request()], 0)
+        assert 'search: "2024 Prizm Caleb Williams Silver Prizm PSA 10"' in text
+
+    def test_points_at_the_tool_that_records_the_answer(self):
+        # A suggestion with no way to act on it is a complaint.
+        text = report._sold_comp_requests_section([a_request()], 0)
+        assert "130point.com" in text
+        assert "scripts.add_sold_comp" in text
+
+    def test_singular_ask_is_not_written_as_plural(self):
+        text = report._sold_comp_requests_section(
+            [a_request(listings_waiting=1, still_needed=1)], 0
+        )
+        assert "1 listing waiting" in text
+        assert "1 sale still needed" in text
+
+    def test_an_example_listing_is_optional(self):
+        assert "example:" not in report._sold_comp_requests_section(
+            [a_request(example_url=None)], 0
+        )
+
+    def test_unidentified_listings_are_reported_as_a_different_problem(self):
+        # The whole point of printing this number: it says data entry is NOT
+        # the bottleneck, parsing is. Without it the section reads as though
+        # typing in sold prices would fix everything.
+        text = report._sold_comp_requests_section([], 412)
+        assert "412 listing(s) could not be identified" in text
+        assert "not more data" in text
+
+    def test_the_section_appears_in_the_assembled_report(self):
+        body = report.build_report(
+            [], 30, RUN_DATE, comp_requests_list=[a_request()], unidentified_listings=9
+        )[1]
+        assert "Sold comps worth adding" in body
+        assert "Caleb Williams (2024 Prizm Silver Prizm PSA 10)" in body
+
+    def test_a_caller_that_does_not_compute_them_gets_no_section(self):
+        assert "Sold comps worth adding" not in report.build_report([], 30, RUN_DATE)[1]
+
+
+# ---------------------------------------------------------------------------
+# A number that cannot be stood behind is not printed
+#
+# The pipeline fills in market_value, dollar_savings and economics BEFORE it
+# checks flag-eligibility, and a target hit reaches a headline section
+# regardless of claims. So a context-only comp arrived at the renderer fully
+# furnished with a discount and an ROI -- an $18 card inside a bucket defined
+# as "$25-$100", median $44, reported as 51% off with a 39% return. That is
+# the audit's failure mode #1 reprinted, and the fix is not a softer
+# adjective on the number.
+# ---------------------------------------------------------------------------
+
+
+def context_only_deal(**overrides):
+    deal = make_listing(**overrides)
+    deal.comp_match = CompMatch(
+        stats=make_stats(median=44.0, sample_size=12, minimum=25.0, maximum=99.0),
+        level="price_tier",
+        flag_eligible=False,
+        confidence="low",
+        blocked_reasons=("context_only_level",),
+    )
+    deal.market_value = 44.0
+    deal.dollar_savings = 22.5
+    deal.pct_under_market = 51.1
+    return deal
+
+
+class TestContextOnlyCompsPrintNoNumber:
+    def test_no_discount_line(self):
+        assert report._discount_text(context_only_deal()) is None
+
+    def test_no_economics_line(self):
+        deal = context_only_deal()
+        deal.economics = object()  # would have rendered if it were consulted
+        assert report._economics_text(deal) is None
+
+    def test_the_absence_is_explained_rather_than_silent(self):
+        body = flat(body_of([context_only_deal()]))
+        assert "CardPro has no valuation for this card" in body
+        assert "51.1%" not in body
+
+    def test_a_flag_eligible_comp_still_gets_its_numbers(self):
+        deal = make_listing()
+        assert report._discount_text(deal) is not None
+
+
+class TestConfidenceNamesEveryDowngrade:
+    def test_a_time_concentrated_sample_is_named(self):
+        # The most common downgrade in production by far -- 866 of 907
+        # listings -- and the only one with no sentence. An exact
+        # grade-matched comp at n=9 printed "LOW" with nothing accounting
+        # for the fall, which reads as an arbitrary ladder.
+        deal = make_listing()
+        deal.comp_match = CompMatch(
+            stats=make_stats(sample_size=9, distinct_dates=1, span_days=0, is_concentrated=True),
+            level="exact",
+            flag_eligible=False,
+            confidence="low",
+            blocked_reasons=("concentrated_sample",),
+        )
+        text = flat(report._confidence_text(deal))
+        assert "one snapshot, not independent readings" in text
+        assert "1 date(s) spanning 0 day(s)" in text
+
+    def test_a_well_spread_sample_says_nothing_about_dates(self):
+        assert "snapshot" not in report._confidence_text(make_listing())
+
+
+class TestUnknownShippingIsCarriedThrough:
+    def test_the_discount_says_it_is_a_ceiling(self):
+        # total_cost falls back to price alone when shipping is unknown, so
+        # the Cost line declines to state a total and the Discount line then
+        # named one to the cent two lines later.
+        deal = make_listing(shipping_price=None)
+        assert "before shipping, which is unknown" in report._discount_text(deal)
+
+    def test_a_known_shipping_discount_carries_no_caveat(self):
+        assert "unknown" not in report._discount_text(make_listing(shipping_price=4.99))
+
+
+class TestPriceDropsCarryConfidence:
+    def test_the_block_says_how_far_to_trust_its_market_value(self):
+        # Every other block type carries this; its absence here was a
+        # copy-paste omission that no test caught.
+        deal = make_listing(is_price_drop=True, previous_price=90.0)
+        assert "Confidence" in report._price_drop_block(1, deal)
+
+
+class TestAWarnedRunIsNotAQuietDay:
+    def _warned_stats(self):
+        from src import observability
+
+        stats = observability.RunStats(alert_emails_scanned=14)
+        stats.warn(
+            "Read 14 eBay alert email(s) and extracted 0 listings from all of them.",
+            broken=True,
+        )
+        return stats
+
+    def test_the_subject_says_to_check(self):
+        subject = report.build_report([], 30, RUN_DATE, stats=self._warned_stats())[0]
+        assert "CHECK THIS" in subject
+
+    def test_the_email_does_not_call_the_silence_normal(self):
+        # It used to open with "That is a normal outcome, not a failure" six
+        # lines above a footer saying 14 emails yielded nothing -- asserting
+        # the zeroes were fine while the alarm said they were manufactured.
+        body = flat(body_of([], stats=self._warned_stats()))
+        assert "SOMETHING IS WRONG WITH TODAY'S SCAN." in body
+        assert "That is a normal outcome, not a failure" not in body
+        assert "Do not read the zeroes as a quiet market" in body
+
+    def test_a_notable_but_normal_warning_does_not_cry_wolf(self):
+        # "No comp bucket is strong enough to flag today" is TRUE ON MOST
+        # DAYS right now. An alarm that fires every morning is not an alarm,
+        # so only warn(broken=True) reaches the subject and the opening line.
+        from src import observability
+
+        stats = observability.RunStats()
+        stats.warn("No comp bucket anywhere is strong enough to declare a deal from.")
+        body = flat(body_of([], stats=stats))
+        assert "SOMETHING IS WRONG WITH TODAY'S SCAN." not in body
+        assert "That is a normal outcome, not a failure" in body
+        assert "CHECK THIS" not in report.build_report([], 30, RUN_DATE, stats=stats)[0]
+        assert "No comp bucket anywhere is strong enough" in body  # still in the footer
+
+    def test_an_unwarned_quiet_day_still_reads_as_normal(self):
+        from src import observability
+
+        body = flat(body_of([], stats=observability.RunStats()))
+        assert "NOTHING CLEARED THE BAR TODAY." in body
+        assert "That is a normal outcome, not a failure" in body
+        assert "No opportunities today" in report.build_report([], 30, RUN_DATE)[0]
+
+
+class TestFooterWrapping:
+    def test_no_footer_line_runs_past_the_wrap_width(self):
+        # The "Top reasons" line came out at 404 characters, which a mail
+        # client soft-wraps wherever it likes -- so the one part of the
+        # footer worth reading became the part nobody could.
+        from src import observability, reasons
+
+        stats = observability.RunStats(listings_matched_to_watchlist=200, valued=60)
+        for index in range(40):
+            stats.rejections.record(reasons.Reason.NO_COMP_AT_ANY_LEVEL, str(index))
+        for line in body_of([make_listing()], stats=stats).splitlines():
+            assert len(line) <= report._WRAP_WIDTH + 8, line
+
+
+class TestEveryBlockKindRefusesToPriceAnAuction:
+    """An auction's number is a CURRENT BID. Rendering it under "Asking" or
+    "Cost" is how a $40 opening bid became a reported 60%-off deal.
+    _thesis_block and _compact_block have always guarded against this;
+    _offer_block and _price_drop_block did not, and were safe only because
+    classify_sections happens to claim auctions before it reaches their
+    loops. That is an ordering accident, not a guarantee."""
+
+    def _auction(self):
+        return make_listing(listing_type="auction", bid_count=4, time_left_text="2d 04h")
+
+    def test_the_offer_block_routes_an_auction_to_the_auction_block(self):
+        text = report._offer_block(1, self._auction(), 30.0)
+        assert "CURRENT BID, not an asking price" in flat(text)
+        assert "Asking" not in text
+
+    def test_the_price_drop_block_routes_an_auction_to_the_auction_block(self):
+        text = report._price_drop_block(1, self._auction())
+        assert "CURRENT BID, not an asking price" in flat(text)
+
+    def test_a_fixed_price_listing_is_unaffected(self):
+        assert "CURRENT BID" not in report._offer_block(1, make_listing(), 30.0)
+
+
+class TestRisksAreOrderedWorstFirst:
+    """They used to be appended as they were computed, so on a card with six
+    risks "shipping unknown" and "this may be a reprint" landed in the same
+    run-on sentence with the same weight and the reader had to rank them.
+    They are not the same kind of statement."""
+
+    def _kitchen_sink(self):
+        deal = make_listing(
+            shipping_price=None,
+            title_truncated=True,
+            listing_type="unknown",
+            negative_signals=("reprint",),
+            matched_players=("Caleb Williams", "Rome Odunze"),
+        )
+        deal.comp_match = CompMatch(
+            stats=make_stats(sample_size=2, is_stale=True, age_days_newest=90),
+            level="same_card",
+            flag_eligible=False,
+            confidence="low",
+            blocked_reasons=("thin_sample", "stale_comps"),
+        )
+        return deal
+
+    def test_it_may_not_be_the_card_outranks_everything(self):
+        risks = report._risks(self._kitchen_sink())
+        assert "reprint" in risks[0].lower()
+
+    def test_the_price_may_not_be_the_price_outranks_comp_quality(self):
+        risks = report._risks(self._kitchen_sink())
+        shipping = next(i for i, r in enumerate(risks) if "shipping unknown" in r)
+        thin = next(i for i, r in enumerate(risks) if "thin sample" in r)
+        assert shipping < thin
+
+    def test_a_card_with_only_comp_caveats_still_lists_them(self):
+        deal = make_listing(shipping_price=4.99)
+        deal.comp_match = CompMatch(
+            stats=make_stats(sample_size=2),
+            level="same_card", flag_eligible=False, confidence="low",
+            blocked_reasons=("thin_sample",),
+        )
+        assert any("thin sample" in r for r in report._risks(deal))
+
+    def test_a_clean_listing_has_no_risks_line(self):
+        # "Risks: none" trains you to stop reading the ones that matter.
+        assert report._risks(make_listing(shipping_price=4.99)) == []
+
+
+class TestACardIsNotPrintedTwiceInFull:
+    """Sections answer different questions, so a card legitimately appears in
+    more than one -- a target hit whose only comp is context-only belongs in
+    both TARGET CARD HITS and NEEDS REVIEW. What it does not need is the same
+    nine lines twice, eight of them byte-identical, in an email whose length
+    is a known problem."""
+
+    def _target_with_a_context_only_comp(self):
+        deal = context_only_deal()
+        deal.target_hit = SimpleNamespace(
+            label="BUY ZONE", in_buy_zone=True, threshold=25.0, price_known=True,
+            target=SimpleNamespace(label="Payton 1984 Topps"),
+        )
+        return deal
+
+    def test_the_second_appearance_points_at_the_first(self):
+        body = body_of([self._target_with_a_context_only_comp()])
+        later = body[body.index("WATCH"):]
+        assert "shown above under TARGET CARD HITS" in later
+        assert "Cost" not in later
+
+    def test_the_line_that_is_actually_new_is_still_printed(self):
+        # The whole reason the card is in this section.
+        body = body_of([self._target_with_a_context_only_comp()])
+        later = body[body.index("WATCH"):]
+        assert "Why here" in later
+
+    def test_the_card_still_appears_in_both_sections(self):
+        # "Nothing disappears silently" -- the fix is to stop repeating the
+        # block, never to stop listing the card.
+        body = body_of([self._target_with_a_context_only_comp()])
+        assert body.count("Michael Jordan --") >= 2
+
+    def test_a_card_appearing_only_once_gets_its_full_block(self):
+        body = body_of([context_only_deal()])
+        assert "shown above" not in body
+        assert "Cost" in body[body.index("WATCH"):]
+
+
+# ---------------------------------------------------------------------------
+# COOL CARDS and CHEAP FINDS
+#
+# The report used to answer one question -- "is this underpriced against a
+# grade-matched comp" -- and on this project's data it can almost never
+# answer it. So the body of the email was a list of things it could not
+# value, under headings that read as junk drawers. These two sections answer
+# questions it CAN answer from a title: what is this card, and is it cheap.
+# Neither makes any claim about price, which is why neither can produce the
+# false confidence the valuation rules exist to prevent.
+# ---------------------------------------------------------------------------
+
+
+def carded(title, price, **overrides):
+    identity = card_identity.extract_card_identity(title)
+    fields = dict(
+        # id from a hash of the title, not a prefix of it: two 2024 Panini
+        # cards share their first twelve characters, and a shared id makes
+        # the second one look like a duplicate of the first.
+        id=str(abs(hash(title))), title=title, price=price, card_identity=identity,
+        card_type="raw", grader=None, grade=None, is_opportunity=False,
+        comp_match=None, market_value=None, pct_under_market=None, dollar_savings=None,
+        is_rookie_card="RC" in title or "Rookie" in title,
+    )
+    fields.update(overrides)
+    return make_listing(**fields)
+
+
+AUTO = "2024 Topps Chrome Pete Crow-Armstrong Auto Refractor /499 #RA-PCA"
+CHEAP_ROOKIE = "2024 Panini Donruss Caleb Williams #301 RC"
+BASE_COMMON = "2024 Topps Caleb Williams #150"
+
+
+class TestCoolCards:
+    def test_a_signed_numbered_card_gets_a_section_of_its_own(self):
+        sections = report.classify_sections([carded(AUTO, 42.0)])
+        assert [d.title for d in sections[report.SECTION_COOL_CARDS]] == [AUTO]
+
+    def test_a_base_common_is_not_a_cool_card(self):
+        sections = report.classify_sections([carded(BASE_COMMON, 42.0, is_rookie_card=False)])
+        assert sections[report.SECTION_COOL_CARDS] == []
+
+    def test_the_scarcest_card_comes_first(self):
+        plain = "2024 Panini Prizm Caleb Williams Silver Prizm RC #301"
+        sections = report.classify_sections([carded(plain, 9.0), carded(AUTO, 42.0)])
+        assert sections[report.SECTION_COOL_CARDS][0].title == AUTO
+
+    def test_the_block_prints_no_market_value_and_no_discount(self):
+        # The whole point: this section is about what the card IS. A
+        # discount here would be a valuation claim wearing a browse label.
+        deal = carded(AUTO, 42.0)
+        deal.comp_match = make_match(flag_eligible=False, blocked=("context_only_level",))
+        deal.market_value = 200.0
+        deal.dollar_savings = 150.0
+        deal.pct_under_market = 75.0
+        block = report._interest_block(1, deal)
+        assert "Market" not in block
+        assert "Discount" not in block
+        assert "What it is" in block
+
+    def test_an_auction_is_never_claimed_by_a_browse_section(self):
+        # A browse block delegates an auction to _auction_block, which
+        # prints a Market line, a max bid and an "at this bid" discount --
+        # a full price claim under a COOL CARDS heading. AUCTIONS claims
+        # them first today, but that is loop order, not a guarantee.
+        deal = carded(AUTO, 42.0, listing_type="auction", bid_count=3)
+        sections = report.classify_sections([deal])
+        assert sections[report.SECTION_COOL_CARDS] == []
+        assert sections[report.SECTION_AUCTIONS] == [deal]
+
+    def test_the_block_still_refuses_to_price_an_auction_if_one_reaches_it(self):
+        deal = carded(AUTO, 42.0, listing_type="auction", bid_count=3)
+        assert "CURRENT BID, not an asking price" in flat(report._interest_block(1, deal))
+
+
+class TestCheapFinds:
+    def test_pocket_change_with_something_to_it_is_shown(self):
+        sections = report.classify_sections([carded(CHEAP_ROOKIE, 1.99)], cheap_find_ceiling=15.0)
+        assert [d.title for d in sections[report.SECTION_CHEAP_FINDS]] == [CHEAP_ROOKIE]
+
+    def test_a_cheap_card_with_nothing_to_it_is_not(self):
+        # Being cheap is not a reason on its own -- the cheap end of the
+        # hobby is mostly base commons and printing them all is the pile
+        # this section exists to filter.
+        sections = report.classify_sections(
+            [carded(BASE_COMMON, 1.99, is_rookie_card=False)], cheap_find_ceiling=15.0
+        )
+        assert sections[report.SECTION_CHEAP_FINDS] == []
+
+    def test_the_ceiling_is_on_total_cost_not_the_asking_price(self):
+        deal = carded(CHEAP_ROOKIE, 14.0, shipping_price=5.0)
+        sections = report.classify_sections([deal], cheap_find_ceiling=15.0)
+        assert sections[report.SECTION_CHEAP_FINDS] == []
+
+    def test_cheapest_first(self):
+        dearer = carded("2024 Panini Select Matas Buzelis Concourse RC #45", 9.0)
+        sections = report.classify_sections(
+            [dearer, carded(CHEAP_ROOKIE, 1.99)], cheap_find_ceiling=15.0
+        )
+        assert sections[report.SECTION_CHEAP_FINDS][0].title == CHEAP_ROOKIE
+
+    def test_a_cool_card_is_not_also_a_cheap_find(self):
+        # One card, one section. COOL CARDS is claimed first.
+        cheap_auto = carded("2024 Topps Chrome Caleb Williams Auto RC", 5.0)
+        sections = report.classify_sections([cheap_auto], cheap_find_ceiling=15.0)
+        assert len(sections[report.SECTION_COOL_CARDS]) == 1
+        assert sections[report.SECTION_CHEAP_FINDS] == []
+
+
+class TestTheEmailSaysWhatItHas:
+    def _browsable_day(self):
+        return [carded(AUTO, 42.0), carded(CHEAP_ROOKIE, 1.99)]
+
+    def test_the_subject_names_the_cards_not_the_absence_of_deals(self):
+        # It is the line most likely to be the only thing read, and "No
+        # opportunities today" above a page of autographs is the subject
+        # arguing with its own contents.
+        subject = report.build_report(self._browsable_day(), 30, RUN_DATE)[0]
+        assert "No opportunities" not in subject
+        assert "cool card" in subject and "cheap find" in subject
+
+    def test_the_counts_line_names_them_too(self):
+        body = body_of(self._browsable_day())
+        assert "1 cool card | 1 cheap find" in body
+
+    def test_it_still_says_there_was_no_deal(self):
+        # Dropping the statement would let browsable cards read as
+        # opportunities, which is the confusion the engine exists to prevent.
+        body = flat(body_of(self._browsable_day()))
+        assert "No deal today" in body
+        assert "NOTHING CLEARED THE BAR TODAY." not in body
+
+    def test_a_genuinely_empty_day_still_gets_the_full_explanation(self):
+        body = flat(body_of([]))
+        assert "NOTHING CLEARED THE BAR TODAY." in body
+
+    def test_a_real_deal_still_leads(self):
+        subject = report.build_report([make_listing()], 30, RUN_DATE)[0]
+        assert "opportunity" in subject
+
+
+class TestYoungCore:
+    """The old rule was `young_core AND is_opportunity`, and is_opportunity
+    requires a flag-eligible comp -- which has never once existed in this
+    project's production data. The section for the players the watchlist is
+    built around could not fire, ever."""
+
+    def _young(self, title, price, **overrides):
+        return carded(title, price, player_tier="young_core", **overrides)
+
+    def test_a_young_core_card_with_something_to_it_now_appears(self):
+        # One weak attribute: a parallel and nothing else, so COOL CARDS
+        # (which wants a standout) does not take it, and it is over the
+        # pocket-change ceiling so CHEAP FINDS does not either.
+        deal = self._young(
+            "2024 Panini Prizm Caleb Williams Silver Prizm #301", 30.0, is_rookie_card=False
+        )
+        sections = report.classify_sections([deal], cheap_find_ceiling=15.0)
+        assert len(sections[report.SECTION_INVESTMENT]) == 1
+
+    def test_a_young_core_base_common_does_not(self):
+        deal = self._young("2024 Topps Caleb Williams #150", 30.0, is_rookie_card=False)
+        sections = report.classify_sections([deal], cheap_find_ceiling=15.0)
+        assert sections[report.SECTION_INVESTMENT] == []
+
+    def test_a_legend_is_not_young_core(self):
+        deal = carded(
+            "2024 Panini Prizm Michael Jordan Silver Prizm #301", 30.0,
+            player="Michael Jordan", player_tier="legend", is_rookie_card=False,
+        )
+        sections = report.classify_sections([deal], cheap_find_ceiling=15.0)
+        assert sections[report.SECTION_INVESTMENT] == []
+
+    def test_cool_cards_still_claims_a_standout_first(self):
+        # A young-core autograph belongs at the top of the email, not in a
+        # tier-labelled section further down. The headline carries a
+        # [YOUNG CORE] tag either way, so nothing is lost by claiming it.
+        deal = self._young(AUTO, 42.0)
+        sections = report.classify_sections([deal], cheap_find_ceiling=15.0)
+        assert len(sections[report.SECTION_COOL_CARDS]) == 1
+        assert sections[report.SECTION_INVESTMENT] == []
+
+    def test_the_block_makes_no_valuation_claim(self):
+        deal = self._young(
+            "2024 Panini Prizm Caleb Williams Silver Prizm #301", 30.0, is_rookie_card=False
+        )
+        deal.comp_match = make_match(flag_eligible=False, blocked=("context_only_level",))
+        deal.market_value = 200.0
+        deal.dollar_savings = 170.0
+        deal.pct_under_market = 85.0
+        body = body_of([deal])
+        assert "YOUNG CORE" in body
+        assert "85.0%" not in body
+
+
+class TestBrowseSectionsDropCompCaveats:
+    """These sections show no market value, no discount and no ROI.
+    Caveating the quality of a comp that is not on the page is noise -- it
+    was four wrapped lines of it on every card, the same four lines seven
+    times over, about a number the section deliberately refuses to print."""
+
+    def _with_bad_comps(self):
+        deal = carded(AUTO, 42.0, shipping_price=None)
+        deal.comp_match = make_match(
+            flag_eligible=False,
+            blocked=("context_only_level", "concentrated_sample", "thin_sample"),
+        )
+        deal.market_value = 200.0
+        return deal
+
+    def test_comp_quality_caveats_are_left_out(self):
+        block = flat(report._interest_block(1, self._with_bad_comps()))
+        assert "context-only" not in block
+        assert "one snapshot" not in block
+
+    def test_the_ones_about_the_card_and_the_cost_stay(self):
+        block = flat(report._interest_block(1, self._with_bad_comps()))
+        assert "shipping unknown" in block
+
+    def test_a_negative_signal_is_never_dropped(self):
+        # "This may be a reprint" is a fact about the card, not about how
+        # well a comp was measured, and it outranks everything.
+        deal = carded(AUTO, 42.0, negative_signals=("reprint",))
+        assert "REPRINT" in report._interest_block(1, deal)
+
+    def test_a_deal_section_still_gets_the_full_list(self):
+        risks = report._risks(self._with_bad_comps())
+        assert any("context-only" in r for r in risks)
+
+
+class TestCraigslistLinksAreCapped:
+    """Twenty formulaic links, every morning, forever, was a fifth of the
+    email -- and nobody eyeballs twenty Craigslist searches daily."""
+
+    def _links(self, count):
+        names = ["Player %d" % i for i in range(count)]
+        return {
+            name: "https://chicago.craigslist.org/search/sss?query={}+card".format(
+                name.replace(" ", "+")
+            )
+            for name in names
+        }
+
+    def test_a_short_watchlist_prints_every_link(self):
+        text = report._craigslist_section(self._links(4))
+        assert text.count("craigslist.org") == 4
+        assert "more on the same pattern" not in text
+
+    def test_a_long_one_caps_and_says_so(self):
+        text = report._craigslist_section(self._links(20))
+        assert text.count("https://") == report.CRAIGSLIST_MAX_LINKS + 1  # +1 for the template
+        assert "and 14 more on the same pattern" in flat(text)
+
+    def test_nobody_is_dropped_silently(self):
+        # The names are all still there, and the template builds any of the
+        # links -- capping the clickable ones is not hiding the players.
+        text = flat(report._craigslist_section(self._links(20)))
+        for index in range(20):
+            assert "Player {}".format(index) in text
+
+    def test_the_template_is_a_real_substitution(self):
+        text = report._craigslist_section(self._links(20))
+        assert "query=<player>+card" in text
+
+    def test_no_links_prints_nothing(self):
+        assert report._craigslist_section({}) == ""
+
+
+class TestRejectedListingsNeverReachTheBrowseSections:
+    """main.evaluate_listings leaves desirable_attributes empty for a
+    listing it rejected -- a break slot, a lot, a custom, a multi-player
+    card, a grade read off a truncated title. The browse sections used to
+    recount the attributes from the title instead, and the title of a break
+    slot still says "auto refractor /99". A group-break slot became the top
+    card in the email, described as "rookie card, autograph, serial
+    numbered". A break slot is not a card you receive at all."""
+
+    def _rejected(self, title):
+        # Exactly what the pipeline hands the report for a rejected listing:
+        # a full card_identity, and an empty verdict.
+        deal = carded(title, 30.0)
+        deal.desirable_attributes = ()
+        deal.is_opportunity = False
+        return deal
+
+    def test_a_break_slot_is_not_a_cool_card(self):
+        deal = self._rejected("Kyle Teel 2024 Bowman Chrome Auto Refractor /99 RC BREAK SLOT 1")
+        assert report.classify_sections([deal])[report.SECTION_COOL_CARDS] == []
+
+    def test_a_lot_is_not_a_cool_card(self):
+        deal = self._rejected("Caleb Williams 2024 Topps Chrome Auto Refractor /99 RC LOT OF 5")
+        assert report.classify_sections([deal])[report.SECTION_COOL_CARDS] == []
+
+    def test_a_custom_is_not_a_cheap_find(self):
+        deal = self._rejected("Caleb Williams 2024 Topps Chrome Auto RC CUSTOM ART CARD")
+        deal.price = 4.0
+        sections = report.classify_sections([deal], cheap_find_ceiling=15.0)
+        assert sections[report.SECTION_CHEAP_FINDS] == []
+
+    def test_a_rejected_young_core_card_is_not_promoted_either(self):
+        deal = self._rejected("Caleb Williams 2024 Topps Chrome Auto Refractor /99 RC LOT OF 5")
+        deal.player_tier = "young_core"
+        assert report.classify_sections([deal])[report.SECTION_INVESTMENT] == []
+
+    def test_the_block_never_describes_attributes_the_pipeline_did_not_settle(self):
+        deal = self._rejected("Kyle Teel 2024 Bowman Chrome Auto Refractor /99 RC BREAK SLOT 1")
+        assert "What it is" not in report._interest_block(1, deal)
+
+    def test_an_accepted_card_is_unaffected(self):
+        deal = carded(AUTO, 42.0)
+        assert report.classify_sections([deal])[report.SECTION_COOL_CARDS] == [deal]
+
+
+class TestTheBrowseSectionsDoNotSwallowAValuation:
+    """COOL CARDS, CHEAP FINDS and YOUNG CORE print no market value, no
+    discount and no confidence -- that is what makes them safe, and it makes
+    them the wrong home for a card that HAS a comp worth standing behind.
+    They sit above WATCH and PRICE DROPS in the order, so without a guard a
+    card 70% under market against a flag-eligible exact comp was claimed as
+    a cool card and printed with none of that, under a header reading "No
+    deal today: nothing had a comp CardPro will stand behind"."""
+
+    def _standout(self, **overrides):
+        deal = carded(AUTO, 60.0, **overrides)
+        return deal
+
+    def test_a_flag_eligible_comp_keeps_the_card_out_of_cool_cards(self):
+        deal = self._standout(
+            comp_match=make_match(level="exact", confidence="low", median=200.0),
+            market_value=200.0, pct_under_market=70.0, dollar_savings=140.0,
+        )
+        sections = report.classify_sections([deal], threshold_pct=30)
+        assert sections[report.SECTION_COOL_CARDS] == []
+        assert sections[report.SECTION_WATCH] == [deal]
+
+    def test_and_the_numbers_actually_print(self):
+        deal = self._standout(
+            comp_match=make_match(level="exact", confidence="low", median=200.0),
+            market_value=200.0, pct_under_market=70.0, dollar_savings=140.0,
+        )
+        body = flat(body_of([deal]))
+        assert "70.0%" in body
+        assert "No deal today" not in body
+
+    def test_a_price_drop_is_not_swallowed_either(self):
+        deal = self._standout(
+            comp_match=None, market_value=None, pct_under_market=None, dollar_savings=None,
+            is_price_drop=True, previous_price=80.0,
+        )
+        deal.price = 45.0
+        sections = report.classify_sections([deal])
+        assert sections[report.SECTION_COOL_CARDS] == []
+        # NEEDS REVIEW claims it -- a dropped card usually has no comp worth
+        # standing behind, which is exactly what puts it there. What matters
+        # is that the drop itself is still printed wherever it lands.
+        assert sections[report.SECTION_NEEDS_REVIEW] == [deal]
+        assert "was $80.00 -> now $45.00" in flat(body_of([deal]))
+
+    def test_a_context_only_comp_does_not_count_as_a_valuation(self):
+        # The whole point of the browse sections: these cards have no number
+        # anyone can stand behind, and that is the normal case.
+        deal = self._standout(
+            comp_match=make_match(flag_eligible=False, blocked=("context_only_level",)),
+            market_value=200.0,
+        )
+        assert report.classify_sections([deal])[report.SECTION_COOL_CARDS] == [deal]
+
+
+class TestNoNumberSurvivesTheSuppression:
+    """Suppressing the discount and the ROI while leaving the median they
+    were derived from was half a fix: "Market $44.00" was the most prominent
+    thing on the card, immediately contradicted by "CardPro has no valuation
+    for this card" on the line below."""
+
+    def test_the_median_is_withheld_on_a_context_only_level(self):
+        text = report._market_text(context_only_deal())
+        assert "$44.00" not in text
+        assert "not established" in text
+
+    def test_the_range_survives_because_it_is_a_fact_about_a_spread(self):
+        # "Other copies are listed between $25 and $99" is not a valuation
+        # of this card, and dropping it would lose real information.
+        text = report._market_text(context_only_deal())
+        assert "range $25.00-$99.00" in text
+
+    def test_a_flag_eligible_comp_still_prints_its_median(self):
+        assert "$200.00" in report._market_text(make_listing())
+
+    def test_the_rendered_card_holds_no_contradiction(self):
+        body = flat(body_of([context_only_deal()]))
+        assert "CardPro has no valuation for this card" in body
+        assert "$44.00" not in body
+
+
+class TestTheAssumptionsFooterOnlyAppearsWithFigures:
+    """Its own docstring says it exists to stop "every profit figure above
+    rests on these" appearing above zero profit figures. Two later changes
+    put it back there: a context-only comp prints no Economics line, and a
+    browse section prints none at all."""
+
+    def test_a_context_only_card_does_not_summon_it(self):
+        deal = context_only_deal()
+        deal.economics = make_economics()
+        assert "ECONOMICS ASSUMPTIONS" not in body_of([deal])
+
+    def test_a_browse_card_does_not_either(self):
+        deal = carded(AUTO, 42.0)
+        deal.economics = make_economics()
+        assert "ECONOMICS ASSUMPTIONS" not in body_of([deal])
+
+    def test_a_card_that_does_print_figures_still_summons_it(self):
+        deal = make_listing()
+        deal.economics = make_economics()
+        assert "ECONOMICS ASSUMPTIONS" in body_of([deal])
+
+
+class TestATargetHitIsNotPrintedTwiceInFull:
+    def test_a_standout_target_points_at_its_first_block(self):
+        # The cross-reference covered only WATCH, NEEDS REVIEW and PRICE
+        # DROPS, so a target hit that was also a standout printed nine lines
+        # twice and was counted twice in the summary line.
+        deal = carded(AUTO, 42.0)
+        deal.target_hit = SimpleNamespace(
+            label="BUY ZONE", in_buy_zone=True, threshold=50.0, price_known=True,
+            target=SimpleNamespace(label="PCA auto"),
+        )
+        body = body_of([deal])
+        later = body[body.index("COOL CARDS"):]
+        assert "shown above under TARGET CARD HITS" in later
+        assert "Cost" not in later
+
+
+class TestBrowseSectionsWithAFlagEligibleCompNearby:
+    """The rule is "no market value, no discount, no ROI, EVEN WHEN a comp
+    exists". Every earlier test of it built its fixture with
+    flag_eligible=False, so the interesting half was never exercised -- and
+    a flag-eligible comp is now what keeps a card OUT of these sections
+    entirely, which is a different guarantee and worth pinning separately."""
+
+    def test_a_sold_basis_comp_moves_the_card_out_rather_than_being_printed(self):
+        deal = carded(AUTO, 42.0)
+        deal.comp_match = make_match(level="exact", confidence="high", median=200.0)
+        deal.market_value = 200.0
+        deal.dollar_savings = 150.0
+        deal.pct_under_market = 75.0
+        sections = report.classify_sections([deal], threshold_pct=30)
+        assert sections[report.SECTION_COOL_CARDS] == []
+        # WATCH rather than DEALS, because is_opportunity is the pipeline's
+        # call and this fixture does not set it. What matters is that it
+        # landed somewhere the number prints.
+        assert sections[report.SECTION_WATCH] == [deal]
+        assert "75.0%" in flat(body_of([deal]))
+
+    def test_and_if_one_is_rendered_anyway_it_still_prints_no_price(self):
+        # Belt and braces: the block itself must not depend on the
+        # classification to keep its promise.
+        deal = carded(AUTO, 42.0)
+        deal.comp_match = make_match(level="exact", confidence="high", median=200.0)
+        deal.market_value = 200.0
+        deal.dollar_savings = 150.0
+        deal.pct_under_market = 75.0
+        deal.economics = make_economics()
+        block = report._interest_block(1, deal)
+        assert "Market" not in block
+        assert "Discount" not in block
+        assert "ROI" not in block

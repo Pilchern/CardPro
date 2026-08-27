@@ -10,6 +10,7 @@ mocked.
 """
 from __future__ import annotations
 
+import argparse
 import importlib
 import json
 import logging
@@ -29,6 +30,7 @@ from src import (
     main as main_module,
     matcher,
     observability,
+    price_history,
     reasons,
 )
 from src.models import Listing
@@ -823,3 +825,289 @@ class TestSoldCompsWiring:
         from src import sold_comps
 
         assert sold_comps.load(tmp_path / "nope.json") == []
+
+
+class TestOneCardHasOneAcquisitionCost:
+    """dollar_savings was computed against Listing.total_cost (no sales tax)
+    while economics used Acquisition.total_cost (with it). At any non-zero
+    sales_tax_pct one card block printed two different totals -- a Cost line
+    saying $32.50 above a profit figure whose arithmetic only works at
+    $35.10. Latent at the shipped 0.0, and settings.json explicitly invites
+    tuning it."""
+
+    def _evaluated(self, sales_tax_pct):
+        listing = make_listing(EXACT_TITLE, 28.0, shipping_price=4.50)
+        stats = observability.RunStats()
+        main_module.evaluate_listings(
+            [listing],
+            engine_for(spread_observations(72.0)),
+            fake_cfg(sales_tax_pct=sales_tax_pct),
+            stats,
+        )
+        return listing
+
+    def test_the_discount_and_the_economics_agree_with_tax_on(self):
+        listing = self._evaluated(8.0)
+        assert listing.dollar_savings == pytest.approx(
+            listing.economics.estimated_market_value - listing.economics.acquisition_cost
+        )
+
+    def test_tax_makes_the_discount_smaller_not_unchanged(self):
+        with_tax = self._evaluated(8.0)
+        without = self._evaluated(0.0)
+        assert with_tax.dollar_savings < without.dollar_savings
+
+
+# ---------------------------------------------------------------------------
+# run() end to end
+#
+# Everything above tests a stage. Nothing tested the function that wires the
+# stages together -- the one that reads the inbox, values, dedupes, renders,
+# emails and writes state, and the only one a production run actually calls.
+# The two project fixtures at the top of this file existed for it and had no
+# callers.
+# ---------------------------------------------------------------------------
+
+
+class TestRunEndToEnd:
+    def _args(self, dry_run=False):
+        return argparse.Namespace(dry_run=dry_run)
+
+    def _wire(self, main_module, monkeypatch, items, sent):
+        """Fake the two network edges -- IMAP in, SMTP out -- and nothing
+        else. Everything between them is the real pipeline."""
+        def fake_fetch(gmail_address, gmail_app_password, sender_contains,
+                       lookback_days, mailbox=None, counters=None):
+            if counters is not None:
+                counters["messages"] = 1 if items else 0
+            return items
+
+        monkeypatch.setattr(main_module.ebay_email_alerts, "fetch_alert_listings", fake_fetch)
+        monkeypatch.setattr(
+            main_module.emailer, "send_email",
+            lambda subject, body, *rest: sent.append((subject, body)),
+        )
+
+    def test_a_run_reads_the_inbox_and_sends_one_email(self, project_with_alerts_enabled, monkeypatch):
+        sent = []
+        self._wire(
+            project_with_alerts_enabled, monkeypatch,
+            [alert_item("https://www.ebay.com/itm/1", 25.0)], sent,
+        )
+        project_with_alerts_enabled.run(self._args())
+        assert len(sent) == 1
+        subject, body = sent[0]
+        assert subject.startswith("[Card Deals]")
+        assert "CARDPRO DAILY" in body
+
+    def test_state_is_written_after_the_email_not_before(self, project_with_alerts_enabled,
+                                                         monkeypatch, tmp_path):
+        # If SMTP fails, nothing may be marked as reported-when-it-was-not.
+        def explode(*_args, **_kwargs):
+            raise RuntimeError("smtp down")
+
+        main_module = project_with_alerts_enabled
+        self._wire(main_module, monkeypatch, [alert_item("https://www.ebay.com/itm/1", 25.0)], [])
+        monkeypatch.setattr(main_module.emailer, "send_email", explode)
+        with pytest.raises(RuntimeError):
+            main_module.run(self._args())
+        assert not (tmp_path / "data" / "seen_listings.json").exists()
+
+    def test_a_dry_run_writes_no_state_and_sends_nothing(self, project_with_alerts_enabled,
+                                                         monkeypatch, tmp_path, capsys):
+        sent = []
+        self._wire(
+            project_with_alerts_enabled, monkeypatch,
+            [alert_item("https://www.ebay.com/itm/1", 25.0)], sent,
+        )
+        project_with_alerts_enabled.run(self._args(dry_run=True))
+        assert sent == []
+        assert "CARDPRO DAILY" in capsys.readouterr().out
+        assert not (tmp_path / "data" / "ebay_alert_price_history.json").exists()
+
+    def test_an_empty_inbox_still_sends_a_report(self, project_with_alerts_enabled, monkeypatch):
+        # "Never go silent" is a design principle, not a nicety.
+        sent = []
+        self._wire(project_with_alerts_enabled, monkeypatch, [], sent)
+        project_with_alerts_enabled.run(self._args())
+        assert len(sent) == 1
+        assert "NOTHING CLEARED THE BAR TODAY." in sent[0][1]
+
+    def test_the_corpus_survives_a_second_run(self, project_with_alerts_enabled,
+                                              monkeypatch, tmp_path):
+        main_module = project_with_alerts_enabled
+        corpus = tmp_path / "data" / "ebay_alert_price_history.json"
+
+        self._wire(main_module, monkeypatch, [alert_item("https://www.ebay.com/itm/1", 25.0)], [])
+        main_module.run(self._args())
+        first = json.loads(corpus.read_text())
+
+        self._wire(main_module, monkeypatch, [alert_item("https://www.ebay.com/itm/2", 30.0)], [])
+        main_module.run(self._args())
+        second = json.loads(corpus.read_text())
+
+        # The second day must ADD to the corpus, not replace it. This is the
+        # shape of the failure that would silently reset months of history.
+        first_ids = {o["id"] for rows in first.values() for o in rows}
+        second_ids = {o["id"] for rows in second.values() for o in rows}
+        assert first_ids and first_ids < second_ids
+
+    def test_a_corrupt_corpus_aborts_the_run_and_is_left_alone(self, project_with_alerts_enabled,
+                                                               monkeypatch, tmp_path):
+        # The whole point of raising instead of starting fresh: the run stops
+        # before save() can replace the unreadable file with one day of data,
+        # and before the workflow can commit that over it.
+        main_module = project_with_alerts_enabled
+        corpus = tmp_path / "data" / "ebay_alert_price_history.json"
+        corpus.parent.mkdir(parents=True, exist_ok=True)
+        corpus.write_text("{not valid json")
+
+        sent = []
+        self._wire(main_module, monkeypatch, [alert_item("https://www.ebay.com/itm/1", 25.0)], sent)
+        with pytest.raises(price_history.CorruptCorpus):
+            main_module.run(self._args())
+        assert corpus.read_text() == "{not valid json"
+        assert sent == []
+
+    def test_the_template_canary_reaches_the_email(self, project_with_alerts_enabled, monkeypatch):
+        # The highest-value alarm in the system, and it used to exist only in
+        # a log file on a runner that gets deleted.
+        main_module = project_with_alerts_enabled
+
+        def fake_fetch(*_args, counters=None, **_kwargs):
+            if counters is not None:
+                counters["messages"] = 14
+                counters["template_warning"] = "eBay changed their email template"
+            return []
+
+        sent = []
+        monkeypatch.setattr(main_module.ebay_email_alerts, "fetch_alert_listings", fake_fetch)
+        monkeypatch.setattr(
+            main_module.emailer, "send_email",
+            lambda subject, body, *rest: sent.append((subject, body)),
+        )
+        main_module.run(self._args())
+        subject, body = sent[0]
+        assert "CHECK THIS" in subject
+        assert "eBay changed their email template" in body
+
+
+class TestSearchCoverageEvidence:
+    """What gets recorded here is what makes a suggestion stop being
+    suggested. Under-recording means being nagged forever to create a search
+    you already have."""
+
+    def _observed(self, *titles, **overrides):
+        listings = [make_listing(t, 25.0, listing_id=str(i), **overrides)
+                    for i, t in enumerate(titles)]
+        captured = {}
+
+        def capture(players, observed, *args, **kwargs):
+            captured.update(observed)
+            return {}
+
+        cfg = fake_cfg()
+        with mock.patch.object(main_module.search_terms, "coverage_gaps", capture):
+            main_module.build_search_suggestions(cfg, listings)
+        return captured
+
+    def test_the_grader_is_recorded_by_name(self):
+        # "psa" for every slab marked a BGS card as PSA coverage, so the PSA
+        # suggestion went away on evidence that was about a different grader.
+        observed = self._observed("2024 Panini Prizm Caleb Williams #301 BGS 9.5")
+        assert "bgs" in observed["Caleb Williams"]
+        assert "psa" not in observed["Caleb Williams"]
+
+    def test_the_grade_is_recorded_alongside_the_grader(self):
+        observed = self._observed("2024 Panini Prizm Caleb Williams #301 PSA 10")
+        assert "psa 10" in observed["Caleb Williams"]
+
+    def test_an_unreadable_slab_still_counts_as_graded_evidence(self):
+        listings = [make_listing("2024 Panini Prizm Caleb Williams #301", 25.0)]
+        listings[0].card_type = "graded"
+        listings[0].grader = None
+        captured = {}
+        with mock.patch.object(
+            main_module.search_terms, "coverage_gaps",
+            lambda players, observed, *a, **k: captured.update(observed) or {},
+        ):
+            main_module.build_search_suggestions(fake_cfg(), listings)
+        assert captured["Caleb Williams"]
+
+    def test_the_set_is_recorded_so_product_queries_can_be_satisfied(self):
+        # The generator suggests product queries; without this they could
+        # never be marked covered by anything.
+        observed = self._observed("2024 Panini Prizm Caleb Williams Silver Prizm #301")
+        assert "prizm" in observed["Caleb Williams"]
+
+    def test_numbering_and_autographs_are_recorded(self):
+        observed = self._observed("2024 Topps Chrome Caleb Williams Auto #150 /99")
+        assert "auto" in observed["Caleb Williams"]
+        assert "/99" in observed["Caleb Williams"]
+
+    def test_a_plain_raw_card_records_nothing_to_go_on(self):
+        observed = self._observed("2024 Topps Caleb Williams")
+        assert not observed.get("Caleb Williams")
+
+
+class TestTheRunMarker:
+    """A dropped scheduled run was the one failure nothing here could see --
+    no email, no failure notification, no red job. The backup run reads this
+    marker to decide whether the day still needs scanning."""
+
+    def _args(self, **overrides):
+        fields = dict(dry_run=False, skip_if_ran_today=False)
+        fields.update(overrides)
+        return argparse.Namespace(**fields)
+
+    def _wire(self, main_module, monkeypatch, sent):
+        monkeypatch.setattr(
+            main_module.ebay_email_alerts, "fetch_alert_listings",
+            lambda *a, counters=None, **k: (
+                counters.update(messages=1) if counters is not None else None,
+                [alert_item("https://www.ebay.com/itm/1", 25.0)],
+            )[1],
+        )
+        monkeypatch.setattr(
+            main_module.emailer, "send_email",
+            lambda subject, body, *rest: sent.append((subject, body)),
+        )
+
+    def test_a_completed_run_records_the_day(self, project_with_alerts_enabled,
+                                             monkeypatch, tmp_path):
+        main_module = project_with_alerts_enabled
+        self._wire(main_module, monkeypatch, [])
+        main_module.run(self._args())
+        marker = json.loads((tmp_path / "data" / "last_run.json").read_text())
+        assert marker["date"] == datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    def test_a_dry_run_records_nothing(self, project_with_alerts_enabled, monkeypatch, tmp_path):
+        main_module = project_with_alerts_enabled
+        self._wire(main_module, monkeypatch, [])
+        main_module.run(self._args(dry_run=True))
+        assert not (tmp_path / "data" / "last_run.json").exists()
+
+    def test_a_failed_send_records_nothing(self, project_with_alerts_enabled,
+                                           monkeypatch, tmp_path):
+        # The marker's one job is to answer "did today's scan complete".
+        # Writing it before the send would let a failed send record a run
+        # that never reached anybody -- and the backup would then skip.
+        main_module = project_with_alerts_enabled
+        self._wire(main_module, monkeypatch, [])
+        monkeypatch.setattr(
+            main_module.emailer, "send_email",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("smtp down")),
+        )
+        with pytest.raises(RuntimeError):
+            main_module.run(self._args())
+        assert not (tmp_path / "data" / "last_run.json").exists()
+
+    def test_the_gap_reaches_the_health_footer(self, project_with_alerts_enabled,
+                                               monkeypatch, tmp_path):
+        main_module = project_with_alerts_enabled
+        (tmp_path / "data").mkdir(parents=True, exist_ok=True)
+        main_module.run_marker.save(tmp_path / "data" / "last_run.json", "2020-01-01", 5)
+        sent = []
+        self._wire(main_module, monkeypatch, sent)
+        main_module.run(self._args())
+        assert "since the last completed scan" in sent[0][1]

@@ -21,7 +21,13 @@ def listing_for(title, price=5.0, **overrides):
         is_rookie_card=matcher.detect_rookie_card(title),
     )
     fields.update(overrides)
-    return Listing(**fields)
+    listing = Listing(**fields)
+    # main.evaluate_listings fills this in before anything reads it, and it
+    # is deliberately left empty for a listing the pipeline rejected -- so a
+    # fixture that skips it is testing a listing that cannot exist.
+    if "desirable_attributes" not in overrides:
+        listing.desirable_attributes = desirability.attributes_of(listing)
+    return listing
 
 
 class TestAttributes:
@@ -48,6 +54,18 @@ class TestAttributes:
         attrs = desirability.attributes_of(listing_for("2024 National Treasures Caleb Williams Patch"))
         assert desirability.PATCH in attrs
         assert desirability.MEMORABILIA not in attrs
+
+    def test_a_relic_that_is_not_a_patch_is_still_memorabilia(self):
+        # The patch and memorabilia arms are one if/elif, so a change that let
+        # the patch arm swallow both would leave a plain jersey relic with no
+        # attribute at all -- and a cheap one would then read as commodity and
+        # be thrown out as a base common. That is the whole cheap-card gate
+        # firing on a card that is the opposite of commodity.
+        relic = listing_for("2024 Panini Absolute Caleb Williams Game-Used Jersey Relic", price=6.0)
+        attrs = desirability.attributes_of(relic)
+        assert desirability.MEMORABILIA in attrs
+        assert desirability.PATCH not in attrs
+        assert desirability.is_commodity(relic, 10.0) is False
 
     def test_plain_base_card_has_no_attributes(self):
         assert desirability.attributes_of(listing_for("Caleb Williams 2024 Panini card")) == ()
@@ -90,3 +108,51 @@ class TestDescribe:
 
     def test_empty_when_there_are_none(self):
         assert desirability.describe(()) == ""
+
+
+# ---------------------------------------------------------------------------
+# Interest ranking
+#
+# This orders a list. It is never a price, a discount or a score, and the
+# tests below are about relative order rather than any absolute number --
+# asserting a specific total would turn a ranking hint into a contract.
+# ---------------------------------------------------------------------------
+
+
+class TestInterestScore:
+    def test_a_signed_numbered_rookie_outranks_a_graded_base_parallel(self):
+        signed = listing_for("2024 Panini Prizm Caleb Williams Auto RC #301 /99")
+        graded = listing_for("2024 Panini Prizm Caleb Williams Silver Prizm #301 PSA 9")
+        assert desirability.interest_score(signed) > desirability.interest_score(graded)
+
+    def test_scarcity_compounds(self):
+        one_of_one = listing_for("2024 Panini Prizm Caleb Williams Gold Vinyl #301 1/1")
+        of_499 = listing_for("2024 Panini Prizm Caleb Williams Gold #301 /499")
+        assert desirability.interest_score(one_of_one) > desirability.interest_score(of_499)
+
+    def test_a_base_common_scores_nothing(self):
+        assert desirability.interest_score(listing_for("2024 Topps Caleb Williams #150")) == 0
+
+    def test_a_listing_with_no_identity_does_not_crash(self):
+        assert desirability.interest_score(listing_for("x", card_identity=None)) == 0
+
+
+class TestIsStandout:
+    def test_one_strong_attribute_is_enough(self):
+        # An autograph is an autograph whatever else is true of the listing.
+        assert desirability.is_standout(listing_for("2024 Topps Chrome Caleb Williams Auto"))
+
+    def test_one_common_attribute_is_not(self):
+        # A bare parallel describes most of the hobby, and a section that
+        # prints most of the hobby is the pile the reader is already in.
+        assert not desirability.is_standout(
+            listing_for("2024 Panini Prizm Caleb Williams Silver Prizm #301", is_rookie_card=False)
+        )
+
+    def test_two_common_attributes_are(self):
+        assert desirability.is_standout(
+            listing_for("2024 Panini Prizm Caleb Williams Silver Prizm RC #301")
+        )
+
+    def test_a_base_common_is_not(self):
+        assert not desirability.is_standout(listing_for("2024 Topps Caleb Williams #150"))

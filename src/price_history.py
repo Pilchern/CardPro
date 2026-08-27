@@ -33,6 +33,10 @@ itself; older observations recorded before these fields existed simply
 don't have them, and fall back to matching only at the price_tier level.
 
 Plain JSON on disk, same pattern as dedupe.py -- easy to open and inspect.
+
+Reading a corpus that exists but cannot be parsed RAISES rather than starting
+fresh -- see CorruptCorpus. That is the difference between losing a day and
+losing six months.
 """
 from __future__ import annotations
 
@@ -47,18 +51,68 @@ from src import comps
 logger = logging.getLogger(__name__)
 
 
+class CorruptCorpus(Exception):
+    """The corpus file exists but could not be read.
+
+    Raised rather than swallowed, and this is the whole point. The previous
+    behaviour returned {} with a warning saying "old file left in place" --
+    which was true for about thirty seconds, until save() atomically replaced
+    the unreadable file with the day's ~400 observations and the workflow
+    committed the wipe to the repo. Months of corpus, gone, with the only
+    evidence a log line on a runner GitHub deletes minutes later.
+
+    Failing loudly instead means the run aborts, main's handler emails the
+    traceback, and the workflow's `git diff --cached --quiet` finds nothing
+    to commit. The file survives to be repaired by hand.
+    """
+
+
 def load(path: Path) -> dict:
+    """The stored corpus. A missing file is the normal first run and gives {}.
+
+    An UNREADABLE file is not normal and raises -- see CorruptCorpus.
+    """
     if not path.exists():
         return {}
     try:
         with open(path) as f:
             return json.load(f)
-    except json.JSONDecodeError:
-        logger.warning("%s is corrupt, starting fresh (old file left in place)", path)
-        return {}
+    except json.JSONDecodeError as exc:
+        raise CorruptCorpus(
+            "{} exists but is not valid JSON ({}). Refusing to continue, because "
+            "the next save would overwrite it with today's data alone. Repair or "
+            "move the file, then re-run.".format(path, exc)
+        ) from exc
+
+
+def _observation_count(history: dict) -> int:
+    return sum(len(entries) for entries in history.values() if isinstance(entries, list))
 
 
 def save(path: Path, history: dict) -> None:
+    """Write the corpus, unless doing so would empty a corpus that has data.
+
+    Nothing in the pipeline has a legitimate reason to reduce the corpus to
+    nothing: record() only appends, and prune_old() drops observations past
+    the retention window, which cannot empty a corpus that is being written
+    to daily. So an empty document arriving here means something upstream
+    lost the data, and writing it would turn a recoverable in-memory bug into
+    an unrecoverable on-disk one.
+
+    A shrink that is not a wipe is allowed through deliberately: that is what
+    pruning looks like, and second-guessing it here would mean encoding the
+    retention policy in two places.
+    """
+    if not _observation_count(history) and path.exists():
+        existing = _observation_count(load(path))
+        if existing:
+            raise CorruptCorpus(
+                "Refusing to overwrite {} ({} observation(s)) with an empty corpus. "
+                "Nothing in the pipeline empties the corpus, so this is a bug "
+                "upstream, and writing it would make the loss permanent.".format(
+                    path, existing
+                )
+            )
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_suffix(".json.tmp")
     with open(tmp_path, "w") as f:
@@ -81,6 +135,9 @@ def record(
     grade: Optional[str] = None,
     qualifier: Optional[str] = None,
     print_run: Optional[int] = None,
+    manufacturer: Optional[str] = None,
+    is_base: Optional[bool] = None,
+    title: str = "",
     basis: str = "asking",
 ) -> None:
     """Appends one price observation to the corpus.
@@ -92,6 +149,9 @@ def record(
     asking price as sold would let a seller's wishful number masquerade as
     market truth.
 
+    `manufacturer` is stored for future analysis rather than for today's
+    lookup -- see the comment at the field itself.
+
     `qualifier` is a grade qualifier such as "OC" (off-centre). A qualified
     slab is a materially different market from an unqualified one at the same
     numeric grade, so it is stored separately rather than folded in.
@@ -99,24 +159,120 @@ def record(
     Auctions must NOT be recorded here: a current bid is not a price. The
     caller is responsible for that filter (see main.record_observations),
     since only the caller knows the listing type.
+
+    ONE ROW PER LISTING. Seeing the same listing again updates that row's
+    price and leaves its date alone; it does not append a second row. Both
+    halves of that matter:
+
+    * The date stays at first-sighting because that is when the ask entered
+      the market. Re-stamping it each morning made one batch of listings look
+      like several days of independent readings, which is precisely what
+      ``comps._is_concentrated`` exists to refuse -- and with a lookback
+      window that overlaps consecutive runs, a single morning's alert email
+      was spreading itself across three or four apparent dates. Measured on
+      the live corpus: 28 Kyle Teel listings, all first seen on one day,
+      stored under four distinct dates.
+    * Not appending keeps the file honest about its own size. The same corpus
+      held 2,099 rows for 906 distinct listings -- 57% of it duplicates that
+      ``deduped_observations`` threw away on every single read.
+
+    A listing whose price changed keeps the newer price: that is the ask a
+    buyer faces today. Only eight listings in the measured corpus ever
+    changed price, so this is a correctness detail rather than a common path.
     """
     key = f"{player}|{card_type}"
-    history.setdefault(key, []).append(
-        {
-            "price": price,
-            "date": today,
-            "id": listing_id,
-            "year": year,
-            "set_name": set_name,
-            "parallel": parallel,
-            "card_number": card_number,
-            "grader": grader,
-            "grade": grade,
-            "qualifier": qualifier,
-            "print_run": print_run,
-            "basis": basis,
-        }
-    )
+    entries = history.setdefault(key, [])
+    observation = {
+        "price": price,
+        "date": today,
+        "id": listing_id,
+        "year": year,
+        "set_name": set_name,
+        "parallel": parallel,
+        "card_number": card_number,
+        "grader": grader,
+        "grade": grade,
+        "qualifier": qualifier,
+        "print_run": print_run,
+        # Recorded but not yet used in any bucket key. The corpus is the only
+        # durable artefact this project has -- titles are not stored -- so a
+        # field extracted today and thrown away is permanently unrecoverable
+        # for tomorrow's analysis. Manufacturer is what would separate a
+        # Topps "Instant" from a Panini "Instant", which currently share a
+        # bucket. CompEngine._prepare ignores keys it does not know.
+        "manufacturer": manufacturer,
+        # Recorded, not yet keyed on -- see card_identity._extract_is_base.
+        # True means "the title says this is the base card"; None means
+        # unknown, which is what parallel=None has always meant and is
+        # exactly the ambiguity this field exists to split apart.
+        "is_base": is_base,
+        # The raw title, from which every field above was derived.
+        #
+        # Storing it is what makes extraction improvable. Every identity
+        # field here is the output of a parser that is demonstrably
+        # incomplete -- set_name resolves for about a sixth of listings --
+        # and without the input, a change to that parser cannot be measured
+        # against anything except invented examples. The corpus is the only
+        # durable artefact this project has; a title not captured today is
+        # not recoverable tomorrow, because the listing will be gone.
+        #
+        # It costs roughly 90 bytes a row, which at the current rate of ~150
+        # new listings a day and the 180-day retention window is a few
+        # megabytes of committed JSON. That is a real cost and it buys the
+        # only path to measuring the thing that is currently blocking two
+        # thirds of all valuations. If it becomes a problem, shortening
+        # price_history_max_age_days is the lever -- at half_life_days=30 an
+        # observation at day 180 already carries under 2% of a fresh one's
+        # weight.
+        "title": title,
+        "basis": basis,
+    }
+    if listing_id:
+        for existing in entries:
+            if existing.get("id") == listing_id:
+                first_seen = existing.get("date") or today
+                existing.update(observation)
+                existing["date"] = first_seen
+                return
+    entries.append(observation)
+
+
+def collapse_duplicates(history: dict) -> dict:
+    """One row per listing id, for a corpus recorded before record() deduped.
+
+    Same rule record() now applies: earliest date, latest price. Rows with no
+    id pre-date that field and cannot be collapsed, so they are kept as they
+    are and age out through prune_old.
+
+    Kept as an explicit function rather than something load() does silently,
+    because it rewrites stored data and that should be a decision someone
+    made, not a side effect of reading a file.
+    """
+    collapsed: dict = {}
+    for key, entries in history.items():
+        by_id: dict = {}
+        order: list = []
+        kept: list = []
+        for obs in entries:
+            listing_id = obs.get("id")
+            if not listing_id:
+                kept.append(obs)
+                continue
+            prior = by_id.get(listing_id)
+            if prior is None:
+                merged = dict(obs)
+                by_id[listing_id] = merged
+                order.append(listing_id)
+                continue
+            first_seen = min(
+                d for d in (prior.get("date"), obs.get("date")) if d
+            ) if (prior.get("date") or obs.get("date")) else None
+            latest = prior if (prior.get("date") or "") >= (obs.get("date") or "") else obs
+            merged = dict(latest)
+            merged["date"] = first_seen
+            by_id[listing_id] = merged
+        collapsed[key] = [by_id[i] for i in order] + kept
+    return collapsed
 
 
 def prune_old(history: dict, max_age_days: int, today: datetime) -> dict:

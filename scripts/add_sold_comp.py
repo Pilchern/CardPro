@@ -6,9 +6,16 @@ is work. Editing JSON by hand at the end of that work -- after looking the
 card up on 130point.com -- is exactly the kind of friction that stops the
 habit. This is a one-liner instead:
 
-    python -m scripts.add_sold_comp --player "Caleb Williams" --year 2024 \\
-        --set Prizm --parallel Silver --card-number 301 --grader PSA \\
-        --grade 10 --price 348 --date 2026-08-15 --source 130point
+    python -m scripts.add_sold_comp \\
+        --from-title "2024 Panini Prizm Caleb Williams Silver Prizm #301 PSA 10" \\
+        --price 348 --date 2026-08-15
+
+Paste the title, type the two things only you know -- what it sold for and
+when -- and CardPro reads the rest with the same parser the daily scan uses.
+That last part is the point: a comp entered this way is keyed exactly the way
+the listings it will be matched against are keyed, and a hand-typed "Silver"
+against an extracted "Silver Prizm" is a comp that silently never matches.
+Every field is still available as a flag, and an explicit flag always wins.
 
 It validates BEFORE writing and refuses rather than saving something the
 loader would later skip: a file that quietly contains entries which never
@@ -31,7 +38,36 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src import sold_comps  # noqa: E402
+from src import card_identity, matcher, sold_comps  # noqa: E402
+
+
+def identity_from_title(title: str) -> dict:
+    """Read a sale's identity out of a pasted listing title.
+
+    Eleven flags per entry is why config/sold_comps.json has been empty since
+    the day it was created. The identity is already written on the listing,
+    and this project already has a parser for it -- the same one the daily
+    scan uses, so a comp entered this way is keyed exactly the way the
+    listings it will be matched against are keyed. That last part matters
+    more than the typing saved: a hand-typed "Silver" against an extracted
+    "Silver Prizm" is a comp that silently never matches anything.
+
+    Everything it could not read comes back absent, and the caller prints
+    what it did read so a wrong reading is caught before it is written --
+    a wrong sold comp is worse than no sold comp (src/sold_comps.py).
+    """
+    identity = card_identity.extract_card_identity(title)
+    grade_info = matcher.detect_grade_details(title)
+    read = {
+        "year": identity.year.value,
+        "set_name": identity.set_name.value,
+        "parallel": identity.parallel.value,
+        "card_number": identity.card_number.value,
+        "grader": grade_info.grader,
+        "grade": grade_info.grade,
+        "qualifier": grade_info.qualifier,
+    }
+    return {key: value for key, value in read.items() if value is not None}
 
 
 def build_sale(args: argparse.Namespace) -> dict:
@@ -56,6 +92,18 @@ def build_sale(args: argparse.Namespace) -> dict:
     return {key: value for key, value in fields if value is not None}
 
 
+def _watchlist_players() -> list:
+    """Watchlist names, so --from-title can resolve the player too. A config
+    that cannot be read is not fatal here -- pass --player instead."""
+    try:
+        import json
+
+        raw = json.loads((Path(__file__).resolve().parent.parent / "config" / "watchlist.json").read_text())
+        return list(raw.get("players") or [])
+    except Exception:  # noqa: BLE001 -- any failure means "pass --player"
+        return []
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m scripts.add_sold_comp",
@@ -63,7 +111,14 @@ def build_parser() -> argparse.ArgumentParser:
         epilog="Look sales up on 130point.com. Enter the price you actually saw, "
         "for the exact card. A wrong sold comp is worse than none.",
     )
-    parser.add_argument("--player", required=True, help="Player name, spelled as on the watchlist.")
+    parser.add_argument(
+        "--from-title",
+        dest="from_title",
+        help="Paste the listing title and let CardPro read the identity out of it "
+        "(the same parser the daily scan uses). Anything you also pass explicitly "
+        "wins over what it read. The extracted identity is printed before writing.",
+    )
+    parser.add_argument("--player", help="Player name, spelled as on the watchlist.")
     parser.add_argument("--price", required=True, type=float, help="Item price in USD, EXCLUDING shipping.")
     parser.add_argument("--date", required=True, help="Date the card SOLD, YYYY-MM-DD.")
     parser.add_argument("--year", type=int, help="Card year, e.g. 2024.")
@@ -88,6 +143,34 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
+
+    read = {}
+    if args.from_title:
+        read = identity_from_title(args.from_title)
+        for key, value in read.items():
+            # An explicit flag always wins: you looked at the card, the
+            # parser only looked at the title.
+            if getattr(args, key, None) in (None, ""):
+                setattr(args, key, value)
+        if args.player is None:
+            matched = matcher.match_players(args.from_title, _watchlist_players())
+            if matched:
+                args.player = matched[0]
+        print("Read from the title:")
+        for key in ("year", "set_name", "parallel", "card_number", "grader", "grade", "qualifier"):
+            print("  {:<12} {}".format(key, read.get(key, "-- not found")))
+        print("  {:<12} {}".format("player", args.player or "-- not found"))
+        print("Check that against the card before this is trusted over every asking price.")
+        print()
+
+    if not args.player:
+        print(
+            "Refusing to add this sale: no player. Pass --player, or use --from-title "
+            "with a title naming someone on your watchlist.",
+            file=sys.stderr,
+        )
+        return 2
+
     sale = build_sale(args)
 
     problem = sold_comps.validation_error(sale)
