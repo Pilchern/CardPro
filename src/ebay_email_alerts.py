@@ -85,7 +85,28 @@ DEFAULT_MAILBOX = "[Gmail]/All Mail"
 PRICE_RE = re.compile(r"\$([\d,]+(?:\.\d{2})?)")
 SHIPPING_RE = re.compile(r"\+?\s*\$([\d,]+(?:\.\d{2})?)\s*shipping", re.IGNORECASE)
 FREE_SHIPPING_RE = re.compile(r"\bfree\s+shipping\b", re.IGNORECASE)
-ITEM_URL_RE = re.compile(r"(https?://[^\s\"'<>]*?/itm/\d+)|(/itm/\d+)")
+# eBay serves the same item under several link shapes -- bare
+# (/itm/336749665825), SEO ("/itm/2024-Panini-Prizm-Caleb-Williams-RC-301/
+# 336749665825"), with a ?hash= tail, off m.ebay.com or ebay.co.uk, and
+# wrapped in a rover redirect. The identity that survives all of that is the
+# item NUMBER, so that -- not the link text -- is what CardPro keys on.
+#
+# ITEM_URL_RE only answers "is this anchor an item link?" (it scopes each
+# listing's text away from its neighbour's, and bs4 matches hrefs with it).
+# It deliberately allows one slug segment before the number, since the slug
+# is part of the same link.
+ITEM_URL_RE = re.compile(r"""/itm/(?:[^/?#\s"'<>]+/)?\d+""")
+
+# The number itself. Required to be a whole path segment of 9+ digits so a
+# slug can never masquerade as one: "/itm/2024-Panini-.../336749665825" used
+# to yield the "2024" inside the slug, which is a dead link AND collapses two
+# different cards onto one dedupe key.
+ITEM_NUMBER_RE = re.compile(r"""/itm/(?:[^/?#\s"'<>]+/)?(\d{9,})(?![^/?#\s"'<>])""")
+
+# Item numbers shorter than that predate eBay's current numbering and only
+# ever appear bare, with no slug to be confused with -- read them rather than
+# dropping a listing whose link is perfectly good.
+SHORT_ITEM_NUMBER_RE = re.compile(r"""/itm/(\d+)(?![^/?#\s"'<>])""")
 
 # --- Listing-type detection -------------------------------------------------
 # An auction's current bid is NOT a price. Treating one as a completed sale
@@ -356,20 +377,41 @@ def _fullest_title(anchor) -> tuple[str, bool]:
     return best, refused and best == visible
 
 
-def _find_item_url(href: str) -> Optional[str]:
-    """Matches eBay's stable /itm/<id> item-link pattern directly in the
-    href, and falls back to URL-decoding first -- marketing/redirect links
-    often wrap the real destination as a percent-encoded query param (e.g.
-    ...?url=https%3A%2F%2Fwww.ebay.com%2Fitm%2F123), which won't match
-    literally without decoding first.
+def _item_number(href: str) -> Optional[str]:
+    """The eBay item number in this href, or None.
+
+    Tries the URL as written and then URL-decoded, because marketing and
+    redirect links often wrap the real destination as a percent-encoded query
+    param (e.g. ...?mpre=https%3A%2F%2Fwww.ebay.com%2Fitm%2F123456789012),
+    which won't match literally without decoding first.
     """
-    match = ITEM_URL_RE.search(href) or ITEM_URL_RE.search(unquote(href))
-    if not match:
+    for text in (href, unquote(href)):
+        match = ITEM_NUMBER_RE.search(text) or SHORT_ITEM_NUMBER_RE.search(text)
+        if match:
+            return match.group(1)
+    return None
+
+
+def _find_item_url(href: str) -> Optional[str]:
+    """The canonical https://www.ebay.com/itm/<number> URL for this link.
+
+    Rebuilt from the item number rather than returned as found, because this
+    string is the listing's id: the dedupe key in seen_listings.json and the
+    key the comp corpus stores observations under. The same item reached via
+    http://, m.ebay.com, bare ebay.com, ebay.co.uk or a rover wrapper is the
+    same item, and returning the link as written made each of those a
+    separate id -- so a listing already reported came back as new, and its
+    price history forked into a row per link shape. Host and scheme carry no
+    identity, so they are not part of it.
+
+    The bare form is what eBay's own alert emails and every already-stored id
+    use, so this is byte-identical to the old behaviour for those and only
+    changes the shapes that were wrong.
+    """
+    number = _item_number(href)
+    if number is None:
         return None
-    url = match.group(1) or match.group(2)
-    if not url.startswith("http"):
-        url = "https://www.ebay.com" + url
-    return url
+    return "https://www.ebay.com/itm/" + number
 
 
 def _find_nearby(anchor_tag, extractor) -> Optional[float]:

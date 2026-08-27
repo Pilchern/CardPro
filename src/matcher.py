@@ -53,6 +53,18 @@ ROOKIE_RE = re.compile(r"\bRC\b|\bROOKIE\b", re.IGNORECASE)
 # to fix and expensive to ignore -- a laundry tag 1/1 read as "TAG 1" would
 # comp a $400 patch against the worst slabs in the market.
 _TAG_FALSE_FRIENDS = ["laundry", "name", "jersey", "price", "tape"]
+#: How far back to look for one of those words. The old check read exactly
+#: one space-delimited token, so "laundry-tag TAG 1/1" walked straight past
+#: it -- the hyphen made "laundry-tag" a single token that matches nothing
+#: in the list, on the very phrase the list exists to catch.
+_TAG_FALSE_FRIEND_WINDOW = 30
+
+#: A grade cannot be immediately followed by "/N": that is a print run.
+#: "TAG 1/1" is a one-of-one, not a TAG 1, and reading it as a grade comps
+#: a patch card against the worst slabs on the market. No whitespace is
+#: allowed before the slash, because "PSA 9 /99" really is a PSA 9 of a card
+#: numbered to 99.
+_SERIAL_NOT_GRADE_RE = re.compile(r"/\s*\d")
 
 
 @dataclass
@@ -73,12 +85,53 @@ class GradeInfo:
     authentic_only: bool = False
 
 
+#: What may sit between the parts of a name: spacing, punctuation eBay
+#: sellers sprinkle in, and the hyphen of "Michael-Jordan". Deliberately not
+#: "/" or any word character -- those separate two PEOPLE.
+_NAME_SEPARATOR = r"[\s.,'\u2019\-]+"
+
+_NAME_PATTERNS: dict = {}
+
+
+def _name_pattern(player: str):
+    """A compiled pattern that matches this player's name and not two other
+    people's names sitting in the same title.
+
+    The parts have to be ADJACENT. Testing each part independently anywhere
+    in the title reads a third person out of two: "Jordan Love RC Michael
+    Penix Jr" matched Michael Jordan, and on the real watchlist any title
+    containing both a Caleb Wilson and a Jameson Williams matched Caleb
+    Williams and Caleb Wilson at once. The first is worse than a miss -- a
+    $12 Jordan Love card entered the pipeline as a Michael Jordan card,
+    which is exactly the cheap-against-a-legend shape that becomes a DEALS
+    headline and an ask in the Michael Jordan comp bucket. The second
+    silently discarded a genuine Caleb Wilson card as a multi-player lot.
+
+    "Last, First" is supported separately and REQUIRES the comma. Allowing
+    bare reversed adjacency would put the same bug back in a new place:
+    "Isiah Thomas Frank Robinson" would match Frank Thomas.
+    """
+    pattern = _NAME_PATTERNS.get(player)
+    if pattern is None:
+        parts = [re.escape(part) for part in player.lower().split()]
+        forward = _NAME_SEPARATOR.join(parts)
+        if len(parts) > 1:
+            reversed_form = r"{}\s*,\s*{}".format(parts[-1], _NAME_SEPARATOR.join(parts[:-1]))
+            body = "(?:{}|{})".format(forward, reversed_form)
+        else:
+            body = forward
+        pattern = re.compile(r"\b{}\b".format(body))
+        _NAME_PATTERNS[player] = pattern
+    return pattern
+
+
 def match_players(title: str, players: List[str]) -> List[str]:
     """Return every watchlist player whose full name appears in the title,
     in watchlist order.
 
-    Checking all name parts (not just a substring of the full name) avoids
-    misses caused by extra punctuation/spacing in listing titles.
+    The name is matched as a whole, tolerating the spacing and punctuation
+    sellers put through it -- see _name_pattern for why the parts must be
+    adjacent rather than merely both present.
 
     Multi-player hits are the point: a dual/triple auto is a different
     market from either player's single-player cards, and silently calling it
@@ -86,12 +139,10 @@ def match_players(title: str, players: List[str]) -> List[str]:
     you comp a $900 dual auto against $30 base cards.
     """
     lowered = title.lower()
-    matched = []
-    for player in players:
-        parts = player.lower().split()
-        if parts and all(re.search(rf"\b{re.escape(part)}\b", lowered) for part in parts):
-            matched.append(player)
-    return matched
+    return [
+        player for player in players
+        if player.split() and _name_pattern(player).search(lowered)
+    ]
 
 
 def match_player(title: str, players: List[str]) -> Optional[str]:
@@ -128,9 +179,12 @@ def detect_grade_details(title: str) -> GradeInfo:
     """
     for match in GRADE_RE.finditer(title):
         grader, grade = match.group(1).upper(), match.group(2)
+        if _SERIAL_NOT_GRADE_RE.match(title, match.end()):
+            continue
         if grader == "TAG":
-            preceding = title[:match.start()].rstrip().rsplit(" ", 1)
-            if preceding and preceding[-1].lower() in _TAG_FALSE_FRIENDS:
+            window = title[max(0, match.start() - _TAG_FALSE_FRIEND_WINDOW):match.start()]
+            words = [word for word in re.split(r"\W+", window.lower()) if word]
+            if any(word in _TAG_FALSE_FRIENDS for word in words):
                 continue
         return GradeInfo(
             card_type="graded",

@@ -644,6 +644,21 @@ def evaluate_listings(listings, engine, cfg, stats) -> None:
         listing.resale_uneconomic = listing.economics.expected_profit <= 0
 
         if listing.is_auction:
+            # ONLY off a comp CardPro will stand behind. A max bid is the one
+            # number in this report that tells you to spend money -- "the most
+            # you can pay and still keep your margin. Above this, stop." --
+            # and it was being computed from whatever median was available,
+            # including a price-bracket bucket. On the live corpus that put a
+            # $729.31 ceiling on a $125 Ernie Banks card, two lines under a
+            # Market line reading "not established ... CardPro has no
+            # valuation for this card". A number nobody may act on must not
+            # come back wearing the one label that says act on it.
+            #
+            # It cuts the other way too: focus._has_bidding_room drops an
+            # auction whose current bid is over this ceiling, so a
+            # context-only median was silently removing real auctions from
+            # the email. With no ceiling there is nothing to be over, and the
+            # report says plainly that none could be computed.
             listing.max_rational_bid = economics.max_rational_bid(
                 match.stats.median,
                 required_margin_pct=cfg.auction_required_margin_pct,
@@ -653,7 +668,7 @@ def evaluate_listings(listings, engine, cfg, stats) -> None:
                 # disagree about the same card, and the ceiling comes out
                 # high -- which is the expensive direction to be wrong in.
                 resale_haircut_pct=cfg.resale_haircut_pct,
-            )
+            ) if match.flag_eligible else None
             # Unknown shipping makes the ceiling an upper bound, not a
             # figure. The report has to be able to say so; the bare float
             # cannot carry that.
