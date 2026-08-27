@@ -986,6 +986,55 @@ def test_a_patch_card_is_tagged_patch_and_not_also_mem():
     assert "MEM +" not in body
 
 
+def test_the_headline_does_not_say_the_player_name_twice():
+    """A title CardPro could not parse falls back to showing the title in the
+    headline, and most seller titles open with the player -- so the row read
+    "Josh Giddey -- Josh Giddey Auto PSA DNA Cer...", spending a third of the
+    line on the name it had just printed."""
+    body = body_of([
+        make_listing(
+            player="Josh Giddey",
+            title="Josh Giddey Auto PSA DNA Cer...",
+            card_identity=CardIdentity(),
+        )
+    ])
+    assert "Josh Giddey -- Auto PSA DNA Cer..." in body
+    assert "Josh Giddey -- Josh Giddey" not in body
+
+
+def test_trimming_the_player_off_the_headline_puts_the_raw_title_back_on_its_own_line():
+    """The title is the primary evidence for every parsed field, so the
+    headline may shorten it only if the full thing is still printed."""
+    body = body_of([
+        make_listing(
+            player="Josh Giddey",
+            title="Josh Giddey Auto PSA DNA Cer...",
+            card_identity=CardIdentity(),
+        )
+    ])
+    assert "Title       Josh Giddey Auto PSA DNA Cer..." in body
+
+
+def test_a_title_that_is_only_the_player_name_is_still_shown():
+    """Trimming would leave nothing, and an empty headline slot says less
+    than a redundant one."""
+    body = body_of([
+        make_listing(player="Josh Giddey", title="Josh Giddey", card_identity=CardIdentity())
+    ])
+    assert "Josh Giddey -- Josh Giddey" in body
+
+
+def test_a_title_not_starting_with_the_player_is_left_alone():
+    body = body_of([
+        make_listing(
+            player="Josh Giddey",
+            title="Signed rookie card Josh Giddey",
+            card_identity=CardIdentity(),
+        )
+    ])
+    assert "Josh Giddey -- Signed rookie card Josh Giddey" in body
+
+
 def test_tag_row_omits_graded_because_the_grade_is_already_in_the_headline():
     body = body_of([make_listing(card_type="graded", grader="PSA", grade="9")])
     assert "PSA 9" in body

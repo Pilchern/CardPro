@@ -465,19 +465,61 @@ def _tags(deal: Listing) -> list:
     return tags
 
 
+#: Punctuation a title uses between the player name and the rest of it.
+_AFTER_PLAYER_CHARS = " \t-\u2013\u2014:,|/"
+
+
+def _without_leading_player(title: Optional[str], player: Optional[str]) -> Optional[str]:
+    """The title with a redundant leading player name taken off the front.
+
+    The headline already opens with the player, so a title that opens with
+    it too spends a third of the line saying the name twice --
+    "Josh Giddey -- Josh Giddey Auto PSA DNA Cer...". Dropping it costs
+    nothing: the raw title still gets its own line underneath (see
+    _headline_description), so the evidence that the title really does name
+    this player is still on the page.
+
+    Only a leading name, and only when something is left after it: a title
+    that IS just the player name has nothing else to show.
+    """
+    if not title or not player:
+        return title
+    name = player.strip()
+    head = title.lstrip()
+    if not name or not head.lower().startswith(name.lower()):
+        return title
+    rest = head[len(name):].lstrip(_AFTER_PLAYER_CHARS)
+    return rest or title
+
+
+def _headline_description(deal: Listing) -> tuple:
+    """``(text, whether that text is the whole raw title)``.
+
+    Returned as a pair because _headline and _title_line have to agree about
+    it: the title earns its own line whenever the headline is showing
+    anything less than all of it, and working that out twice is how the two
+    drift apart.
+    """
+    parsed = _identity_description(deal.card_identity)
+    if parsed is not None:
+        return parsed, False
+    text = _short_title(_without_leading_player(deal.title, deal.player))
+    return text, text == deal.title
+
+
 def _title_line(deal: Listing) -> Optional[str]:
     """The raw seller title, but only when the headline did not already show
     it in full. The title is the primary evidence -- every parsed field in
     this report is an inference from it -- so it earns a line whenever the
-    headline is showing a parsed description or a shortened version."""
-    if _identity_description(deal.card_identity) is None and deal.title == _short_title(deal.title):
-        return None
-    return _field_line("Title", deal.title)
+    headline is showing a parsed description, a shortened version, or a
+    version with the player's name trimmed off the front."""
+    _, whole_title = _headline_description(deal)
+    return None if whole_title else _field_line("Title", deal.title)
 
 
 def _headline(index: int, deal: Listing) -> str:
     """"1. Player -- card -- grade   [TAGS]  [TARGET: ...]"."""
-    description = _identity_description(deal.card_identity) or _short_title(deal.title)
+    description, _ = _headline_description(deal)
     parts = ["{}. {}".format(index, deal.player), description, _grade_text(deal)]
     line = " -- ".join(parts)
     tags = _tags(deal)
