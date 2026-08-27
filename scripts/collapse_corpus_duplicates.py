@@ -16,6 +16,15 @@ Two harms, and the second is the one that matters:
     morning are one snapshot six listings deep -- and this was manufacturing
     the spread that gate looks for.
 
+A third harm, found later and fixed the same way: a listing whose card_type
+read differently on two days -- `raw` on the first look, `graded` once a
+fuller title showed the slab -- was stored under both keys and counted in
+both markets, one of them wrong, for the whole retention window. That is one
+listing read two ways, not two listings, so collapsing now spans a player's
+card_types too. It does NOT merge the markets: the row lands in the
+card_type of its latest reading and raw and graded stay separate buckets
+(principle #6). One such pair is in the corpus this script serves.
+
 Collapsing keeps the earliest date (when the ask entered the market) and the
 latest price (what a buyer faces today), the same rule record() now applies.
 
@@ -37,19 +46,17 @@ DEFAULT_PATH = Path(__file__).resolve().parent.parent / "data" / "ebay_alert_pri
 
 
 def _counts(history: dict) -> tuple:
-    """(rows, distinct listing-in-bucket pairs, id-less rows).
+    """(rows, distinct listings, id-less rows).
 
-    Counted per bucket rather than globally on purpose: a listing can
-    legitimately appear in two buckets, and in this corpus one does -- a
-    Munetaka Murakami listing whose grade read differently on different days,
-    so it sits in both `raw` and `graded`. Collapsing must not merge those;
-    they are different markets and the engine treats them as such. (That the
-    extraction flip-flopped at all is a separate problem, and not one this
-    script should paper over.)
+    A listing is counted per PLAYER, not per storage key. Per key would make
+    the raw/graded pair above look like two listings and turn its collapse
+    into an apparent loss; globally would hide a real loss, because the same
+    listing under two players is a multi-player card genuinely in both
+    players' markets and both rows must survive.
     """
     rows = sum(len(entries) for entries in history.values())
-    pairs = {
-        (key, obs.get("id"))
+    listings = {
+        (key.partition("|")[0], obs.get("id"))
         for key, entries in history.items()
         for obs in entries
         if obs.get("id")
@@ -57,7 +64,7 @@ def _counts(history: dict) -> tuple:
     idless = sum(
         1 for entries in history.values() for obs in entries if not obs.get("id")
     )
-    return rows, len(pairs), idless
+    return rows, len(listings), idless
 
 
 def main() -> None:
@@ -71,12 +78,12 @@ def main() -> None:
     collapsed = price_history.collapse_duplicates(history)
     after = _counts(collapsed)
 
-    print("rows {} -> {}   listing/bucket pairs {} -> {}   id-less rows {} -> {}".format(
+    print("rows {} -> {}   distinct listings {} -> {}   id-less rows {} -> {}".format(
         before[0], after[0], before[1], after[1], before[2], after[2]
     ))
 
     # The invariant worth checking out loud: collapsing must not lose a
-    # listing. Rows go down; distinct ids and id-less rows must not.
+    # listing. Rows go down; distinct listings and id-less rows must not.
     if after[1] != before[1] or after[2] != before[2]:
         raise SystemExit("REFUSING TO WRITE: collapsing changed the listing count.")
     if after[0] != after[1] + after[2]:

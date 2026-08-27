@@ -280,11 +280,42 @@ class TestOneRowPerListing:
         self._record(history, 30.0, "2026-08-21", "id-2")
         assert len(history["Caleb Williams|raw"]) == 2
 
-    def test_the_same_id_in_a_different_bucket_is_a_different_row(self):
+    def test_a_listing_read_as_a_different_card_type_moves_rather_than_forking(self):
+        # Live case: one eBay item stored under both `Munetaka Murakami|raw`
+        # and `Munetaka Murakami|graded`, counted in two markets at once,
+        # one of them wrong, for the whole 180-day window.
         history = {}
         price_history.record(history, "Caleb Williams", "raw", 25.0, "2026-08-21", "id-1")
-        price_history.record(history, "Caleb Williams", "graded", 25.0, "2026-08-21", "id-1")
-        assert len(history) == 2
+        price_history.record(
+            history, "Caleb Williams", "graded", 25.0, "2026-08-22", "id-1",
+            grader="PSA", grade="10",
+        )
+        assert list(history) == ["Caleb Williams|graded"]
+        assert len(history["Caleb Williams|graded"]) == 1
+
+    def test_a_moved_listing_keeps_its_first_sighting_date(self):
+        # The ask entered the market on the first date, whichever reading of
+        # the title that sighting produced -- same rule as a re-sighting.
+        history = {}
+        price_history.record(history, "Caleb Williams", "raw", 100.0, "2026-08-21", "id-1")
+        price_history.record(history, "Caleb Williams", "graded", 90.0, "2026-08-24", "id-1")
+        row = history["Caleb Williams|graded"][0]
+        assert (row["date"], row["price"]) == ("2026-08-21", 90.0)
+
+    def test_moving_does_not_disturb_the_bucket_it_left(self):
+        history = {}
+        price_history.record(history, "Caleb Williams", "raw", 25.0, "2026-08-21", "id-1")
+        price_history.record(history, "Caleb Williams", "raw", 30.0, "2026-08-21", "id-2")
+        price_history.record(history, "Caleb Williams", "graded", 25.0, "2026-08-22", "id-1")
+        assert [o["id"] for o in history["Caleb Williams|raw"]] == ["id-2"]
+
+    def test_the_same_id_under_another_player_stays_its_own_row(self):
+        # A multi-player card is genuinely in both players' markets, and
+        # neither row can be re-fetched once the listing sells.
+        history = {}
+        price_history.record(history, "Caleb Williams", "raw", 25.0, "2026-08-21", "id-1")
+        price_history.record(history, "Kyle Teel", "raw", 25.0, "2026-08-22", "id-1")
+        assert sorted(history) == ["Caleb Williams|raw", "Kyle Teel|raw"]
 
     def test_an_idless_observation_is_still_appended(self):
         # No id means no way to tell two sightings apart, so appending is the
@@ -346,3 +377,83 @@ def test_manufacturer_is_recorded_even_though_nothing_reads_it_yet():
         set_name="Prizm", manufacturer="Panini",
     )
     assert history["Caleb Williams|raw"][0]["manufacturer"] == "Panini"
+
+
+class TestOneListingOneMarket:
+    """A listing that changed reading must not be counted in two markets.
+
+    record() moves it when it sees it again, but a listing that flipped
+    raw/graded and then sold leaves its stale row on disk until it ages out
+    -- and one such pair was live in the corpus. Read-time dedupe is what
+    stops every consumer double-counting that ask in the meantime.
+    """
+
+    def _flipped(self):
+        return {
+            "Munetaka Murakami|graded": [_obs(550.0, "2026-08-23", "itm-1", grader="PSA", grade="1")],
+            "Munetaka Murakami|raw": [_obs(550.0, "2026-08-24", "itm-1")],
+        }
+
+    def test_a_stale_cross_card_type_row_is_not_counted_twice(self):
+        observations = price_history.deduped_observations(self._flipped())
+        assert len(observations) == 1
+
+    def test_the_latest_reading_is_the_one_kept(self):
+        observations = price_history.deduped_observations(self._flipped())
+        assert observations[0]["card_type"] == "raw"
+
+    def test_the_ask_reaches_only_one_bucket(self):
+        assert price_history.as_buckets(self._flipped()) == {
+            ("Munetaka Murakami", "raw", "100_plus"): [550.0]
+        }
+
+    def test_two_players_sharing_a_listing_both_keep_it(self):
+        history = {
+            "Caleb Williams|raw": [_obs(25.0, "2026-08-21", "id-1")],
+            "Kyle Teel|raw": [_obs(25.0, "2026-08-22", "id-1")],
+        }
+        players = sorted(o["player"] for o in price_history.deduped_observations(history))
+        assert players == ["Caleb Williams", "Kyle Teel"]
+
+    def test_idless_rows_are_still_kept_one_per_sighting(self):
+        history = {"Caleb Williams|raw": [_obs(10.0, "2026-08-21"), _obs(11.0, "2026-08-22")]}
+        assert len(price_history.deduped_observations(history)) == 2
+
+
+class TestCollapseAcrossCardTypes:
+    def test_collapses_a_listing_stored_under_two_card_types(self):
+        history = {
+            "Munetaka Murakami|graded": [{"id": "a", "price": 550.0, "date": "2026-08-23"}],
+            "Munetaka Murakami|raw": [{"id": "a", "price": 560.0, "date": "2026-08-24"}],
+        }
+        collapsed = price_history.collapse_duplicates(history)
+        assert collapsed == {
+            "Munetaka Murakami|raw": [{"id": "a", "price": 560.0, "date": "2026-08-23"}]
+        }
+
+    def test_a_listing_under_two_players_survives_in_both(self):
+        history = {
+            "Caleb Williams|raw": [{"id": "a", "price": 25.0, "date": "2026-08-21"}],
+            "Kyle Teel|raw": [{"id": "a", "price": 25.0, "date": "2026-08-22"}],
+        }
+        assert price_history.collapse_duplicates(history) == history
+
+    def test_collapsing_twice_changes_nothing_further(self):
+        history = {
+            "Munetaka Murakami|graded": [{"id": "a", "price": 550.0, "date": "2026-08-23"}],
+            "Munetaka Murakami|raw": [{"id": "a", "price": 560.0, "date": "2026-08-24"}],
+        }
+        once = price_history.collapse_duplicates(history)
+        assert price_history.collapse_duplicates(once) == once
+
+    def test_other_listings_in_the_emptied_bucket_are_kept(self):
+        history = {
+            "Munetaka Murakami|graded": [
+                {"id": "a", "price": 550.0, "date": "2026-08-23"},
+                {"id": "b", "price": 400.0, "date": "2026-08-23"},
+            ],
+            "Munetaka Murakami|raw": [{"id": "a", "price": 550.0, "date": "2026-08-24"}],
+        }
+        collapsed = price_history.collapse_duplicates(history)
+        assert [o["id"] for o in collapsed["Munetaka Murakami|graded"]] == ["b"]
+        assert [o["id"] for o in collapsed["Munetaka Murakami|raw"]] == ["a"]
