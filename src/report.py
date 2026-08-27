@@ -1878,6 +1878,11 @@ def _sold_comp_requests_section(requests, unidentified: int = 0) -> str:
         lines.append('      search: "{}"'.format(request.search_query))
         if request.example_url:
             lines.append("      example: {}".format(request.example_url))
+        # The command, with everything already known filled in, so the only
+        # typing left is the two facts the lookup produced. A suggestion that
+        # ends in "and now go and figure out the syntax" is a suggestion
+        # nobody acts on twice.
+        lines.append("      add:    {}".format(request.add_command))
     if unidentified:
         lines.append(
             _wrap_footer_line(

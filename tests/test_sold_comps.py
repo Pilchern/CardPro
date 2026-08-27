@@ -576,3 +576,76 @@ def test_cli_omits_unsupplied_fields_rather_than_writing_null(tmp_path):
     assert "grader" not in sale
     assert "parallel" not in sale
     assert sold_comps.load(path)[0]["card_type"] == "raw"
+
+
+class TestFromTitle:
+    """Eleven flags per entry is why config/sold_comps.json has been empty
+    since the day it was created."""
+
+    def _run(self, argv):
+        from scripts import add_sold_comp
+
+        return add_sold_comp.main(argv)
+
+    def test_a_pasted_title_supplies_the_whole_identity(self):
+        from scripts.add_sold_comp import identity_from_title
+
+        read = identity_from_title("2024 Panini Prizm Caleb Williams Silver Prizm #301 PSA 10")
+        assert read == {
+            "year": 2024, "set_name": "Prizm", "parallel": "Silver Prizm",
+            "card_number": "301", "grader": "PSA", "grade": "10",
+        }
+
+    def test_what_it_could_not_read_is_absent_not_guessed(self):
+        from scripts.add_sold_comp import identity_from_title
+
+        read = identity_from_title("Caleb Williams rookie card")
+        assert read == {}
+
+    def test_it_keys_the_comp_the_way_the_engine_will(self, tmp_path, capsys):
+        # The point is not the typing saved. A hand-typed "Silver" against an
+        # extracted "Silver Prizm" is a comp that silently never matches
+        # anything, which looks like progress and is worse than nothing.
+        path = tmp_path / "sold.json"
+        assert self._run([
+            "--from-title", "2024 Panini Prizm Caleb Williams Silver Prizm #301 PSA 10",
+            "--price", "348", "--date", "2026-08-15", "--path", str(path),
+        ]) == 0
+        sale = json.loads(path.read_text())["sales"][0]
+        assert sale["parallel"] == "Silver Prizm"
+        assert sale["set_name"] == "Prizm"
+
+    def test_an_explicit_flag_beats_the_parser(self, tmp_path):
+        # You looked at the card; the parser only looked at the title.
+        path = tmp_path / "sold.json"
+        self._run([
+            "--from-title", "2024 Panini Prizm Caleb Williams Silver Prizm #301 PSA 10",
+            "--parallel", "Silver Mojo", "--price", "348", "--date", "2026-08-15",
+            "--path", str(path),
+        ])
+        assert json.loads(path.read_text())["sales"][0]["parallel"] == "Silver Mojo"
+
+    def test_it_prints_what_it_read_before_writing(self, tmp_path, capsys):
+        path = tmp_path / "sold.json"
+        self._run([
+            "--from-title", "2024 Panini Prizm Caleb Williams Silver Prizm #301 PSA 10",
+            "--price", "348", "--date", "2026-08-15", "--path", str(path),
+        ])
+        printed = capsys.readouterr().out
+        assert "Read from the title:" in printed
+        assert "Silver Prizm" in printed
+
+    def test_a_title_with_no_watchlist_player_refuses_rather_than_guessing(self, tmp_path, capsys):
+        path = tmp_path / "sold.json"
+        assert self._run([
+            "--from-title", "2024 Panini Prizm Some Unknown Person #301",
+            "--price", "348", "--date", "2026-08-15", "--path", str(path),
+        ]) == 2
+        assert not path.exists()
+
+    def test_player_and_price_still_work_without_a_title(self, tmp_path):
+        path = tmp_path / "sold.json"
+        assert self._run([
+            "--player", "Caleb Williams", "--price", "348", "--date", "2026-08-15",
+            "--path", str(path),
+        ]) == 0

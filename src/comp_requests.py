@@ -84,6 +84,33 @@ class CompRequest:
         return " ".join(p for p in parts if p)
 
     @property
+    def add_command(self) -> str:
+        """The command that records the answer, with everything CardPro
+        already knows filled in.
+
+        The remaining two fields are the two only the reader can supply --
+        what it sold for and when. Printing a half-typed command is
+        deliberate: the identity flags here are the ones the ENGINE will key
+        the comp on, so a comp entered this way matches the listings it is
+        meant to match. Hand-typing "Silver" where the extractor said "Silver
+        Prizm" produces a sold comp that silently never matches anything,
+        which is worse than not entering it -- it looks like progress.
+        """
+        parts = ["python -m scripts.add_sold_comp", '--player "{}"'.format(self.player)]
+        if self.year:
+            parts.append("--year {}".format(self.year))
+        if self.set_name:
+            parts.append('--set "{}"'.format(self.set_name))
+        if self.parallel:
+            parts.append('--parallel "{}"'.format(self.parallel))
+        if self.market and self.market[0] == "graded":
+            parts.append("--grader {} --grade {}".format(self.market[1], self.market[2]))
+            if self.market[3]:
+                parts.append("--qualifier {}".format(self.market[3]))
+        parts.append("--price ? --date ?")
+        return " ".join(parts)
+
+    @property
     def search_query(self) -> str:
         """What to paste into 130point's search box.
 

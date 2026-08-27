@@ -150,3 +150,45 @@ class TestSearchQuery:
     def test_an_example_listing_is_carried_through(self):
         requests = comp_requests.build_requests([listing(RAW_PRIZM, str(i)) for i in range(2)], [])
         assert requests[0].example_url == "https://www.ebay.com/itm/0"
+
+
+class TestAddCommand:
+    """A suggestion that ends in "now go and figure out the syntax" is a
+    suggestion nobody acts on twice."""
+
+    def _request(self, **overrides):
+        defaults = dict(
+            player="Caleb Williams", year=2024, set_name="Prizm", parallel="Silver Prizm",
+            market=("graded", "PSA", "10", None), listings_waiting=6, sold_on_file=1,
+            still_needed=2, example_url=None,
+        )
+        defaults.update(overrides)
+        return comp_requests.CompRequest(**defaults)
+
+    def test_everything_already_known_is_filled_in(self):
+        command = self._request().add_command
+        assert '--player "Caleb Williams"' in command
+        assert "--year 2024" in command
+        assert '--set "Prizm"' in command
+        assert '--parallel "Silver Prizm"' in command
+        assert "--grader PSA --grade 10" in command
+
+    def test_only_the_two_facts_the_lookup_produces_are_left_blank(self):
+        assert self._request().add_command.endswith("--price ? --date ?")
+
+    def test_a_raw_card_asks_for_no_grade(self):
+        command = self._request(market=("raw",)).add_command
+        assert "--grader" not in command and "--grade" not in command
+
+    def test_a_qualifier_is_carried_through(self):
+        # A PSA 8 OC is a different market; a comp entered without it would
+        # be filed against the wrong bucket.
+        assert "--qualifier OC" in self._request(market=("graded", "PSA", "8", "OC")).add_command
+
+    def test_the_identity_matches_what_the_engine_keys_on(self):
+        # The whole point. Hand-typing "Silver" where the extractor said
+        # "Silver Prizm" produces a comp that silently never matches, which
+        # is worse than not entering it -- it looks like progress.
+        request = self._request()
+        for value in (request.set_name, request.parallel):
+            assert '"{}"'.format(value) in request.add_command
