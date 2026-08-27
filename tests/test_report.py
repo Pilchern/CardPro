@@ -2169,3 +2169,41 @@ class TestBrowseSectionsDropCompCaveats:
     def test_a_deal_section_still_gets_the_full_list(self):
         risks = report._risks(self._with_bad_comps())
         assert any("context-only" in r for r in risks)
+
+
+class TestCraigslistLinksAreCapped:
+    """Twenty formulaic links, every morning, forever, was a fifth of the
+    email -- and nobody eyeballs twenty Craigslist searches daily."""
+
+    def _links(self, count):
+        names = ["Player %d" % i for i in range(count)]
+        return {
+            name: "https://chicago.craigslist.org/search/sss?query={}+card".format(
+                name.replace(" ", "+")
+            )
+            for name in names
+        }
+
+    def test_a_short_watchlist_prints_every_link(self):
+        text = report._craigslist_section(self._links(4))
+        assert text.count("craigslist.org") == 4
+        assert "more on the same pattern" not in text
+
+    def test_a_long_one_caps_and_says_so(self):
+        text = report._craigslist_section(self._links(20))
+        assert text.count("https://") == report.CRAIGSLIST_MAX_LINKS + 1  # +1 for the template
+        assert "and 14 more on the same pattern" in flat(text)
+
+    def test_nobody_is_dropped_silently(self):
+        # The names are all still there, and the template builds any of the
+        # links -- capping the clickable ones is not hiding the players.
+        text = flat(report._craigslist_section(self._links(20)))
+        for index in range(20):
+            assert "Player {}".format(index) in text
+
+    def test_the_template_is_a_real_substitution(self):
+        text = report._craigslist_section(self._links(20))
+        assert "query=<player>+card" in text
+
+    def test_no_links_prints_nothing(self):
+        assert report._craigslist_section({}) == ""

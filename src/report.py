@@ -1828,15 +1828,45 @@ def _health_footer(stats) -> str:
     return "\n".join(lines)
 
 
+#: How many Craigslist links print in full before the rest collapse to a
+#: template. Twenty formulaic links, every morning, forever, is twenty lines
+#: of an email whose length is a known problem -- and nobody eyeballs twenty
+#: Craigslist searches daily. The template that follows builds any of the
+#: others, so nothing is actually lost.
+CRAIGSLIST_MAX_LINKS = 6
+
+
 def _craigslist_section(craigslist_links) -> str:
     """Unchanged in spirit from CardPro 1.0: Craigslist is never scraped
     (it actively blocks automation), so the report links you straight into
-    a live search and you eyeball it yourself."""
+    a live search and you eyeball it yourself.
+
+    Capped, because the links are formulaic and the whole watchlist's worth
+    of them was a fifth of the email. The first few are clickable; the rest
+    are one substitution away, and the line that says so is shorter than one
+    more link.
+    """
     if not craigslist_links:
         return ""
     lines = ["Craigslist quick check (not auto-scanned -- eyeball these yourself):"]
-    for player, url in craigslist_links.items():
+    items = list(craigslist_links.items())
+    for player, url in items[:CRAIGSLIST_MAX_LINKS]:
         lines.append("  {}: {}".format(player, url))
+    hidden = items[CRAIGSLIST_MAX_LINKS:]
+    if hidden:
+        template = items[0][1].replace(
+            items[0][0].replace(" ", "+"), "<player>"
+        )
+        lines.append(
+            textwrap.fill(
+                "and {} more on the same pattern ({}): {}".format(
+                    len(hidden), template, ", ".join(player for player, _ in hidden)
+                ),
+                width=_WRAP_WIDTH,
+                initial_indent="  ",
+                subsequent_indent="    ",
+            )
+        )
     return "\n".join(lines)
 
 
