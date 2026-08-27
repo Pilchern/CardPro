@@ -205,7 +205,10 @@ SECTION_SUBTITLES = {
     SECTION_NEEDS_REVIEW: (
         "NOT recommendations. Shown so that nothing disappears silently: the comp is "
         "context-only or missing, or the card's identity is not trustworthy enough to value. "
-        "Any number below is context, not a valuation."
+        "Any number below is context, not a valuation. Where a card has only a context-only "
+        "comp, no market figure is printed for it at all -- a price-bracket bucket is defined "
+        "BY price, so the cheap end of it always looks cheap, and a range read off one says "
+        "nothing about this card. Each card gets one line saying why it is here."
     ),
     SECTION_PRICE_DROPS: (
         "Seen before, cheaper now. A price drop is a change, not a verdict."
@@ -1130,6 +1133,56 @@ def _compact_block(index: int, deal: Listing, *, why: Optional[str] = None,
     return "\n".join(lines)
 
 
+def _review_block(index: int, deal: Listing,
+                  ending_soon_hours: float = DEFAULT_ENDING_SOON_HOURS) -> str:
+    """A card CardPro is showing precisely because it cannot judge it.
+
+    Every line here used to be printed for every card: a Market line reading
+    "not established" followed by a range off a price-bracket bucket, then
+    the four-line Context explaining that the range means nothing, then a
+    Confidence line saying LOW under a header that already says LOW, then
+    Risks restating the Context. Ten cards of that ran to 249 lines --
+    roughly half the email -- all of it the section header said once.
+
+    So the boilerplate moved to the header and what stays is per-card: what
+    it costs, why THIS card could not be judged, what might make it not the
+    card it appears to be, the title and the link.
+
+    The exception is the third way into this section: an identity CardPro
+    does not trust behind a comp it otherwise would. There a real figure
+    exists, and it is printed with its confidence, because "we have a number
+    and do not trust the card it is attached to" is a different thing to say
+    than "we have no number".
+    """
+    if deal.is_auction:
+        return _auction_block(index, deal, ending_soon_hours)
+    real_comp = _is_real_comp(deal)
+    lines = [_headline(index, deal)]
+    drop = _price_drop_line(deal)
+    if drop:
+        lines.append(_field_line("Price drop", drop))
+    lines.append(_field_line("Cost", _cost_text(deal)))
+    if real_comp:
+        lines.append(_field_line("Market", _market_text(deal)))
+        discount = _discount_text(deal)
+        if discount:
+            lines.append(_field_line("Discount", discount))
+    lines.append(_field_line("Why here", _needs_review_why(deal)))
+    if real_comp:
+        lines.append(_field_line("Confidence", _confidence_text(deal)))
+    # With no figure printed, the comp-quality risks are all restatements of
+    # the Why here line directly above them. The identity and price risks
+    # are not, and stay.
+    risks = _risks(deal, include_comp_quality=real_comp)
+    if risks:
+        lines.append(_field_line("Risks", "; ".join(risks)))
+    title_line = _title_line(deal)
+    if title_line:
+        lines.append(title_line)
+    lines.append(_link_line(deal))
+    return "\n".join(lines)
+
+
 def _interest_block(index: int, deal: Listing,
                     ending_soon_hours: float = DEFAULT_ENDING_SOON_HOURS) -> str:
     """A card shown for what it IS, not for what it is worth.
@@ -1601,9 +1654,7 @@ def _render_section(key: str, deals: list, threshold_pct: float, ending_soon_hou
         elif key == SECTION_OFFERS:
             block = _offer_block(index, deal, threshold_pct)
         elif key == SECTION_NEEDS_REVIEW:
-            block = _compact_block(
-                index, deal, why=_needs_review_why(deal), ending_soon_hours=ending_soon_hours
-            )
+            block = _review_block(index, deal, ending_soon_hours=ending_soon_hours)
         elif key in (SECTION_COOL_CARDS, SECTION_CHEAP_FINDS, SECTION_INVESTMENT):
             block = _interest_block(index, deal, ending_soon_hours)
         elif key == SECTION_PRICE_DROPS:
