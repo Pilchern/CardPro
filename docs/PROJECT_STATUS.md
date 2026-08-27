@@ -508,6 +508,7 @@ src/
   sold_comps.py             -- hand-entered sold prices, the only real transaction data
   comp_requests.py          -- which sold comps to go and get, ranked by listings unlocked
   price_history.py          -- self-building comp corpus, one row per listing
+  run_marker.py             -- when the scan last completed; the 17:00 backup reads it
   ebay_email_alerts.py      -- IMAP fetch, HTML extraction, listing-type detection
   ebay_client.py            -- eBay Browse/Insights client (dormant)
   craigslist_links.py       -- ready-to-click search links
