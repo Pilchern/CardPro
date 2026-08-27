@@ -911,6 +911,7 @@ def _extract_is_base(
     set_name: Field,
     serial_number: Field,
     print_run: Field,
+    negative_signals: tuple = (),
 ) -> Field:
     """Whether this is the base card of its set -- True, or unknown.
 
@@ -951,6 +952,14 @@ def _extract_is_base(
     """
     if parallel.value is not None:
         return Field(value=False, confidence="high", source="title")
+    if negative_signals:
+        # A reprint has no base card of the set it imitates, and a lot, a
+        # custom and a sealed box are not single cards at all. "1986 Fleer
+        # Michael Jordan #57 Reprint" was coming back is_base=True, which is
+        # the worst possible value: the whole point of this field is to key
+        # a bucket of base copies, and a reprint in one would drag its median
+        # to a fraction of the real card's.
+        return Field(value=None, confidence="none", source="title")
     if not set_name.value:
         return Field(value=None, confidence="none", source="title")
     if _is_truncated(title):
@@ -1120,6 +1129,7 @@ def extract_card_identity(title: str) -> CardIdentity:
     if not is_lot and BARE_LOT_RE.search(title):
         is_lot, lot_confidence = True, "medium"  # bare "lot" with no count -- still very likely a multi-card lot
 
+    negative_field = _extract_negative_signals(title, is_lot)
     is_patch = bool(_find_keyword(masked, PATCH_KEYWORDS))
     # Patch implies memorabilia even when the title only says "RPA".
     is_memorabilia = is_patch or bool(_find_keyword(masked, MEMORABILIA_KEYWORDS))
@@ -1152,6 +1162,9 @@ def extract_card_identity(title: str) -> CardIdentity:
         is_memorabilia=Field(is_memorabilia, "high", "title"),
         is_patch=Field(is_patch, "high", "title"),
         is_lot=Field(is_lot, lot_confidence, "title"),
-        negative_signals=_extract_negative_signals(title, is_lot),
-        is_base=_extract_is_base(title, parallel_field, set_field, serial_field, print_run_field),
+        negative_signals=negative_field,
+        is_base=_extract_is_base(
+            title, parallel_field, set_field, serial_field, print_run_field,
+            tuple(negative_field.value or ()),
+        ),
     )

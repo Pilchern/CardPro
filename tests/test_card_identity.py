@@ -889,3 +889,28 @@ class TestSetsThatWereCollidingOnOneCompKey:
 
     def test_a_players_name_is_not_a_parallel(self):
         assert extract("Tiger Woods 2001 Upper Deck #1 Rookie").parallel.value is None
+
+
+class TestNegativeSignalsBlockTheBaseAssertion:
+    def test_a_reprint_is_never_the_base_card(self):
+        # The worst possible value for this field: its whole purpose is to
+        # key a bucket of base copies, and a reprint in one would drag its
+        # median to a fraction of the real card's.
+        assert extract("1986 Fleer Michael Jordan #57 Reprint RP Bulls").is_base.value is None
+
+    def test_a_lot_is_not_a_base_card_either(self):
+        assert extract("2024 Panini Prizm Caleb Williams #301 RC lot of 3").is_base.value is None
+
+    def test_a_named_foil_parallel_is_not_base(self):
+        # These were coming back True: their modifier was absent from the
+        # vocabulary, and the guard's safety argument -- that the parallels
+        # which would distort a base median are almost all serial-numbered
+        # -- does not hold for them.
+        for title in [
+            "2024 Topps Series 1 Shohei Ohtani #17 Rainbow Foil Dodgers",
+            "2024 Topps Chrome Logofractor Shohei Ohtani #150",
+        ]:
+            assert extract(title).is_base.value is False, title
+
+    def test_an_ordinary_base_card_is_unaffected(self):
+        assert extract("2024 Panini Prizm Caleb Williams #301 RC").is_base.value is True

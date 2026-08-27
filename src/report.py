@@ -518,8 +518,18 @@ def _market_text(deal: Listing) -> str:
     level = getattr(deal.comp_match, "level", None)
     level_label = COMP_LEVEL_LABELS.get(level, level or "unknown comp level")
     basis = "sold comps" if stats.basis == "sold" else "asking comps"
+    # The median itself is withheld on a context-only level, and the line
+    # below spells out why. It used to print "Market $44.00" directly above
+    # "CardPro has no valuation for this card and there is no discount to
+    # report" -- the most prominent number on the card, immediately
+    # contradicted by the sentence under it. Suppressing the discount and
+    # the ROI while leaving the figure they were derived from was half a
+    # fix; a number nobody may act on should not be the first thing read.
+    # The range stays, because "other copies are listed between $25 and $99"
+    # is a fact about a spread rather than a valuation of this card.
+    headline = _money(deal.market_value) if _is_real_comp(deal) else "not established"
     text = "{}  -- {}, {} {}, range {}-{}, newest {}, oldest {}".format(
-        _money(deal.market_value),
+        headline,
         level_label,
         stats.sample_size,
         basis,
@@ -1399,7 +1409,14 @@ def _owed_a_valuation(deal: Listing) -> bool:
     formed. It activates on the first day a real sold-comp bucket does,
     which is exactly what the sold-comp work is building toward.
     """
-    return _is_real_comp(deal) or bool(deal.is_price_drop)
+    # Auctions are here for the same reason, one step removed: a browse
+    # block delegates an auction to _auction_block, which prints a Market
+    # line, a max bid and an "at this bid" discount -- a full price claim
+    # under a COOL CARDS heading. AUCTIONS claims them first today, so this
+    # is unreachable; that is loop order, not a guarantee, and the same
+    # "safe only by loop order" condition was already judged unacceptable
+    # for _offer_block and _price_drop_block.
+    return _is_real_comp(deal) or bool(deal.is_price_drop) or bool(deal.is_auction)
 
 
 def _price_for_sort(deal: Listing) -> float:
@@ -1471,7 +1488,14 @@ def _needs_review(deal: Listing) -> bool:
 #: after a headline section has already had every one of its lines printed
 #: above. The headline sections never cross-reference: whichever of them
 #: prints first is the full block, and they do not overlap each other.
-CROSS_REFERENCE_SECTIONS = (SECTION_WATCH, SECTION_NEEDS_REVIEW, SECTION_PRICE_DROPS)
+CROSS_REFERENCE_SECTIONS = (
+    SECTION_COOL_CARDS,
+    SECTION_CHEAP_FINDS,
+    SECTION_INVESTMENT,
+    SECTION_WATCH,
+    SECTION_NEEDS_REVIEW,
+    SECTION_PRICE_DROPS,
+)
 
 
 def _why_for(key: str, deal: Listing, threshold_pct: float, min_savings_dollars: float):
@@ -1480,11 +1504,10 @@ def _why_for(key: str, deal: Listing, threshold_pct: float, min_savings_dollars:
         return _needs_review_why(deal)
     if key == SECTION_WATCH:
         return _watch_why(deal, threshold_pct, min_savings_dollars)
-    if key == SECTION_PRICE_DROPS and deal.previous_price is not None and deal.price is not None:
-        return "was {} -> now {} ({} lower)".format(
-            _money(deal.previous_price), _money(deal.price),
-            _money(deal.previous_price - deal.price),
-        )
+    if key == SECTION_PRICE_DROPS:
+        return _price_drop_line(deal)
+    if key in (SECTION_COOL_CARDS, SECTION_CHEAP_FINDS, SECTION_INVESTMENT):
+        return desirability.describe(desirability.settled_attributes(deal)) or None
     return None
 
 
@@ -1763,12 +1786,25 @@ def _economics_in_report(sections) -> list:
     day of only cheap finds that used to leave a footer announcing "every
     profit figure above rests on these" above zero profit figures -- an
     explanation of arithmetic the report deliberately did not do.
+
+    Two more ways a card can carry economics that never print, both added
+    later and both of which put the footer back above an email with no
+    profit figure in it: a context-only comp (``_economics_text`` returns
+    None -- profit off a bucket defined by price is a restatement of the
+    price), and a card in a browse section (``_interest_block`` prints no
+    economics at all). The test is therefore what the RENDERER would say,
+    not what the pipeline attached.
     """
     found = []
     for key in SECTION_ORDER:
+        if key in (SECTION_COOL_CARDS, SECTION_CHEAP_FINDS, SECTION_INVESTMENT):
+            continue
         for deal in sections[key]:
-            if deal.economics is not None and not getattr(deal, "resale_uneconomic", False):
-                found.append(deal.economics)
+            if deal.economics is None or getattr(deal, "resale_uneconomic", False):
+                continue
+            if _economics_text(deal) is None:
+                continue
+            found.append(deal.economics)
     return found
 
 

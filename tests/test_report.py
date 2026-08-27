@@ -2024,7 +2024,17 @@ class TestCoolCards:
         assert "Discount" not in block
         assert "What it is" in block
 
-    def test_an_auction_still_gets_the_auction_block(self):
+    def test_an_auction_is_never_claimed_by_a_browse_section(self):
+        # A browse block delegates an auction to _auction_block, which
+        # prints a Market line, a max bid and an "at this bid" discount --
+        # a full price claim under a COOL CARDS heading. AUCTIONS claims
+        # them first today, but that is loop order, not a guarantee.
+        deal = carded(AUTO, 42.0, listing_type="auction", bid_count=3)
+        sections = report.classify_sections([deal])
+        assert sections[report.SECTION_COOL_CARDS] == []
+        assert sections[report.SECTION_AUCTIONS] == [deal]
+
+    def test_the_block_still_refuses_to_price_an_auction_if_one_reaches_it(self):
         deal = carded(AUTO, 42.0, listing_type="auction", bid_count=3)
         assert "CURRENT BID, not an asking price" in flat(report._interest_block(1, deal))
 
@@ -2320,3 +2330,67 @@ class TestTheBrowseSectionsDoNotSwallowAValuation:
             market_value=200.0,
         )
         assert report.classify_sections([deal])[report.SECTION_COOL_CARDS] == [deal]
+
+
+class TestNoNumberSurvivesTheSuppression:
+    """Suppressing the discount and the ROI while leaving the median they
+    were derived from was half a fix: "Market $44.00" was the most prominent
+    thing on the card, immediately contradicted by "CardPro has no valuation
+    for this card" on the line below."""
+
+    def test_the_median_is_withheld_on_a_context_only_level(self):
+        text = report._market_text(context_only_deal())
+        assert "$44.00" not in text
+        assert "not established" in text
+
+    def test_the_range_survives_because_it_is_a_fact_about_a_spread(self):
+        # "Other copies are listed between $25 and $99" is not a valuation
+        # of this card, and dropping it would lose real information.
+        text = report._market_text(context_only_deal())
+        assert "range $25.00-$99.00" in text
+
+    def test_a_flag_eligible_comp_still_prints_its_median(self):
+        assert "$200.00" in report._market_text(make_listing())
+
+    def test_the_rendered_card_holds_no_contradiction(self):
+        body = flat(body_of([context_only_deal()]))
+        assert "CardPro has no valuation for this card" in body
+        assert "$44.00" not in body
+
+
+class TestTheAssumptionsFooterOnlyAppearsWithFigures:
+    """Its own docstring says it exists to stop "every profit figure above
+    rests on these" appearing above zero profit figures. Two later changes
+    put it back there: a context-only comp prints no Economics line, and a
+    browse section prints none at all."""
+
+    def test_a_context_only_card_does_not_summon_it(self):
+        deal = context_only_deal()
+        deal.economics = make_economics()
+        assert "ECONOMICS ASSUMPTIONS" not in body_of([deal])
+
+    def test_a_browse_card_does_not_either(self):
+        deal = carded(AUTO, 42.0)
+        deal.economics = make_economics()
+        assert "ECONOMICS ASSUMPTIONS" not in body_of([deal])
+
+    def test_a_card_that_does_print_figures_still_summons_it(self):
+        deal = make_listing()
+        deal.economics = make_economics()
+        assert "ECONOMICS ASSUMPTIONS" in body_of([deal])
+
+
+class TestATargetHitIsNotPrintedTwiceInFull:
+    def test_a_standout_target_points_at_its_first_block(self):
+        # The cross-reference covered only WATCH, NEEDS REVIEW and PRICE
+        # DROPS, so a target hit that was also a standout printed nine lines
+        # twice and was counted twice in the summary line.
+        deal = carded(AUTO, 42.0)
+        deal.target_hit = SimpleNamespace(
+            label="BUY ZONE", in_buy_zone=True, threshold=50.0, price_known=True,
+            target=SimpleNamespace(label="PCA auto"),
+        )
+        body = body_of([deal])
+        later = body[body.index("COOL CARDS"):]
+        assert "shown above under TARGET CARD HITS" in later
+        assert "Cost" not in later
