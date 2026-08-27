@@ -457,3 +457,29 @@ class TestCollapseAcrossCardTypes:
         collapsed = price_history.collapse_duplicates(history)
         assert [o["id"] for o in collapsed["Munetaka Murakami|graded"]] == ["b"]
         assert [o["id"] for o in collapsed["Munetaka Murakami|raw"]] == ["a"]
+
+
+class TestObservedDates:
+    """The run marker says when a scan last COMPLETED, which means emailed.
+    The corpus says what was actually looked at. Since the corpus is saved
+    before the send, only the second can tell a failed send from a missed
+    run -- and the report says the two differently."""
+
+    def test_every_date_in_the_corpus_is_reported(self):
+        history = {
+            "Caleb Williams|raw": [
+                {"id": "1", "price": 10.0, "date": "2026-08-21"},
+                {"id": "2", "price": 12.0, "date": "2026-08-23"},
+            ],
+            "Kyle Teel|graded": [{"id": "3", "price": 99.0, "date": "2026-08-21"}],
+        }
+
+        assert price_history.observed_dates(history) == {"2026-08-21", "2026-08-23"}
+
+    def test_a_row_with_no_date_is_not_a_date(self):
+        history = {"Caleb Williams|raw": [{"id": "1", "price": 10.0}]}
+
+        assert price_history.observed_dates(history) == set()
+
+    def test_an_empty_corpus_has_no_dates(self):
+        assert price_history.observed_dates({}) == set()

@@ -787,6 +787,22 @@ def build_search_suggestions(cfg, listings) -> dict:
 # --------------------------------------------------------------------------
 
 
+def _scanned_but_unreported(history, last_run_path, today_str) -> Optional[int]:
+    """How many of the days missing from the run marker the corpus covers.
+
+    A day in here was scanned and only the email failed, so its listings are
+    on disk and still count towards comps. A day NOT in here was never
+    looked at, and eBay's alert emails do not look back far enough to get it
+    later. The report says the two differently because the reader can act on
+    one of them and not the other.
+    """
+    last = run_marker.last_run_date(last_run_path)
+    if last is None:
+        return None
+    seen = price_history.observed_dates(history)
+    return sum(1 for date in seen if last < date < today_str)
+
+
 def run(args: argparse.Namespace) -> None:
     logger = logging.getLogger("main")
     logger.info("Starting daily card deal scan (dry_run=%s)", args.dry_run)
@@ -831,6 +847,13 @@ def run(args: argparse.Namespace) -> None:
         recorded = record_observations(listings, history, today_str)
         logger.info("Recorded %d asking-price observation(s) (auctions and blocked listings excluded)", recorded)
         history = price_history.prune_old(history, cfg.ebay_alert_price_history_max_age_days, today)
+        # Read before this run records anything, so today is not counted as
+        # one of the days that went unreported. See observed_dates: a gap in
+        # the run marker means "no email went out", which is not the same as
+        # "nothing was scanned" now that the corpus is saved before the send.
+        stats.scanned_but_unreported_days = _scanned_but_unreported(
+            history, cfg.last_run_path, today_str
+        )
         observations = price_history.deduped_observations(history)
 
     else:

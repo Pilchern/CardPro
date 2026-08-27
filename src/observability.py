@@ -88,6 +88,11 @@ class RunStats:
     #: could mean eBay sends no fuller title (a real ceiling) or that we are
     #: throwing one away (our bug). None means the run never measured it.
     titles_recovery_refused_pct: Optional[float] = None
+    #: Of the days missing from the run marker, how many the corpus DOES
+    #: hold observations for. Those days were scanned and only the email
+    #: failed, which is a different loss from never having looked -- see
+    #: price_history.observed_dates.
+    scanned_but_unreported_days: Optional[int] = None
 
     rejections: reasons.RejectionLog = field(default_factory=reasons.RejectionLog)
     warnings: list = field(default_factory=list)
@@ -186,14 +191,29 @@ class RunStats:
         ]
 
         if self.days_since_last_run is not None and self.days_since_last_run > 1:
-            lines.append(
-                "!! {} day(s) since the last completed scan -- {} day(s) of listings were "
-                "never seen and cannot be recovered (eBay's alert emails only look back "
-                "a couple of days). Check the Actions tab: GitHub drops scheduled "
-                "workflows under load.".format(
-                    self.days_since_last_run, self.days_since_last_run - 1
+            missed = self.days_since_last_run - 1
+            # The marker only records runs that finished by EMAILING you, and
+            # the corpus is written before the send. So a gap in the marker
+            # has two causes with opposite consequences, and claiming the
+            # worse one when the corpus disproves it is the same overclaim
+            # this project refuses everywhere else.
+            scanned = self.scanned_but_unreported_days or 0
+            unseen = max(missed - scanned, 0)
+            if unseen:
+                lines.append(
+                    "!! {} day(s) since the last completed scan -- {} day(s) of listings were "
+                    "never seen and cannot be recovered (eBay's alert emails only look back "
+                    "a couple of days). Check the Actions tab: GitHub drops scheduled "
+                    "workflows under load.".format(self.days_since_last_run, unseen)
                 )
-            )
+            if scanned:
+                lines.append(
+                    "!! {} day(s) were scanned but never reached you -- the listings are in "
+                    "the corpus and still count towards comps, but no email went out, so "
+                    "anything worth acting on that day went unseen. That is a send failure "
+                    "rather than a missed run: check the Actions tab and the app "
+                    "password.".format(scanned)
+                )
 
         if self.titles_truncated_pct is not None:
             lines.append(

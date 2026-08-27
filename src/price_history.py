@@ -383,6 +383,25 @@ def collapse_duplicates(history: dict) -> dict:
     return _collapse_across_card_types(collapsed)
 
 
+def observed_dates(history: dict) -> set:
+    """Every date the corpus holds a row for, as YYYY-MM-DD strings.
+
+    Answers a question the run marker cannot: the marker says when a scan
+    last COMPLETED, and completing means the email went out. Since the
+    corpus is saved before the send, a run whose SMTP failed leaves a gap in
+    the marker and no gap here -- and the two cases call for opposite
+    reactions. "A day of listings was never seen" is unrecoverable; "a day
+    was seen and you were not told" is a day of listings sitting in the
+    corpus that you can still go and look at.
+    """
+    return {
+        obs["date"]
+        for entries in history.values()
+        for obs in entries
+        if obs.get("date")
+    }
+
+
 def prune_old(history: dict, max_age_days: int, today: datetime) -> dict:
     cutoff = today - timedelta(days=max_age_days)
     pruned: dict = {}

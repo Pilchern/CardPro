@@ -128,6 +128,32 @@ def test_a_gap_since_the_last_run_is_warned_about():
     assert "2 day(s) of listings were never seen" in footer
 
 
+def test_a_day_that_was_scanned_but_never_emailed_is_not_called_unrecoverable():
+    """The run marker records runs that finished by EMAILING you, and the
+    corpus is now saved before the send -- so a failed send leaves a gap in
+    the marker with the day's listings safely on disk. Calling that "never
+    seen and cannot be recovered" is an overclaim, and it points the reader
+    at the wrong thing to go and fix."""
+    stats = _stats(listings_matched_to_watchlist=5)
+    stats.days_since_last_run = 3
+    stats.scanned_but_unreported_days = 2
+    footer = "\n".join(stats.health_lines())
+
+    assert "never seen" not in footer
+    assert "2 day(s) were scanned but never reached you" in footer
+    assert "still count towards comps" in footer
+
+
+def test_a_gap_with_some_days_scanned_and_some_not_says_both():
+    stats = _stats(listings_matched_to_watchlist=5)
+    stats.days_since_last_run = 4
+    stats.scanned_but_unreported_days = 1
+    footer = "\n".join(stats.health_lines())
+
+    assert "2 day(s) of listings were never seen" in footer
+    assert "1 day(s) were scanned but never reached you" in footer
+
+
 def test_the_ordinary_daily_cadence_is_not_warned_about():
     stats = _stats(listings_matched_to_watchlist=5)
     stats.days_since_last_run = 1
