@@ -163,3 +163,55 @@ class TestReextract:
         stale = obs(title="2024 Panini Prizm Caleb Williams #301", price=25.0, date="2026-08-21")
         fresh = replay_corpus.reextract([stale])[0]
         assert (fresh["price"], fresh["date"], fresh["id"]) == (25.0, "2026-08-21", stale["id"])
+
+
+class TestReextractionDelta:
+    """The measurement the extraction work has been missing. Until titles
+    were recorded, a change to card_identity.py could be argued for and
+    never shown to help."""
+
+    def render(self, stored, refreshed):
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            replay_corpus.report_reextraction_delta(stored, refreshed)
+        return buffer.getvalue()
+
+    def _pair(self, title, **stored_overrides):
+        stored = obs(title=title, **stored_overrides)
+        return [stored], replay_corpus.reextract([stored])
+
+    def test_it_reports_what_the_parser_now_finds_that_it_did_not(self):
+        stored, refreshed = self._pair(
+            "2024 Panini Prizm Caleb Williams Silver Prizm RC #301",
+            set_name=None, parallel=None, card_number=None, year=None,
+        )
+        output = self.render(stored, refreshed)
+        assert "set_name" in output
+        assert "+1" in output
+
+    def test_a_field_that_changed_value_counts_even_though_coverage_did_not(self):
+        # "Chrome" becoming "Topps Chrome" moves a listing between buckets
+        # without moving a single coverage percentage.
+        stored, refreshed = self._pair(
+            "2026 Topps Chrome Kyle Teel Refractor RA-KT", set_name="Chrome",
+        )
+        assert "1 row(s) (100.0%) would be keyed differently today" in self.render(stored, refreshed)
+
+    def test_an_unchanged_row_is_not_counted_as_changed(self):
+        stored, refreshed = self._pair(
+            "2024 Panini Prizm Caleb Williams Silver Prizm #301",
+            year=2024, set_name="Prizm", parallel="Silver Prizm", card_number="301",
+        )
+        assert "0 row(s) (0.0%) would be keyed differently" in self.render(stored, refreshed)
+
+    def test_rows_with_no_title_are_left_out_of_the_denominator(self):
+        # Counting rows the parser was never given a chance at understates
+        # the improvement for no reason.
+        titled = obs(title="2024 Panini Prizm Caleb Williams Silver Prizm #301", set_name=None)
+        untitled = obs(title="", id="other")
+        stored = [titled, untitled]
+        assert "from 1 stored title" in self.render(stored, replay_corpus.reextract(stored))
+
+    def test_an_untitled_corpus_says_so_rather_than_dividing_by_zero(self):
+        stored = [obs(title="")]
+        assert "nothing to re-extract against" in self.render(stored, replay_corpus.reextract(stored))

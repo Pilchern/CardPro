@@ -894,6 +894,7 @@ real bug becomes one.
 python -m scripts.replay_corpus
 python -m scripts.replay_corpus --legacy        # also show what the v1 engine did
 python -m scripts.replay_corpus --min-comps 5   # try a stricter sample gate
+python -m scripts.replay_corpus --reextract     # re-parse the stored titles with today's code
 ```
 
 This replays every observation in `data/ebay_alert_price_history.json` as

@@ -171,6 +171,53 @@ def reextract(observations) -> list:
     return updated
 
 
+def report_reextraction_delta(stored, refreshed) -> None:
+    """Stored fields against what today's parser makes of the same titles.
+
+    This is the measurement the extraction work has been missing. Until
+    titles were recorded, a change to card_identity.py could be argued for
+    and never shown to help; with them, the two columns below are the
+    before and after of every change since a row was written.
+
+    Only rows that actually carry a title are counted. Including the older
+    ones would put the parser's improvement in a denominator full of rows it
+    was never given a chance at, which understates it for no reason.
+    """
+    pairs = [
+        (old, new)
+        for old, new in zip(stored, refreshed)
+        if old.get("title")
+    ]
+    if not pairs:
+        print("  (no stored titles yet -- nothing to re-extract against)")
+        return
+
+    total = len(pairs)
+    print("  re-extracted from {} stored title(s):".format(total))
+    print("    {:<12} {:>10} {:>10} {:>9}".format("field", "as stored", "today", "change"))
+    for field in IDENTITY_FIELDS + ("grader",):
+        was = sum(1 for old, _ in pairs if _resolved(old, field))
+        now = sum(1 for _, new in pairs if _resolved(new, field))
+        arrow = "  --" if now == was else "{:+d}".format(now - was)
+        print(
+            "    {:<12} {:>9.1%} {:>10.1%} {:>9}".format(
+                field, was / total, now / total, arrow
+            )
+        )
+
+    # A field that changed VALUE matters as much as one that appeared:
+    # "Chrome" becoming "Topps Chrome" moves a listing between buckets
+    # without moving a coverage percentage at all.
+    changed = sum(
+        1
+        for old, new in pairs
+        if any(old.get(f) != new.get(f) for f in IDENTITY_FIELDS)
+    )
+    print(
+        "    {} row(s) ({:.1%}) would be keyed differently today".format(changed, changed / total)
+    )
+
+
 def report_title_coverage(observations) -> None:
     with_titles = sum(1 for obs in observations if obs.get("title"))
     total = len(observations) or 1
@@ -325,8 +372,9 @@ def main() -> None:
     print(f"  basis: {dict(basis)}")
     report_title_coverage(observations)
     if args.reextract:
-        observations = reextract(observations)
-        print("  (identity re-extracted from stored titles)")
+        refreshed = reextract(observations)
+        report_reextraction_delta(observations, refreshed)
+        observations = refreshed
     print()
 
     report_identity_coverage(observations, args.min_comps)
