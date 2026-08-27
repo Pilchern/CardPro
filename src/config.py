@@ -53,6 +53,9 @@ class Config:
     ebay_alert_price_history_max_age_days: int
 
     seen_listings_path: Path
+    # When the daily scan last completed. Read by the backup scheduled run
+    # so it can skip a day that already ran -- see src/run_marker.py.
+    last_run_path: Path
     prune_after_days: int
 
     email_subject_prefix: str
@@ -189,6 +192,9 @@ def load_config() -> Config:
         valuation_min_distinct_comp_dates=int(valuation.get("min_distinct_comp_dates", 3)),
         valuation_min_comp_span_days=int(valuation.get("min_comp_span_days", 7)),
         sold_comps_path=ROOT_DIR / sold.get("path", "config/sold_comps.json"),
+        last_run_path=ROOT_DIR / _section(settings, "dedupe").get(
+            "last_run_path", "data/last_run.json"
+        ),
         require_flag_eligible_comp=bool(valuation.get("require_flag_eligible_comp", True)),
         fee_marketplace_pct=float(economics.get("marketplace_fee_pct", 13.25)),
         fee_marketplace_fixed=float(economics.get("marketplace_fixed_fee", 0.30)),

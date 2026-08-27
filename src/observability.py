@@ -73,6 +73,11 @@ class RunStats:
     # price" is the single biggest caveat on everything above it, and it
     # should be visible on the days it is true, not only when it changes.
     sold_comps_summary: str = ""
+    #: Whole days since the last completed scan, or None when unknown. 1 is
+    #: the ordinary cadence; more than that is a hole in the corpus, which
+    #: matters more than any single day's contents -- a gap values things
+    #: slightly wrong for the whole retention window afterwards.
+    days_since_last_run: Optional[int] = None
 
     rejections: reasons.RejectionLog = field(default_factory=reasons.RejectionLog)
     warnings: list = field(default_factory=list)
@@ -169,6 +174,16 @@ class RunStats:
                 self.blocked_by_negative_signal,
             ),
         ]
+
+        if self.days_since_last_run is not None and self.days_since_last_run > 1:
+            lines.append(
+                "!! {} day(s) since the last completed scan -- {} day(s) of listings were "
+                "never seen and cannot be recovered (eBay's alert emails only look back "
+                "a couple of days). Check the Actions tab: GitHub drops scheduled "
+                "workflows under load.".format(
+                    self.days_since_last_run, self.days_since_last_run - 1
+                )
+            )
 
         if self.sold_comps_summary:
             lines.append(self.sold_comps_summary)

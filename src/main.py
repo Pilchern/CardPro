@@ -60,6 +60,7 @@ from src import (
     price_history,
     reasons,
     report,
+    run_marker,
     sold_comps,
     search_terms,
     targets,
@@ -776,6 +777,8 @@ def run(args: argparse.Namespace) -> None:
     today = datetime.now(timezone.utc)
     today_str = today.strftime("%Y-%m-%d")
     stats = observability.RunStats()
+    # Read BEFORE the run writes its own marker, or the answer is always 0.
+    stats.days_since_last_run = run_marker.gap_days(cfg.last_run_path, today_str)
 
     ebay_api_enabled = bool(cfg.ebay_client_id and cfg.ebay_client_secret)
     ebay_data_available = ebay_api_enabled or cfg.ebay_alerts_enabled
@@ -897,6 +900,11 @@ def run(args: argparse.Namespace) -> None:
         price_history.save(cfg.ebay_alert_price_history_path, history)
     seen = dedupe.prune_old(seen, cfg.prune_after_days, today)
     dedupe.save_seen(cfg.seen_listings_path, seen)
+    # Last, and only on the path where the email actually went out. The
+    # marker's one job is to answer "did today's scan complete", and writing
+    # it before the send would let a failed send record a run that never
+    # reached anybody.
+    run_marker.save(cfg.last_run_path, today_str, len(listings))
     logger.info("Done")
 
 
@@ -938,12 +946,28 @@ def main() -> None:
     parser.add_argument(
         "--dry-run", action="store_true", help="Print the report instead of emailing it; don't write state files"
     )
+    parser.add_argument(
+        "--skip-if-ran-today",
+        action="store_true",
+        help="Exit without doing anything if a scan already completed today. For the "
+        "backup scheduled run -- GitHub drops scheduled workflows under load, and a "
+        "dropped run is the one failure nothing else here can see.",
+    )
     args = parser.parse_args()
 
     setup_logging()
     logger = logging.getLogger("main")
 
     try:
+        if args.skip_if_ran_today:
+            from src.config import ROOT_DIR as _root
+
+            marker = _root / "data" / "last_run.json"
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            if run_marker.ran_on(marker, today):
+                logger.info("A scan already completed on %s -- nothing to do.", today)
+                return
+            logger.info("No scan recorded for %s yet -- running the backup scan.", today)
         run(args)
     except Exception:
         logger.exception("Card deal scan failed with an unhandled error")

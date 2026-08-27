@@ -1048,3 +1048,66 @@ class TestSearchCoverageEvidence:
     def test_a_plain_raw_card_records_nothing_to_go_on(self):
         observed = self._observed("2024 Topps Caleb Williams")
         assert not observed.get("Caleb Williams")
+
+
+class TestTheRunMarker:
+    """A dropped scheduled run was the one failure nothing here could see --
+    no email, no failure notification, no red job. The backup run reads this
+    marker to decide whether the day still needs scanning."""
+
+    def _args(self, **overrides):
+        fields = dict(dry_run=False, skip_if_ran_today=False)
+        fields.update(overrides)
+        return argparse.Namespace(**fields)
+
+    def _wire(self, main_module, monkeypatch, sent):
+        monkeypatch.setattr(
+            main_module.ebay_email_alerts, "fetch_alert_listings",
+            lambda *a, counters=None, **k: (
+                counters.update(messages=1) if counters is not None else None,
+                [alert_item("https://www.ebay.com/itm/1", 25.0)],
+            )[1],
+        )
+        monkeypatch.setattr(
+            main_module.emailer, "send_email",
+            lambda subject, body, *rest: sent.append((subject, body)),
+        )
+
+    def test_a_completed_run_records_the_day(self, project_with_alerts_enabled,
+                                             monkeypatch, tmp_path):
+        main_module = project_with_alerts_enabled
+        self._wire(main_module, monkeypatch, [])
+        main_module.run(self._args())
+        marker = json.loads((tmp_path / "data" / "last_run.json").read_text())
+        assert marker["date"] == datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    def test_a_dry_run_records_nothing(self, project_with_alerts_enabled, monkeypatch, tmp_path):
+        main_module = project_with_alerts_enabled
+        self._wire(main_module, monkeypatch, [])
+        main_module.run(self._args(dry_run=True))
+        assert not (tmp_path / "data" / "last_run.json").exists()
+
+    def test_a_failed_send_records_nothing(self, project_with_alerts_enabled,
+                                           monkeypatch, tmp_path):
+        # The marker's one job is to answer "did today's scan complete".
+        # Writing it before the send would let a failed send record a run
+        # that never reached anybody -- and the backup would then skip.
+        main_module = project_with_alerts_enabled
+        self._wire(main_module, monkeypatch, [])
+        monkeypatch.setattr(
+            main_module.emailer, "send_email",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("smtp down")),
+        )
+        with pytest.raises(RuntimeError):
+            main_module.run(self._args())
+        assert not (tmp_path / "data" / "last_run.json").exists()
+
+    def test_the_gap_reaches_the_health_footer(self, project_with_alerts_enabled,
+                                               monkeypatch, tmp_path):
+        main_module = project_with_alerts_enabled
+        (tmp_path / "data").mkdir(parents=True, exist_ok=True)
+        main_module.run_marker.save(tmp_path / "data" / "last_run.json", "2020-01-01", 5)
+        sent = []
+        self._wire(main_module, monkeypatch, sent)
+        main_module.run(self._args())
+        assert "since the last completed scan" in sent[0][1]

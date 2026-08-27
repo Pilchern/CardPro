@@ -115,3 +115,25 @@ def test_health_lines_are_short_enough_to_skim():
     stats = _stats()
     stats.rejections.record(reasons.Reason.NO_COMP_AT_ANY_LEVEL)
     assert len(stats.health_lines()) <= 12
+
+
+def test_a_gap_since_the_last_run_is_warned_about():
+    """A missed day is a hole in the corpus, and eBay's alert emails only
+    look back a couple of days -- so those listings are gone for good. It
+    matters more than any single day's contents and was invisible."""
+    stats = _stats(listings_matched_to_watchlist=5)
+    stats.days_since_last_run = 3
+    footer = "\n".join(stats.health_lines())
+    assert "3 day(s) since the last completed scan" in footer
+    assert "2 day(s) of listings were never seen" in footer
+
+
+def test_the_ordinary_daily_cadence_is_not_warned_about():
+    stats = _stats(listings_matched_to_watchlist=5)
+    stats.days_since_last_run = 1
+    assert not any("since the last completed scan" in line for line in stats.health_lines())
+
+
+def test_an_unknown_gap_says_nothing():
+    stats = _stats(listings_matched_to_watchlist=5)
+    assert not any("since the last completed scan" in line for line in stats.health_lines())
