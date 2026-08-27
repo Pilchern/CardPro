@@ -438,16 +438,36 @@ class TestEvaluateListings:
         assert listing.rejection_reason == reasons.Reason.MULTI_PLAYER_CARD
 
     def test_auction_is_never_an_opportunity_however_cheap(self):
-        observations = [observation(400.0, "o%d" % i) for i in range(6)]
+        # Spread over real mornings: a bucket captured in one scan is one
+        # snapshot, and the engine refuses to stand behind it. This fixture
+        # used the single-date form, so it was asserting that a max bid comes
+        # out of a comp CardPro will NOT stand behind -- the defect below.
         listing = make_listing(EXACT_TITLE, 20.0, listing_id="A1", listing_type="auction", bid_count=3)
         stats = observability.RunStats()
-        main_module.evaluate_listings([listing], engine_for(observations), fake_cfg(), stats)
+        main_module.evaluate_listings(
+            [listing], engine_for(spread_observations(400.0)), fake_cfg(), stats
+        )
 
         assert listing.is_opportunity is False
         assert listing.rejection_reason == reasons.Reason.AUCTION_CURRENT_BID_NOT_A_PRICE
         # ...but it IS valued, and it gets the number that makes it actionable
         assert listing.market_value == 400.0
         assert listing.max_rational_bid > 0
+
+    def test_a_context_only_comp_never_produces_a_max_bid(self):
+        """The max bid is the one number in the report that tells you to
+        spend money -- "the most you can pay and still keep your margin.
+        Above this, stop." On the live corpus it was being computed from
+        price-bracket medians, putting a $729.31 ceiling on a $125 card two
+        lines under "Market: not established"."""
+        observations = [observation(400.0, "o%d" % i) for i in range(6)]
+        listing = make_listing(EXACT_TITLE, 20.0, listing_id="A1", listing_type="auction", bid_count=3)
+        stats = observability.RunStats()
+        main_module.evaluate_listings([listing], engine_for(observations), fake_cfg(), stats)
+
+        assert listing.comp_match is not None
+        assert listing.comp_match.flag_eligible is False
+        assert listing.max_rational_bid is None
 
     def test_context_only_comp_can_never_flag_a_deal(self):
         # Failure mode #1: the price-tier level is defined by price, so the
