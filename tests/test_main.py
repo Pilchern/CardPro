@@ -895,11 +895,27 @@ class TestRunEndToEnd:
 
     def _wire(self, main_module, monkeypatch, items, sent):
         """Fake the two network edges -- IMAP in, SMTP out -- and nothing
-        else. Everything between them is the real pipeline."""
+        else. Everything between them is the real pipeline.
+
+        The counters this sets are the ones the real fetch_alert_listings
+        sets, on the same condition (title counters only when it returns
+        results). That fidelity is not decoration: the fake used to report
+        `messages` alone, so `titles_seen` stayed 0, the truncation-stats
+        branch of fetch_ebay_alert_active never ran under test, and a
+        NameError living in that branch crashed a production scan with the
+        whole suite green.
+        """
         def fake_fetch(gmail_address, gmail_app_password, sender_contains,
                        lookback_days, mailbox=None, counters=None):
             if counters is not None:
                 counters["messages"] = 1 if items else 0
+                if items:
+                    counters["titles_seen"] = len(items)
+                    counters["titles_truncated"] = sum(
+                        1 for item in items
+                        if main_module.ebay_email_alerts.looks_truncated(item["title"])
+                    )
+                    counters["titles_recovery_refused"] = 0
             return items
 
         monkeypatch.setattr(main_module.ebay_email_alerts, "fetch_alert_listings", fake_fetch)
@@ -1054,6 +1070,60 @@ class TestRunEndToEnd:
         subject, body = sent[0]
         assert "CHECK THIS" in subject
         assert "eBay changed their email template" in body
+
+    def test_the_truncation_stats_branch_runs_and_logs(self, project_with_alerts_enabled,
+                                                       monkeypatch, caplog):
+        # This branch crashed a live scan with `NameError: name 'logger' is
+        # not defined` -- main.py bound `logger` inside four functions and
+        # fetch_ebay_alert_active, which logs here, was not one of them. It
+        # only ever ran in production because the test fake never set
+        # `titles_seen`. Exercising it with a truncated title keeps both the
+        # percentages and the log line covered.
+        sent = []
+        truncated = "2024 Panini Prizm Caleb Williams Silver #301 PSA 1..."
+        assert main_module.ebay_email_alerts.looks_truncated(truncated)
+        self._wire(
+            project_with_alerts_enabled, monkeypatch,
+            [
+                alert_item("https://www.ebay.com/itm/1", 25.0),
+                alert_item("https://www.ebay.com/itm/2", 30.0, title=truncated),
+            ],
+            sent,
+        )
+        with caplog.at_level(logging.INFO, logger="main"):
+            project_with_alerts_enabled.run(self._args())
+
+        assert len(sent) == 1
+        assert any("still truncated" in record.message for record in caplog.records)
+
+    def test_fetch_ebay_alert_active_logs_without_a_local_logger(self, monkeypatch):
+        # The narrow version of the test above: call the function directly so
+        # the regression is pinned to fetch_ebay_alert_active rather than to
+        # a whole run().
+        stats = observability.RunStats()
+        cfg = SimpleNamespace(
+            gmail_address="fake@gmail.com",
+            gmail_app_password="fakepassword",
+            ebay_alerts_sender_contains="ebay.com",
+            ebay_alerts_lookback_days=2,
+            ebay_alerts_mailbox=None,
+            players=["Caleb Williams"],
+            target_cards=[],
+        )
+
+        def fake_fetch(*_args, counters=None, **_kwargs):
+            if counters is not None:
+                counters["messages"] = 1
+                counters["titles_seen"] = 4
+                counters["titles_truncated"] = 3
+                counters["titles_recovery_refused"] = 1
+            return []
+
+        monkeypatch.setattr(main_module.ebay_email_alerts, "fetch_alert_listings", fake_fetch)
+
+        assert main_module.fetch_ebay_alert_active(cfg, stats) == []
+        assert stats.titles_truncated_pct == 75.0
+        assert stats.titles_recovery_refused_pct == 25.0
 
 
 class TestSearchCoverageEvidence:

@@ -41,6 +41,7 @@ from collections import defaultdict
 from datetime import date, datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -69,6 +70,14 @@ from src.config import ROOT_DIR, load_config
 from src.models import Listing
 
 LOG_PATH = ROOT_DIR / "logs" / "scraper.log"
+
+# Module-level, like every other module in src/. It used to be created
+# fresh inside each function that logged, which meant a function that
+# logged but forgot the line (fetch_ebay_alert_active did) raised
+# NameError mid-scan instead of writing a log record. Logger objects
+# resolve their handlers at call time, so binding one here before
+# setup_logging() runs is safe.
+logger = logging.getLogger("main")
 
 # Caps scraper.log at ~2MB, keeping 5 rotated backups (scraper.log.1 .. .5)
 # so a script that runs once a day forever doesn't grow the log unbounded.
@@ -432,7 +441,6 @@ def mark_truncated_titles(listings) -> None:
     already been made against a grade that could be off by a factor of ten.
     See docs/CARDPRO_2_AUDIT.md failure mode #5.
     """
-    logger = logging.getLogger("main")
     uncertain = 0
     for listing in listings:
         if not ebay_email_alerts.looks_truncated(listing.title):
@@ -819,7 +827,6 @@ def _scanned_but_unreported(history, last_run_path, today_str) -> Optional[int]:
 
 
 def run(args: argparse.Namespace) -> None:
-    logger = logging.getLogger("main")
     logger.info("Starting daily card deal scan (dry_run=%s)", args.dry_run)
 
     cfg = load_config()
@@ -989,7 +996,6 @@ def _notify_failure(trace: str = "") -> None:
     _TRACE = (trace or traceback.format_exc() or "").strip()[:12000]
     """Best-effort failure email so a crashed run doesn't fail silently --
     "never go silent" applies to errors too, not just quiet days."""
-    logger = logging.getLogger("main")
     try:
         cfg = load_config()
     except Exception:
@@ -1029,7 +1035,6 @@ def main() -> None:
     args = parser.parse_args()
 
     setup_logging()
-    logger = logging.getLogger("main")
 
     try:
         if args.skip_if_ran_today:
