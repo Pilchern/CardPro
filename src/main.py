@@ -61,6 +61,7 @@ from src import (
     price_history,
     reasons,
     report,
+    report_html,
     run_marker,
     sold_comps,
     search_terms,
@@ -931,7 +932,7 @@ def run(args: argparse.Namespace) -> None:
         "; ".join(stats.rejections.summary_lines()[:3]) or "none",
     )
 
-    subject, body = report.build_report(
+    model = report.build_model(
         listings,
         cfg.discount_threshold_pct,
         date.today(),
@@ -952,9 +953,15 @@ def run(args: argparse.Namespace) -> None:
         cheap_auction_floor=cfg.cheap_auction_floor,
         cheap_auction_ceiling=cfg.cheap_auction_ceiling,
     )
-    subject = f"{cfg.email_subject_prefix} {subject}"
+    body = report.render_text(model)
+    html_body = report_html.render(model)
+    subject = f"{cfg.email_subject_prefix} {model.subject}"
 
     if args.dry_run:
+        # The text part, because that is the one a terminal can show. The
+        # HTML part is still built above so a dry run exercises it -- a
+        # renderer that only runs when email is actually being sent is a
+        # renderer whose first failure happens in production.
         print(f"SUBJECT: {subject}\n\n{body}")
         logger.info("Dry run -- not sending email or updating state files")
         return
@@ -971,7 +978,8 @@ def run(args: argparse.Namespace) -> None:
     if history is not None:
         price_history.save(cfg.ebay_alert_price_history_path, history)
 
-    emailer.send_email(subject, body, cfg.gmail_address, cfg.gmail_app_password, cfg.email_to)
+    emailer.send_email(subject, body, cfg.gmail_address, cfg.gmail_app_password,
+                       cfg.email_to, html_body=html_body)
 
     # AFTER the send, and it must stay after -- do not "tidy" this back
     # together with the corpus save above. The seen file means "I have

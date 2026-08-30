@@ -19,6 +19,7 @@ checked first.
 
 - [What changed in 2.0, and why you'll see fewer deals](#what-changed-in-20-and-why-youll-see-fewer-deals)
 - [What it does](#what-it-does)
+- [The two emails](#the-two-emails)
 - [How a deal is decided](#how-a-deal-is-decided)
 - [Comps: what may and may not declare a deal](#comps-what-may-and-may-not-declare-a-deal)
 - [Cheap, underpriced, flippable, collectible, target](#cheap-underpriced-flippable-collectible-target)
@@ -100,8 +101,13 @@ more than one that says "95% under market" about a common.
    readable number of listings. Everything it leaves out is counted in the
    footer with the setting that would show it -- see
    [Focus](#focus-what-reaches-the-email-and-how-long-it-is).
-8. Emails a **sectioned, decision-first report**, each section omitted when
-   empty:
+8. Emails a **sectioned, decision-first report** -- sent as
+   `multipart/alternative`, so a phone gets a laid-out HTML version and
+   anything else (a terminal, a filter that strips markup, a client with
+   images off) still gets the full plain-text one. Both are rendered from
+   the same `report.ReportModel`, so they cannot describe a card
+   differently; see [The two emails](#the-two-emails). Each section is
+   omitted when empty:
 
    `ACT NOW` · `DEALS` · `TARGET CARD HITS` · `CHEAP AUCTIONS` ·
    `AUCTIONS ENDING SOON` · `COOL CARDS` · `CHEAP FINDS` · `YOUNG CORE` ·
@@ -162,6 +168,48 @@ Every listing exits the pipeline with either a slot in the report or exactly
 one recorded reason, counted in the footer (`src/reasons.py`). Nothing is
 dropped silently -- 21% of listings used to vanish with no flag, no count
 and no explanation.
+
+## The two emails
+
+The report goes out as `multipart/alternative`: a plain-text part and an
+HTML part. Your mail client picks one -- in practice a phone shows the HTML
+and a terminal shows the text.
+
+They are not two reports. `report.build_model()` decides everything that is
+a judgment -- which cards, in which sections, under which headline, with
+which caveats -- and returns a `ReportModel`. `report.render_text()` and
+`report_html.render()` each turn that same model into an email. A renderer
+chooses typography and has no way to add, drop or reword a fact, which is
+what makes "whichever half you read is the same report" true rather than
+hopeful. A test asserts field-by-field that the HTML carries everything the
+text does.
+
+The plain-text part is never dropped. It is the version that still works
+when the markup is stripped, when the client is a terminal, and when the
+HTML renderer has a bug.
+
+Three things about the HTML worth knowing:
+
+- **Colour is a content rule, not decoration.** A saturated accent means
+  CardPro is standing behind a number in that section. `ACT NOW`, `DEALS`,
+  `TARGET CARD HITS` and `OFFER OPPORTUNITIES` get one. Everything that
+  shows a card *without* valuing it -- `CHEAP AUCTIONS`, `AUCTIONS ENDING
+  SOON`, `COOL CARDS`, `CHEAP FINDS`, `YOUNG CORE`, and the
+  not-a-recommendation sections -- is grey. Painting a browse section like a
+  deal would undo in CSS the separation the valuation engine enforces in
+  code.
+- **It follows your phone's dark mode**, and carries no images, no web
+  fonts and no tracking pixels -- so nothing is blocked, nothing loads
+  slowly, and nothing looks broken with remote content off (the Apple Mail
+  default).
+- **Every listing title is HTML-escaped.** They are written by strangers on
+  eBay.
+
+To see it before it lands in your inbox:
+
+```bash
+python -m scripts.rehearse_run --html /tmp/today.html   # then open it in a browser
+```
 
 ## How a deal is decided
 
@@ -1336,8 +1384,9 @@ src/
   craigslist_links.py                     -- builds quick-check search URLs (no scraping)
   dedupe.py                                -- seen-listings tracking
   focus.py                                  -- what reaches the email: price ceiling, bidding room, length cap
-  report.py                                  -- the decision-first sectioned email
-  emailer.py                                  -- Gmail SMTP send
+  report.py                                  -- decides the report, and renders the text email
+  report_html.py                              -- renders the same model as the HTML email
+  emailer.py                                   -- Gmail SMTP send (multipart: text + HTML)
   config.py                                    -- loads .env + config JSON
   models.py                                     -- the Listing dataclass
 data/

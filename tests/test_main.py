@@ -921,7 +921,7 @@ class TestRunEndToEnd:
         monkeypatch.setattr(main_module.ebay_email_alerts, "fetch_alert_listings", fake_fetch)
         monkeypatch.setattr(
             main_module.emailer, "send_email",
-            lambda subject, body, *rest: sent.append((subject, body)),
+            lambda subject, body, *rest, html_body=None: sent.append((subject, body, html_body)),
         )
 
     def test_a_run_reads_the_inbox_and_sends_one_email(self, project_with_alerts_enabled, monkeypatch):
@@ -932,7 +932,7 @@ class TestRunEndToEnd:
         )
         project_with_alerts_enabled.run(self._args())
         assert len(sent) == 1
-        subject, body = sent[0]
+        subject, body, _html = sent[0]
         assert subject.startswith("[Card Deals]")
         assert "CARDPRO DAILY" in body
 
@@ -1064,10 +1064,10 @@ class TestRunEndToEnd:
         monkeypatch.setattr(main_module.ebay_email_alerts, "fetch_alert_listings", fake_fetch)
         monkeypatch.setattr(
             main_module.emailer, "send_email",
-            lambda subject, body, *rest: sent.append((subject, body)),
+            lambda subject, body, *rest, html_body=None: sent.append((subject, body, html_body)),
         )
         main_module.run(self._args())
-        subject, body = sent[0]
+        subject, body, _html = sent[0]
         assert "CHECK THIS" in subject
         assert "eBay changed their email template" in body
 
@@ -1204,7 +1204,7 @@ class TestTheRunMarker:
         )
         monkeypatch.setattr(
             main_module.emailer, "send_email",
-            lambda subject, body, *rest: sent.append((subject, body)),
+            lambda subject, body, *rest, html_body=None: sent.append((subject, body, html_body)),
         )
 
     def test_a_completed_run_records_the_day(self, project_with_alerts_enabled,
