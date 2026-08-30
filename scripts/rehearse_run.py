@@ -84,6 +84,12 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="python -m scripts.rehearse_run")
     parser.add_argument("--titles", type=Path, help="File of TITLE | PRICE [| SHIPPING] lines.")
     parser.add_argument("--out", type=Path, help="Write the rendered email here as well.")
+    parser.add_argument(
+        "--html", type=Path,
+        help="Write the HTML part here and open it in a browser to see the real email. "
+             "A dry run prints the text part because a terminal cannot show the other "
+             "one -- but both are built either way.",
+    )
     args = parser.parse_args(argv)
 
     rows = read_titles(args.titles) if args.titles else SAMPLE_TITLES
@@ -119,6 +125,19 @@ def main(argv=None) -> int:
     main_module.ebay_email_alerts.fetch_alert_listings = fake_fetch
     main_module.emailer.send_email = _refuse_to_send
 
+    # Captured through the real renderer rather than re-rendered afterwards:
+    # a preview built by a different call than the email is a preview of
+    # something else.
+    captured_html = {}
+    real_render = main_module.report_html.render
+
+    def capture(model):
+        html = real_render(model)
+        captured_html["html"] = html
+        return html
+
+    main_module.report_html.render = capture
+
     import io
     import contextlib
 
@@ -131,6 +150,10 @@ def main(argv=None) -> int:
     if args.out:
         args.out.write_text(rendered)
         print("(also written to {})".format(args.out), file=sys.stderr)
+    if args.html:
+        args.html.write_text(captured_html.get("html", ""))
+        print("(HTML part written to {} -- open it in a browser)".format(args.html),
+              file=sys.stderr)
     return 0
 
 

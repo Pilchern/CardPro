@@ -50,6 +50,7 @@ from __future__ import annotations
 import re
 import textwrap
 from collections import OrderedDict
+from dataclasses import dataclass
 from datetime import date
 from typing import Optional
 
@@ -378,11 +379,72 @@ def _raw_line(label: str, text: str) -> str:
     return _INDENT + label.ljust(_LABEL_WIDTH) + text
 
 
-def _link_line(deal) -> str:
-    """The link, plus which source it came from. One source today, but the
-    discovery path is part of how much a listing's data can be trusted, so
-    it is never left implicit."""
-    return _raw_line("Link", "{}  ({})".format(deal.url, SOURCE_LABELS.get(deal.source, deal.source)))
+@dataclass(frozen=True)
+class CardBlock:
+    """One card's block, before anything has decided what it LOOKS like.
+
+    Every block type in this report is the same shape -- a headline, an
+    ordered list of labelled fields, sometimes the raw title, usually a link
+    -- and the only thing that varied was which fields got built. Holding
+    that shape as data rather than as a formatted string is what lets the
+    plain-text and HTML emails be two renderings of one report instead of
+    two reports that have to be kept saying the same thing by hand. This
+    project has been bitten by the second arrangement before: CardPro 2.0
+    exists partly because two near-duplicate flagging functions drifted.
+
+    Nothing here is a presentation decision. ``fields`` is already in the
+    order the block wants them, and a renderer may change the typography but
+    never the content or the order -- a report that says different things in
+    its two halves is worse than an ugly one.
+    """
+
+    index: int
+    player: str
+    description: str
+    grade: str
+    tags: tuple = ()
+    target_label: Optional[str] = None
+    fields: tuple = ()
+    #: The raw seller title, only when the headline is not already showing
+    #: it in full (see _headline_description).
+    title: Optional[str] = None
+    url: Optional[str] = None
+    source_label: Optional[str] = None
+
+
+def _card(index: int, deal: Listing, fields) -> CardBlock:
+    """Assemble a CardBlock from a deal and the fields a block type chose.
+
+    ``fields`` may contain None entries so a caller can write a conditional
+    field inline; they are dropped here.
+    """
+    description, whole_title = _headline_description(deal)
+    return CardBlock(
+        index=index,
+        player=deal.player,
+        description=description,
+        grade=_grade_text(deal),
+        tags=tuple(_tags(deal)),
+        target_label=(
+            getattr(deal.target_hit, "label", "MATCH") if deal.target_hit is not None else None
+        ),
+        fields=tuple(field for field in fields if field is not None),
+        title=None if whole_title else deal.title,
+        url=deal.url,
+        source_label=SOURCE_LABELS.get(deal.source, deal.source),
+    )
+
+
+def _text_block(card: CardBlock) -> str:
+    """A CardBlock as the plain-text email renders it."""
+    lines = [_headline_text(card)]
+    lines.extend(_field_line(label, text) for label, text in card.fields)
+    if card.title is not None:
+        lines.append(_field_line("Title", card.title))
+    if card.url is not None:
+        lines.append(_raw_line("Link", "{}  ({})".format(card.url, card.source_label)))
+    return "\n".join(lines)
+
 
 
 def _short_title(title: str, limit: int = 76) -> str:
@@ -535,27 +597,16 @@ def _headline_description(deal: Listing) -> tuple:
     return text, text == deal.title
 
 
-def _title_line(deal: Listing) -> Optional[str]:
-    """The raw seller title, but only when the headline did not already show
-    it in full. The title is the primary evidence -- every parsed field in
-    this report is an inference from it -- so it earns a line whenever the
-    headline is showing a parsed description, a shortened version, or a
-    version with the player's name trimmed off the front."""
-    _, whole_title = _headline_description(deal)
-    return None if whole_title else _field_line("Title", deal.title)
 
-
-def _headline(index: int, deal: Listing) -> str:
+def _headline_text(card: CardBlock) -> str:
     """"1. Player -- card -- grade   [TAGS]  [TARGET: ...]"."""
-    description, _ = _headline_description(deal)
-    parts = ["{}. {}".format(index, deal.player), description, _grade_text(deal)]
-    line = " -- ".join(parts)
-    tags = _tags(deal)
-    if tags:
-        line += "   [{}]".format(" + ".join(tags))
-    if deal.target_hit is not None:
-        line += "  [TARGET: {}]".format(getattr(deal.target_hit, "label", "MATCH"))
+    line = " -- ".join(["{}. {}".format(card.index, card.player), card.description, card.grade])
+    if card.tags:
+        line += "   [{}]".format(" + ".join(card.tags))
+    if card.target_label is not None:
+        line += "  [TARGET: {}]".format(card.target_label)
     return line
+
 
 
 # ---------------------------------------------------------------------------
@@ -892,42 +943,38 @@ def _risks(deal: Listing, include_comp_quality: bool = True) -> list:
 # ---------------------------------------------------------------------------
 
 
-def _thesis_block(index: int, deal: Listing, ending_soon_hours: float = DEFAULT_ENDING_SOON_HOURS) -> str:
+def _thesis_card(index: int, deal: Listing, ending_soon_hours: float = DEFAULT_ENDING_SOON_HOURS) -> str:
     """The full per-card thesis, for the sections where a card is being put
     forward as worth your attention. Auctions never use this block -- see
     ``_auction_block`` -- because a current bid must never be laid out in
     the same shape as a price."""
     if deal.is_auction:
-        return _auction_block(index, deal, ending_soon_hours)
+        return _auction_card(index, deal, ending_soon_hours)
 
-    lines = [_headline(index, deal)]
+    fields = []
     drop = _price_drop_line(deal)
     if drop:
-        lines.append(_field_line("Price drop", drop))
-    lines.append(_field_line("Cost", _cost_text(deal)))
-    lines.append(_field_line("Market", _market_text(deal)))
+        fields.append(("Price drop", drop))
+    fields.append(("Cost", _cost_text(deal)))
+    fields.append(("Market", _market_text(deal)))
     if _has_market(deal) and not _is_real_comp(deal):
-        lines.append(_field_line("Context", CONTEXT_ONLY_TEXT))
+        fields.append(("Context", CONTEXT_ONLY_TEXT))
     discount = _discount_text(deal)
     if discount:
-        lines.append(_field_line("Discount", discount))
+        fields.append(("Discount", discount))
     econ = _economics_text(deal)
     if econ:
-        lines.append(_field_line("Economics", econ))
+        fields.append(("Economics", econ))
     cheap = _cheap_find_text(deal)
     if cheap:
-        lines.append(_field_line("Cheap find", cheap))
-    lines.append(_field_line("Confidence", _confidence_text(deal)))
+        fields.append(("Cheap find", cheap))
+    fields.append(("Confidence", _confidence_text(deal)))
     risks = _risks(deal)
     if risks:
-        lines.append(_field_line("Risks", "; ".join(risks)))
+        fields.append(("Risks", "; ".join(risks)))
     if deal.target_hit is not None:
-        lines.append(_field_line("Target", _target_text(deal)))
-    title_line = _title_line(deal)
-    if title_line:
-        lines.append(title_line)
-    lines.append(_link_line(deal))
-    return "\n".join(lines)
+        fields.append(("Target", _target_text(deal)))
+    return _card(index, deal, fields)
 
 
 def _target_text(deal: Listing) -> str:
@@ -955,7 +1002,7 @@ def _target_text(deal: Listing) -> str:
     return '"{}" -- the card you asked for is listed, but above every price band you set'.format(name)
 
 
-def _auction_block(index: int, deal: Listing, ending_soon_hours: float = DEFAULT_ENDING_SOON_HOURS) -> str:
+def _auction_card(index: int, deal: Listing, ending_soon_hours: float = DEFAULT_ENDING_SOON_HOURS) -> str:
     """Auctions get their own shape on purpose.
 
     The number on an auction is a *current bid*: it is not what the card
@@ -966,13 +1013,13 @@ def _auction_block(index: int, deal: Listing, ending_soon_hours: float = DEFAULT
     explicitly scoped to "at this bid", and the max rational bid -- the one
     number that makes an auction safe to act on -- gets its own line.
     """
-    lines = [_headline(index, deal)]
+    fields = []
     bid_text = "{} -- this is a CURRENT BID, not an asking price".format(_money(deal.price))
     if deal.shipping_price is None:
         bid_text += "; shipping unknown -- actual cost may be higher"
     elif deal.shipping_price:
         bid_text += "; plus {} shipping".format(_money(deal.shipping_price))
-    lines.append(_field_line("Current bid", bid_text))
+    fields.append(("Current bid", bid_text))
 
     bids = _plural(deal.bid_count, "bid") if deal.bid_count is not None else "bid count unknown"
     time_left = deal.time_left_text or "time left unknown"
@@ -980,10 +1027,10 @@ def _auction_block(index: int, deal: Listing, ending_soon_hours: float = DEFAULT
     hours_left = _parse_time_left_hours(deal.time_left_text)
     if hours_left is not None and hours_left <= ending_soon_hours:
         bidding += " -- inside your {:.0f}h ending-soon window".format(ending_soon_hours)
-    lines.append(_field_line("Bidding", bidding))
-    lines.append(_field_line("Market", _market_text(deal)))
+    fields.append(("Bidding", bidding))
+    fields.append(("Market", _market_text(deal)))
     if _has_market(deal) and not _is_real_comp(deal):
-        lines.append(_field_line("Context", CONTEXT_ONLY_TEXT))
+        fields.append(("Context", CONTEXT_ONLY_TEXT))
 
     if deal.max_rational_bid is not None:
         max_bid_text = "{} -- the most you can pay and still keep your margin. Above this, stop.".format(
@@ -998,33 +1045,25 @@ def _auction_block(index: int, deal: Listing, ending_soon_hours: float = DEFAULT
                 " Shipping is unknown, so this assumes $0 postage and your real"
                 " ceiling is lower by whatever it turns out to be."
             )
-        lines.append(_field_line("Max bid", max_bid_text))
+        fields.append(("Max bid", max_bid_text))
     else:
-        lines.append(
-            _field_line(
-                "Max bid",
-                "not computed -- without a market value there is no rational ceiling to name",
-            )
+        fields.append(
+            ("Max bid",
+             "not computed -- without a market value there is no rational ceiling to name")
         )
 
     discount = _discount_text(deal)
     if discount:
-        lines.append(
-            _field_line(
-                "At this bid",
-                "{} -- true only at the current bid, which will very likely rise before "
-                "close. This is not a confirmed deal.".format(discount),
-            )
+        fields.append(
+            ("At this bid",
+             "{} -- true only at the current bid, which will very likely rise before "
+             "close. This is not a confirmed deal.".format(discount))
         )
-    lines.append(_field_line("Confidence", _confidence_text(deal)))
+    fields.append(("Confidence", _confidence_text(deal)))
     risks = _risks(deal)
     if risks:
-        lines.append(_field_line("Risks", "; ".join(risks)))
-    title_line = _title_line(deal)
-    if title_line:
-        lines.append(title_line)
-    lines.append(_link_line(deal))
-    return "\n".join(lines)
+        fields.append(("Risks", "; ".join(risks)))
+    return _card(index, deal, fields)
 
 
 def offer_trio(market_value: float, threshold_pct: float) -> tuple:
@@ -1050,7 +1089,7 @@ def offer_trio(market_value: float, threshold_pct: float) -> tuple:
     return aggressive, fair, maximum
 
 
-def _offer_block(index: int, deal: Listing, threshold_pct: float) -> str:
+def _offer_card(index: int, deal: Listing, threshold_pct: float) -> str:
     if deal.is_auction:
         # An auction's number is a CURRENT BID. Rendering it under "Asking"
         # or "Cost" is how a $40 opening bid became a reported 60%-off deal
@@ -1059,24 +1098,22 @@ def _offer_block(index: int, deal: Listing, threshold_pct: float) -> str:
         # because classify_sections happens to claim auctions before it
         # reaches their loops. Reorder those loops -- a plausible edit -- and
         # the defect _auction_block exists to prevent comes straight back.
-        return _auction_block(index, deal)
-    lines = [_headline(index, deal)]
-    lines.append(_field_line("Asking", _cost_text(deal)))
-    lines.append(_field_line("Market", _market_text(deal)))
+        return _auction_card(index, deal)
+    fields = []
+    fields.append(("Asking", _cost_text(deal)))
+    fields.append(("Market", _market_text(deal)))
     if _has_market(deal) and not _is_real_comp(deal):
-        lines.append(_field_line("Context", CONTEXT_ONLY_TEXT))
+        fields.append(("Context", CONTEXT_ONLY_TEXT))
     discount = _discount_text(deal)
     if discount:
-        lines.append(_field_line("Discount", "{} at the asking price".format(discount)))
+        fields.append(("Discount", "{} at the asking price".format(discount)))
 
     aggressive, fair, maximum = offer_trio(deal.market_value, threshold_pct)
-    lines.append(
-        _field_line(
-            "Offer",
-            "aggressive {} | fair {} | maximum {}".format(
-                _money(aggressive), _money(fair), _money(maximum)
-            ),
-        )
+    fields.append(
+        ("Offer",
+         "aggressive {} | fair {} | maximum {}".format(
+             _money(aggressive), _money(fair), _money(maximum)
+         ))
     )
     basis = (
         "maximum is the highest price that still clears your {:.0f}% discount threshold "
@@ -1094,16 +1131,12 @@ def _offer_block(index: int, deal: Listing, threshold_pct: float) -> str:
         )
     elif deal.shipping_price is None:
         basis += "; shipping is unknown, so treat them as ceilings"
-    lines.append(_field_line("Basis", basis))
-    lines.append(_field_line("Confidence", _confidence_text(deal)))
+    fields.append(("Basis", basis))
+    fields.append(("Confidence", _confidence_text(deal)))
     risks = _risks(deal)
     if risks:
-        lines.append(_field_line("Risks", "; ".join(risks)))
-    title_line = _title_line(deal)
-    if title_line:
-        lines.append(title_line)
-    lines.append(_link_line(deal))
-    return "\n".join(lines)
+        fields.append(("Risks", "; ".join(risks)))
+    return _card(index, deal, fields)
 
 
 def _price_drop_line(deal: Listing) -> Optional[str]:
@@ -1123,42 +1156,38 @@ def _price_drop_line(deal: Listing) -> Optional[str]:
     )
 
 
-def _compact_block(index: int, deal: Listing, *, why: Optional[str] = None,
+def _compact_card(index: int, deal: Listing, *, why: Optional[str] = None,
                    ending_soon_hours: float = DEFAULT_ENDING_SOON_HOURS) -> str:
     """Shorter block for the sections that are explicitly not
     recommendations. Still honest -- cost, whatever the comp says, risks --
     just not laid out as a thesis, because there is no thesis."""
     if deal.is_auction:
-        return _auction_block(index, deal, ending_soon_hours)
-    lines = [_headline(index, deal)]
+        return _auction_card(index, deal, ending_soon_hours)
+    fields = []
     # NEEDS REVIEW claims almost every price drop -- a dropped card usually
     # has no comp worth standing behind, which is exactly what puts it here
     # -- and this block used to say nothing about the drop, so the one fact
     # that made the listing worth printing went missing.
     drop = _price_drop_line(deal)
     if drop:
-        lines.append(_field_line("Price drop", drop))
-    lines.append(_field_line("Cost", _cost_text(deal)))
-    lines.append(_field_line("Market", _market_text(deal)))
+        fields.append(("Price drop", drop))
+    fields.append(("Cost", _cost_text(deal)))
+    fields.append(("Market", _market_text(deal)))
     if _has_market(deal) and not _is_real_comp(deal):
-        lines.append(_field_line("Context", CONTEXT_ONLY_TEXT))
+        fields.append(("Context", CONTEXT_ONLY_TEXT))
     discount = _discount_text(deal)
     if discount:
-        lines.append(_field_line("Discount", discount))
+        fields.append(("Discount", discount))
     if why:
-        lines.append(_field_line("Why here", why))
-    lines.append(_field_line("Confidence", _confidence_text(deal)))
+        fields.append(("Why here", why))
+    fields.append(("Confidence", _confidence_text(deal)))
     risks = _risks(deal)
     if risks:
-        lines.append(_field_line("Risks", "; ".join(risks)))
-    title_line = _title_line(deal)
-    if title_line:
-        lines.append(title_line)
-    lines.append(_link_line(deal))
-    return "\n".join(lines)
+        fields.append(("Risks", "; ".join(risks)))
+    return _card(index, deal, fields)
 
 
-def _review_block(index: int, deal: Listing,
+def _review_card(index: int, deal: Listing,
                   ending_soon_hours: float = DEFAULT_ENDING_SOON_HOURS) -> str:
     """A card CardPro is showing precisely because it cannot judge it.
 
@@ -1180,35 +1209,31 @@ def _review_block(index: int, deal: Listing,
     than "we have no number".
     """
     if deal.is_auction:
-        return _auction_block(index, deal, ending_soon_hours)
+        return _auction_card(index, deal, ending_soon_hours)
     real_comp = _is_real_comp(deal)
-    lines = [_headline(index, deal)]
+    fields = []
     drop = _price_drop_line(deal)
     if drop:
-        lines.append(_field_line("Price drop", drop))
-    lines.append(_field_line("Cost", _cost_text(deal)))
+        fields.append(("Price drop", drop))
+    fields.append(("Cost", _cost_text(deal)))
     if real_comp:
-        lines.append(_field_line("Market", _market_text(deal)))
+        fields.append(("Market", _market_text(deal)))
         discount = _discount_text(deal)
         if discount:
-            lines.append(_field_line("Discount", discount))
-    lines.append(_field_line("Why here", _needs_review_why(deal)))
+            fields.append(("Discount", discount))
+    fields.append(("Why here", _needs_review_why(deal)))
     if real_comp:
-        lines.append(_field_line("Confidence", _confidence_text(deal)))
+        fields.append(("Confidence", _confidence_text(deal)))
     # With no figure printed, the comp-quality risks are all restatements of
     # the Why here line directly above them. The identity and price risks
     # are not, and stay.
     risks = _risks(deal, include_comp_quality=real_comp)
     if risks:
-        lines.append(_field_line("Risks", "; ".join(risks)))
-    title_line = _title_line(deal)
-    if title_line:
-        lines.append(title_line)
-    lines.append(_link_line(deal))
-    return "\n".join(lines)
+        fields.append(("Risks", "; ".join(risks)))
+    return _card(index, deal, fields)
 
 
-def _interest_block(index: int, deal: Listing,
+def _interest_card(index: int, deal: Listing,
                     ending_soon_hours: float = DEFAULT_ENDING_SOON_HOURS) -> str:
     """A card shown for what it IS, not for what it is worth.
 
@@ -1220,26 +1245,22 @@ def _interest_block(index: int, deal: Listing,
     and a link.
     """
     if deal.is_auction:
-        return _auction_block(index, deal, ending_soon_hours)
-    lines = [_headline(index, deal)]
+        return _auction_card(index, deal, ending_soon_hours)
+    fields = []
     drop = _price_drop_line(deal)
     if drop:
-        lines.append(_field_line("Price drop", drop))
-    lines.append(_field_line("Cost", _cost_text(deal)))
+        fields.append(("Price drop", drop))
+    fields.append(("Cost", _cost_text(deal)))
     described = desirability.describe(desirability.settled_attributes(deal))
     if described:
-        lines.append(_field_line("What it is", described))
+        fields.append(("What it is", described))
     risks = _risks(deal, include_comp_quality=False)
     if risks:
-        lines.append(_field_line("Risks", "; ".join(risks)))
-    title_line = _title_line(deal)
-    if title_line:
-        lines.append(title_line)
-    lines.append(_link_line(deal))
-    return "\n".join(lines)
+        fields.append(("Risks", "; ".join(risks)))
+    return _card(index, deal, fields)
 
 
-def _price_drop_block(index: int, deal: Listing) -> str:
+def _price_drop_card(index: int, deal: Listing) -> str:
     if deal.is_auction:
         # An auction's number is a CURRENT BID. Rendering it under "Asking"
         # or "Cost" is how a $40 opening bid became a reported 60%-off deal
@@ -1248,31 +1269,67 @@ def _price_drop_block(index: int, deal: Listing) -> str:
         # because classify_sections happens to claim auctions before it
         # reaches their loops. Reorder those loops -- a plausible edit -- and
         # the defect _auction_block exists to prevent comes straight back.
-        return _auction_block(index, deal)
-    lines = [_headline(index, deal)]
+        return _auction_card(index, deal)
+    fields = []
     drop = _price_drop_line(deal)
     if drop:
-        lines.append(_field_line("Price drop", drop))
-    lines.append(_field_line("Cost", _cost_text(deal)))
-    lines.append(_field_line("Market", _market_text(deal)))
+        fields.append(("Price drop", drop))
+    fields.append(("Cost", _cost_text(deal)))
+    fields.append(("Market", _market_text(deal)))
     if _has_market(deal) and not _is_real_comp(deal):
-        lines.append(_field_line("Context", CONTEXT_ONLY_TEXT))
+        fields.append(("Context", CONTEXT_ONLY_TEXT))
     discount = _discount_text(deal)
     if discount:
-        lines.append(_field_line("Discount", discount))
+        fields.append(("Discount", discount))
     # Every other block carries this. Its absence here was a copy-paste
     # omission, not a decision: a market value and a discount with nothing
     # saying how far to trust them is the one thing this report is not
     # allowed to print.
-    lines.append(_field_line("Confidence", _confidence_text(deal)))
+    fields.append(("Confidence", _confidence_text(deal)))
     risks = _risks(deal)
     if risks:
-        lines.append(_field_line("Risks", "; ".join(risks)))
-    title_line = _title_line(deal)
-    if title_line:
-        lines.append(title_line)
-    lines.append(_link_line(deal))
-    return "\n".join(lines)
+        fields.append(("Risks", "; ".join(risks)))
+    return _card(index, deal, fields)
+
+
+# ---------------------------------------------------------------------------
+# The plain-text face of each block type. Each is its ``_card`` sibling above
+# rendered as text; the sibling is what the HTML email reads, so the two
+# emails cannot describe the same card differently.
+# ---------------------------------------------------------------------------
+
+
+def _thesis_block(index: int, deal: Listing,
+                  ending_soon_hours: float = DEFAULT_ENDING_SOON_HOURS) -> str:
+    return _text_block(_thesis_card(index, deal, ending_soon_hours))
+
+
+def _auction_block(index: int, deal: Listing,
+                   ending_soon_hours: float = DEFAULT_ENDING_SOON_HOURS) -> str:
+    return _text_block(_auction_card(index, deal, ending_soon_hours))
+
+
+def _offer_block(index: int, deal: Listing, threshold_pct: float) -> str:
+    return _text_block(_offer_card(index, deal, threshold_pct))
+
+
+def _compact_block(index: int, deal: Listing, *, why: Optional[str] = None,
+                   ending_soon_hours: float = DEFAULT_ENDING_SOON_HOURS) -> str:
+    return _text_block(_compact_card(index, deal, why=why, ending_soon_hours=ending_soon_hours))
+
+
+def _review_block(index: int, deal: Listing,
+                  ending_soon_hours: float = DEFAULT_ENDING_SOON_HOURS) -> str:
+    return _text_block(_review_card(index, deal, ending_soon_hours))
+
+
+def _interest_block(index: int, deal: Listing,
+                    ending_soon_hours: float = DEFAULT_ENDING_SOON_HOURS) -> str:
+    return _text_block(_interest_card(index, deal, ending_soon_hours))
+
+
+def _price_drop_block(index: int, deal: Listing) -> str:
+    return _text_block(_price_drop_card(index, deal))
 
 
 def _needs_review_why(deal: Listing) -> str:
@@ -1684,7 +1741,7 @@ def _plain_title(title: str) -> str:
     return "".join(ch for ch in title if ch.isascii()).strip()
 
 
-def _already_shown_block(index: int, deal: Listing, why: Optional[str], seen_in: str) -> str:
+def _already_shown_card(index: int, deal: Listing, why: Optional[str], seen_in: str) -> CardBlock:
     """A card whose full block is already printed above.
 
     Sections answer different questions, so a card legitimately appears in
@@ -1694,54 +1751,70 @@ def _already_shown_block(index: int, deal: Listing, why: Optional[str], seen_in:
     "why" differed, in an email whose length is a known problem. Print the
     line that is actually new, and point at the rest.
     """
-    lines = [_headline(index, deal)]
-    if why:
-        lines.append(_field_line("Why here", why))
-    lines.append(_field_line("Full detail", "shown above under {}".format(seen_in)))
-    return "\n".join(lines)
+    card = _card(index, deal, [
+        ("Why here", why) if why else None,
+        ("Full detail", "shown above under {}".format(seen_in)),
+    ])
+    # No link and no title: the block above has both, and repeating them is
+    # the duplication this block exists to remove.
+    return CardBlock(**{**card.__dict__, "title": None, "url": None, "source_label": None})
 
 
-def _render_section(key: str, deals: list, threshold_pct: float, ending_soon_hours: float,
-                    min_savings_dollars: float = 0.0, shown_above=None) -> str:
+def _already_shown_block(index: int, deal: Listing, why: Optional[str], seen_in: str) -> str:
+    return _text_block(_already_shown_card(index, deal, why, seen_in))
+
+
+def _render_section_text(key: str, cards: list) -> str:
+    """One section, from the cards ``build_model`` already chose for it."""
     title = SECTION_TITLES[key]
-    # A fixed-width rule rather than one measured from the title: an emoji's
-    # rendered width varies by client, so a "measured" underline is ragged
-    # in exactly the places it is supposed to be tidy.
     lines = [title, "-" * SECTION_RULE_WIDTH]
     subtitle = SECTION_SUBTITLES.get(key)
     if subtitle:
         lines.append(textwrap.fill(subtitle, width=_WRAP_WIDTH))
     lines.append("")
+    for card in cards:
+        lines.append(_text_block(card))
+        lines.append("")
+    return "\n".join(lines)
 
+
+def section_cards(key: str, deals: list, threshold_pct: float, ending_soon_hours: float,
+                  min_savings_dollars: float = 0.0, shown_above=None) -> list:
+    """Which block type each card in a section gets, as CardBlocks.
+
+    The one place that decision is made. It used to live inside the
+    plain-text renderer, which meant a second renderer either reached into
+    that function or made the same choices again in its own words -- and
+    "auctions never use a thesis block" is exactly the kind of rule that has
+    to hold in both emails or neither.
+    """
+    cards = []
     for index, deal in enumerate(deals, start=1):
         seen_in = (shown_above or {}).get(deal.id) if key in CROSS_REFERENCE_SECTIONS else None
         if seen_in:
-            lines.append(_already_shown_block(index, deal, _why_for(key, deal, threshold_pct,
-                                                                   min_savings_dollars), seen_in))
-            lines.append("")
+            why = _why_for(key, deal, threshold_pct, min_savings_dollars)
+            cards.append(_already_shown_card(index, deal, why, seen_in))
             continue
         if key in (SECTION_ACT_NOW, SECTION_TOP_OPPORTUNITIES, SECTION_TARGET_HITS):
-            block = _thesis_block(index, deal, ending_soon_hours)
+            cards.append(_thesis_card(index, deal, ending_soon_hours))
         elif key in (SECTION_AUCTIONS, SECTION_CHEAP_AUCTIONS):
-            block = _auction_block(index, deal, ending_soon_hours)
+            cards.append(_auction_card(index, deal, ending_soon_hours))
         elif key == SECTION_OFFERS:
-            block = _offer_block(index, deal, threshold_pct)
+            cards.append(_offer_card(index, deal, threshold_pct))
         elif key == SECTION_NEEDS_REVIEW:
-            block = _review_block(index, deal, ending_soon_hours=ending_soon_hours)
+            cards.append(_review_card(index, deal, ending_soon_hours=ending_soon_hours))
         elif key in (SECTION_COOL_CARDS, SECTION_CHEAP_FINDS, SECTION_INVESTMENT):
-            block = _interest_block(index, deal, ending_soon_hours)
+            cards.append(_interest_card(index, deal, ending_soon_hours))
         elif key == SECTION_PRICE_DROPS:
-            block = _price_drop_block(index, deal)
+            cards.append(_price_drop_card(index, deal))
         else:
-            block = _compact_block(
+            cards.append(_compact_card(
                 index,
                 deal,
                 why=_watch_why(deal, threshold_pct, min_savings_dollars),
                 ending_soon_hours=ending_soon_hours,
-            )
-        lines.append(block)
-        lines.append("")
-    return "\n".join(lines)
+            ))
+    return cards
 
 
 def _watch_why(deal: Listing, threshold_pct: float, min_savings_dollars: float = 0.0) -> str:
@@ -2385,7 +2458,40 @@ def _join_blocks(blocks) -> str:
 # ---------------------------------------------------------------------------
 
 
-def build_report(
+@dataclass
+class ReportModel:
+    """One morning's report, decided but not yet formatted.
+
+    ``build_report`` renders this as plain text and ``report_html`` renders
+    it as HTML. Everything that is a judgment -- which cards, in which
+    sections, under which headline, with which caveats -- is settled here,
+    so the two emails cannot disagree about any of it. A renderer chooses
+    typography and nothing else.
+
+    The prose members (``empty_state``, ``assumptions``, ``footer``) arrive
+    already wrapped for the text email. The HTML renderer unwraps them
+    rather than re-deriving them: they are long explanatory passages whose
+    words are the point, and a second copy of those words is a second thing
+    to keep true.
+    """
+
+    subject: str
+    date_full: str
+    summary_line: str = ""
+    focus_line: Optional[str] = None
+    #: The one-line "no deal today" statement on a day of browsable cards.
+    lede: Optional[str] = None
+    empty_state: Optional[str] = None
+    #: section key -> list[CardBlock], only for sections with content.
+    sections: "OrderedDict" = None
+    thresholds: str = ""
+    assumptions: str = ""
+    footer: str = ""
+    #: Set only when eBay is not configured at all; then it is the whole body.
+    not_configured: Optional[str] = None
+
+
+def build_model(
     deals: list,
     threshold_pct: float,
     run_date: date,
@@ -2404,30 +2510,9 @@ def build_report(
     cheap_find_ceiling: float = DEFAULT_CHEAP_FIND_CEILING,
     cheap_auction_floor: float = DEFAULT_CHEAP_AUCTION_FLOOR,
     cheap_auction_ceiling: float = DEFAULT_CHEAP_AUCTION_CEILING,
-) -> tuple:
-    """Returns ``(subject, body)`` -- a plain-text email, no HTML.
-
-    Every argument after ``min_savings_dollars`` is keyword-only with a
-    default, so an older caller that passes the original six positionals
-    still gets a valid report (it just loses the health footer and the
-    coverage section, which are additions, not requirements).
-
-    ``stats`` is an ``observability.RunStats``; ``search_suggestions`` is
-    ``{player: [search_terms.SuggestedSearch, ...]}``.
-
-    ``comp_requests_list`` (``comp_requests.CompRequest``) and
-    ``unidentified_listings`` drive the "sold comps worth adding" footer --
-    where a few minutes on 130point would buy the most valuation. Both
-    default to nothing, so a caller that doesn't compute them just gets no
-    such section.
-
-    ``focus_rules`` (a ``focus.FocusRules``) decides what is email material
-    and how long the email may be -- the price ceiling, the exception for a
-    genuinely exceptional expensive card, and the cap on how many listings
-    print. It defaults to ``focus.OFF``, which shows everything, so the
-    length cap is something a caller opts into rather than something that
-    silently starts hiding cards.
-    """
+) -> ReportModel:
+    """Decide the whole report. See ReportModel for why this is separate
+    from rendering it. Arguments are build_report's, unchanged."""
     focus_rules = focus_rules or focus.OFF
     date_long = "{} {}, {}".format(run_date.strftime("%B"), run_date.day, run_date.year)
     date_full = "{}, {}".format(run_date.strftime("%A"), date_long)
@@ -2441,19 +2526,22 @@ def build_report(
             _search_coverage_section(search_suggestions),
         ]
     )
-    footer = ("\n\n---\n" + footer) if footer else ""
 
     if not ebay_enabled:
-        subject = "eBay not configured ({})".format(date_long)
-        body = textwrap.fill(
-            "Card deal scan for {}: eBay wasn't scanned today because neither "
-            "EBAY_CLIENT_ID/EBAY_CLIENT_SECRET nor ebay_alerts.enabled are set up in "
-            ".env / config/settings.json. This is expected, not an error -- once either "
-            "eBay path is configured, deals will resume showing up here "
-            "automatically.".format(date_long),
-            width=_WRAP_WIDTH,
+        return ReportModel(
+            subject="eBay not configured ({})".format(date_long),
+            date_full=date_full,
+            sections=OrderedDict(),
+            footer=footer,
+            not_configured=textwrap.fill(
+                "Card deal scan for {}: eBay wasn't scanned today because neither "
+                "EBAY_CLIENT_ID/EBAY_CLIENT_SECRET nor ebay_alerts.enabled are set up in "
+                ".env / config/settings.json. This is expected, not an error -- once either "
+                "eBay path is configured, deals will resume showing up here "
+                "automatically.".format(date_long),
+                width=_WRAP_WIDTH,
+            ),
         )
-        return subject, "CARDPRO DAILY -- {}\n\n".format(date_full) + body + footer
 
     selection = focus.select(deals, focus_rules)
     sections = classify_sections(
@@ -2470,72 +2558,32 @@ def build_report(
         sections, BUDGET_ORDER, focus_rules, no_leftovers=BUDGET_NO_LEFTOVERS
     )
 
-    header = "CARDPRO DAILY -- {}\n{}".format(date_full, _summary_line(sections))
-    focus_line = _focus_line(focus_rules)
-    if focus_line:
-        header += "\n" + focus_line
-
-    decision_sections = (
-        SECTION_ACT_NOW,
-        SECTION_TOP_OPPORTUNITIES,
-        SECTION_TARGET_HITS,
-        # COOL CARDS, CHEAP FINDS and YOUNG CORE count as content. They make no claim
-        # about value, so they do not make it a day with deals -- but a page
-        # of autographs and numbered rookies under the heading "NOTHING
-        # CLEARED THE BAR TODAY" is the email contradicting itself, and the
-        # long explanation of why zero deals is normal is not what a reader
-        # with eleven cards below them needs to read first.
-        SECTION_COOL_CARDS,
-        SECTION_CHEAP_FINDS,
-        SECTION_INVESTMENT,
-        # CHEAP AUCTIONS counts for the same reason, and only that reason:
-        # it makes no claim about value either. AUCTIONS ENDING SOON stays
-        # out because a card there is normally a real sum of money with a
-        # deadline, which is a decision the reader still has to make.
-        SECTION_CHEAP_AUCTIONS,
-    )
-    has_decision_content = any(sections[key] for key in decision_sections)
-
-    blocks = [header]
-    # A day with cool cards and no deals still has to SAY there were no
-    # deals -- just in one line rather than six paragraphs. Dropping the
-    # statement entirely would let a page of browsable cards read as a page
-    # of opportunities, which is the confusion the whole valuation engine
-    # exists to prevent.
+    has_decision_content = any(sections[key] for key in DECISION_SECTIONS)
     browsable_only = has_decision_content and not any(
         sections[key]
         for key in (SECTION_ACT_NOW, SECTION_TOP_OPPORTUNITIES, SECTION_TARGET_HITS)
     )
-    if browsable_only:
-        blocks.append(
-            textwrap.fill(
-                "No deal today: nothing had a comp CardPro will stand behind AND a big "
-                "enough discount. Everything below is shown for what the card IS, not for "
-                "what it is worth -- there is no valuation attached to any of it.",
-                width=_WRAP_WIDTH,
-            )
-        )
+    empty_state = None
     if not has_decision_content:
-        has_other_content = any(sections[key] for key in SECTION_ORDER)
-        blocks.append(
-            _empty_state_block(
-                threshold_pct, min_savings_dollars, stats, has_other_content,
-                focused=focus_rules.enabled,
-            )
+        empty_state = _empty_state_block(
+            threshold_pct, min_savings_dollars, stats,
+            any(sections[key] for key in SECTION_ORDER),
+            focused=focus_rules.enabled,
         )
+
     # Which section printed each card's full block, so a later section can
     # point at it rather than repeat it. Built as we go, in render order.
+    rendered = OrderedDict()
     shown_above: dict = {}
     for key in SECTION_ORDER:
-        if sections[key]:
-            blocks.append(
-                _render_section(
-                    key, sections[key], threshold_pct, ending_soon_hours, min_savings_dollars,
-                    shown_above=shown_above,
-                )
-            )
-            for deal in sections[key]:
-                shown_above.setdefault(deal.id, _plain_title(SECTION_TITLES[key]))
+        if not sections[key]:
+            continue
+        rendered[key] = section_cards(
+            key, sections[key], threshold_pct, ending_soon_hours, min_savings_dollars,
+            shown_above=shown_above,
+        )
+        for deal in sections[key]:
+            shown_above.setdefault(deal.id, _plain_title(SECTION_TITLES[key]))
 
     shown = {deal.id for key in SECTION_ORDER for deal in sections[key]}
     # Everything CardPro saw is accounted for in exactly one of these
@@ -2570,8 +2618,139 @@ def build_report(
             "close.".format(_plural(not_shown, "other listing was", "other listings were"))
         )
     thresholds += _focus_footer(selection, trimmed, focus_rules)
-    blocks.append(textwrap.fill(thresholds, width=_WRAP_WIDTH))
-    blocks.append(_assumptions_footer(sections))
 
-    body = _join_blocks(blocks) + footer
-    return _subject(sections, date_short, stats), body
+    return ReportModel(
+        subject=_subject(sections, date_short, stats),
+        date_full=date_full,
+        summary_line=_summary_line(sections),
+        focus_line=_focus_line(focus_rules),
+        lede=(BROWSABLE_ONLY_LEDE if browsable_only else None),
+        empty_state=empty_state,
+        sections=rendered,
+        thresholds=thresholds,
+        assumptions=_assumptions_footer(sections),
+        footer=footer,
+    )
+
+
+#: Sections that count as "the email has something in it today".
+#:
+#: COOL CARDS, CHEAP FINDS, YOUNG CORE and CHEAP AUCTIONS are here because
+#: they make no claim about value -- but a page of autographs and numbered
+#: rookies under the heading "NOTHING CLEARED THE BAR TODAY" is the email
+#: contradicting itself, and the long explanation of why zero deals is
+#: normal is not what a reader with eleven cards below them needs to read
+#: first. AUCTIONS ENDING SOON stays out because a card there is normally a
+#: real sum of money with a deadline, which is a decision still to be made.
+DECISION_SECTIONS = (
+    SECTION_ACT_NOW,
+    SECTION_TOP_OPPORTUNITIES,
+    SECTION_TARGET_HITS,
+    SECTION_COOL_CARDS,
+    SECTION_CHEAP_FINDS,
+    SECTION_INVESTMENT,
+    SECTION_CHEAP_AUCTIONS,
+)
+
+#: A day with cool cards and no deals still has to SAY there were no deals
+#: -- just in one line rather than six paragraphs. Dropping the statement
+#: entirely would let a page of browsable cards read as a page of
+#: opportunities, which is the confusion the valuation engine exists to
+#: prevent.
+BROWSABLE_ONLY_LEDE = (
+    "No deal today: nothing had a comp CardPro will stand behind AND a big enough "
+    "discount. Everything below is shown for what the card IS, not for what it is "
+    "worth -- there is no valuation attached to any of it."
+)
+
+
+def build_report(
+    deals: list,
+    threshold_pct: float,
+    run_date: date,
+    craigslist_links: Optional[dict] = None,
+    ebay_enabled: bool = True,
+    min_savings_dollars: float = 0,
+    *,
+    stats=None,
+    search_suggestions=None,
+    immediate_min_savings: float = DEFAULT_IMMEDIATE_MIN_SAVINGS,
+    immediate_min_discount_pct: float = DEFAULT_IMMEDIATE_MIN_DISCOUNT_PCT,
+    ending_soon_hours: float = DEFAULT_ENDING_SOON_HOURS,
+    focus_rules: Optional[focus.FocusRules] = None,
+    comp_requests_list=(),
+    unidentified_listings: int = 0,
+    cheap_find_ceiling: float = DEFAULT_CHEAP_FIND_CEILING,
+    cheap_auction_floor: float = DEFAULT_CHEAP_AUCTION_FLOOR,
+    cheap_auction_ceiling: float = DEFAULT_CHEAP_AUCTION_CEILING,
+) -> tuple:
+    """Returns ``(subject, body)`` -- the plain-text email.
+
+    Every argument after ``min_savings_dollars`` is keyword-only with a
+    default, so an older caller that passes the original six positionals
+    still gets a valid report (it just loses the health footer and the
+    coverage section, which are additions, not requirements).
+
+    ``stats`` is an ``observability.RunStats``; ``search_suggestions`` is
+    ``{player: [search_terms.SuggestedSearch, ...]}``.
+
+    ``comp_requests_list`` (``comp_requests.CompRequest``) and
+    ``unidentified_listings`` drive the "sold comps worth adding" footer --
+    where a few minutes on 130point would buy the most valuation. Both
+    default to nothing, so a caller that doesn't compute them just gets no
+    such section.
+
+    ``focus_rules`` (a ``focus.FocusRules``) decides what is email material
+    and how long the email may be -- the price ceiling, the exception for a
+    genuinely exceptional expensive card, and the cap on how many listings
+    print. It defaults to ``focus.OFF``, which shows everything, so the
+    length cap is something a caller opts into rather than something that
+    silently starts hiding cards.
+
+    The decisions all happen in ``build_model``; this function only turns
+    them into text. The HTML email (``src/report_html.py``) renders the same
+    model, which is what keeps the two versions of an email saying the same
+    thing.
+    """
+    model = build_model(
+        deals,
+        threshold_pct,
+        run_date,
+        craigslist_links,
+        ebay_enabled,
+        min_savings_dollars,
+        stats=stats,
+        search_suggestions=search_suggestions,
+        immediate_min_savings=immediate_min_savings,
+        immediate_min_discount_pct=immediate_min_discount_pct,
+        ending_soon_hours=ending_soon_hours,
+        focus_rules=focus_rules,
+        comp_requests_list=comp_requests_list,
+        unidentified_listings=unidentified_listings,
+        cheap_find_ceiling=cheap_find_ceiling,
+        cheap_auction_floor=cheap_auction_floor,
+        cheap_auction_ceiling=cheap_auction_ceiling,
+    )
+    return model.subject, render_text(model)
+
+
+def render_text(model: ReportModel) -> str:
+    """A ReportModel as the plain-text email body."""
+    footer = ("\n\n---\n" + model.footer) if model.footer else ""
+    if model.not_configured is not None:
+        return "CARDPRO DAILY -- {}\n\n".format(model.date_full) + model.not_configured + footer
+
+    header = "CARDPRO DAILY -- {}\n{}".format(model.date_full, model.summary_line)
+    if model.focus_line:
+        header += "\n" + model.focus_line
+
+    blocks = [header]
+    if model.lede:
+        blocks.append(textwrap.fill(model.lede, width=_WRAP_WIDTH))
+    if model.empty_state:
+        blocks.append(model.empty_state)
+    for key, cards in model.sections.items():
+        blocks.append(_render_section_text(key, cards))
+    blocks.append(textwrap.fill(model.thresholds, width=_WRAP_WIDTH))
+    blocks.append(model.assumptions)
+    return _join_blocks(blocks) + footer
