@@ -103,9 +103,10 @@ more than one that says "95% under market" about a common.
 8. Emails a **sectioned, decision-first report**, each section omitted when
    empty:
 
-   `ACT NOW` · `DEALS` · `TARGET CARD HITS` · `AUCTIONS ENDING SOON` ·
-   `COOL CARDS` · `CHEAP FINDS` · `YOUNG CORE` · `OFFER OPPORTUNITIES` ·
-   `WATCH` · `LOW CONFIDENCE / NEEDS REVIEW` · `PRICE DROPS`
+   `ACT NOW` · `DEALS` · `TARGET CARD HITS` · `CHEAP AUCTIONS` ·
+   `AUCTIONS ENDING SOON` · `COOL CARDS` · `CHEAP FINDS` · `YOUNG CORE` ·
+   `OFFER OPPORTUNITIES` · `WATCH` · `LOW CONFIDENCE / NEEDS REVIEW` ·
+   `PRICE DROPS`
 
    The order is what a reader is looking for, not how strong the valuation
    behind it is. That distinction matters here more than it would elsewhere:
@@ -116,6 +117,20 @@ more than one that says "95% under market" about a common.
    *can* be answered from a title -- what is this card, is it cheap, is it
    one of my players -- and make no claim about price at all. No market
    value, no discount, no ROI, even when a comp exists.
+
+   `CHEAP AUCTIONS` is the same idea for the bidding side, and it sits
+   *above* `AUCTIONS ENDING SOON` on purpose. That section sorts by time
+   left, which is right for a card that costs real money and wrong for a
+   $2 one: a numbered rookie at $0.99 ends up below whatever slab happens
+   to close an hour sooner, and is never seen. So auctions whose current
+   bid plus shipping falls in your pocket-change band
+   (`report.cheap_auction_floor`..`cheap_auction_ceiling`, $0.50--$10 by
+   default) get their own section, ordered by how interesting the *card*
+   is and only then by what ends soonest. It makes no deal claim -- a
+   current bid is not a price and most of these have no comp at all.
+   Anything in the band that *does* clear the deal gate is still claimed
+   by `ACT NOW` or `DEALS` first; this section never takes a card away
+   from a real valuation.
 
    followed by a **SYSTEM HEALTH** footer, the
    [sold comps worth adding](#sold-comps-worth-adding-and-why-nothing-flags-today),
@@ -276,7 +291,7 @@ single score:
 
 | Question | What it means |
 |---|---|
-| **Cheap** | The asking price is objectively low. Says nothing about value. |
+| **Cheap** | The asking price is objectively low. Says nothing about value. On an auction, "cheap" is a current bid, which is a floor under the cost rather than the cost -- see `CHEAP AUCTIONS`. |
 | **Underpriced** | Materially below what comparable copies of *that exact card in that exact grade* go for. Requires an identity-and-grade-matched comp; a price-bracket estimate can never establish this. |
 | **Flippable** | Enough spread to resell at a worthwhile profit after fees, shipping, supplies and a resale haircut. Shown with its assumptions attached. |
 | **Collectible opportunity** | Underpriced *and* carrying attributes you care about (rookie, auto, numbered, patch, young core). Tagged separately, never folded into the price maths. |
@@ -1145,6 +1160,19 @@ gate. They get their own section and their own math.
 |---|---|---|---|
 | `required_margin_pct` | Max rational bid is the highest you could bid and still keep this much margin against estimated market value, after fees and shipping. | `25` | Raise it to bid more conservatively, lower it if you're happy on thinner margins. |
 | `ending_soon_hours` | What counts as urgent. **Only** used for ordering the auction section -- never to relax any quality gate. | `24` | Widen it if you check email less than daily. |
+
+The pocket-change band that splits `CHEAP AUCTIONS` off from
+`AUCTIONS ENDING SOON` lives in `settings.json` → `report`, because it is a
+question about how the email is organised rather than about auction maths:
+
+| Key | What it does | Default | When you'd change it |
+|---|---|---|---|
+| `report.cheap_auction_floor` | Bottom of the band. Below it a "bid" is almost always an untouched opening price, and a section of those is a list of every auction on eBay rather than a list of finds. | `0.5` | Set to `0` to include untouched openers. |
+| `report.cheap_auction_ceiling` | Top of the band, measured on **current bid + shipping**, not the bid alone. | `10.0` | Raise it to bid in a wider band. |
+
+What may reach the section at all is still decided once, upstream, by
+`cheap_cards.require_desirable_attribute` -- `CHEAP AUCTIONS` does not
+re-filter, so switching that off widens this section too.
 
 ### Focus -- `settings.json` → `focus`
 

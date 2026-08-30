@@ -86,6 +86,7 @@ SECTION_TOP_OPPORTUNITIES = "top_opportunities"
 SECTION_TARGET_HITS = "target_hits"
 SECTION_INVESTMENT = "investment_watchlist"
 SECTION_AUCTIONS = "auctions_ending_soon"
+SECTION_CHEAP_AUCTIONS = "cheap_auctions"
 SECTION_OFFERS = "offer_opportunities"
 SECTION_COOL_CARDS = "cool_cards"
 SECTION_CHEAP_FINDS = "cheap_finds"
@@ -97,6 +98,7 @@ SECTION_ORDER = (
     SECTION_ACT_NOW,
     SECTION_TOP_OPPORTUNITIES,
     SECTION_TARGET_HITS,
+    SECTION_CHEAP_AUCTIONS,
     SECTION_AUCTIONS,
     SECTION_COOL_CARDS,
     SECTION_CHEAP_FINDS,
@@ -121,6 +123,7 @@ BUDGET_ORDER = (
     SECTION_ACT_NOW,
     SECTION_TOP_OPPORTUNITIES,
     SECTION_TARGET_HITS,
+    SECTION_CHEAP_AUCTIONS,
     SECTION_AUCTIONS,
     SECTION_OFFERS,
     SECTION_COOL_CARDS,
@@ -148,6 +151,7 @@ SECTION_TITLES = {
     SECTION_TARGET_HITS: "\U0001f3af TARGET CARD HITS",
     SECTION_INVESTMENT: "\U0001f4c8 YOUNG CORE",
     SECTION_AUCTIONS: "\U0001f528 AUCTIONS ENDING SOON",
+    SECTION_CHEAP_AUCTIONS: "\U0001fa99 CHEAP AUCTIONS",
     SECTION_OFFERS: "\U0001f4ac OFFER OPPORTUNITIES",
     SECTION_COOL_CARDS: "\U0001f60e COOL CARDS",
     SECTION_CHEAP_FINDS: "\U0001f4b0 CHEAP FINDS",
@@ -182,6 +186,12 @@ SECTION_SUBTITLES = {
     SECTION_AUCTIONS: (
         "A current bid is NOT a price and nothing in this section is a confirmed deal. "
         "The useful question is not \"is this cheap\" but \"what is the most I can pay\"."
+    ),
+    SECTION_CHEAP_AUCTIONS: (
+        "Auctions sitting in your pocket-change band. Not deals -- a current bid is not a "
+        "price, and most of these have no comp at all. They are here because the card has "
+        "something to it and the bid is still small enough that being wrong costs you "
+        "pocket change. Ordered by how interesting the card is, then by what ends soonest."
     ),
     SECTION_OFFERS: (
         "Not deals at the asking price -- but they accept offers, and a negotiated price "
@@ -225,6 +235,18 @@ DEFAULT_ENDING_SOON_HOURS = 24
 #: cheap and interesting, with no claim that it is underpriced -- those are
 #: different questions and this section answers the easier one.
 DEFAULT_CHEAP_FIND_CEILING = 15.0
+
+#: The pocket-change auction band. A cheap auction is the one thing this
+#: project buys on a hunch rather than on a valuation, so it gets its own
+#: section instead of being filed among auctions ten times its price -- in
+#: one list sorted by time left, a $0.99 numbered rookie is invisible next
+#: to a $300 slab ending an hour sooner.
+#:
+#: The floor is not tidiness. Below it the number is almost always an
+#: opening bid nobody has touched, and a section of untouched opening bids
+#: is a list of every auction on the site rather than a list of finds.
+DEFAULT_CHEAP_AUCTION_FLOOR = 0.50
+DEFAULT_CHEAP_AUCTION_CEILING = 10.0
 
 #: How close to your discount threshold a non-opportunity has to be to earn
 #: a WATCH slot. 0.75 means "within a quarter of the way off" -- close
@@ -1309,6 +1331,29 @@ def _auction_sort_key(deal: Listing):
     )
 
 
+def _cheap_auction_sort_key(deal: Listing):
+    """Cheap auctions sort by the card, not the clock.
+
+    The opposite of _auction_sort_key, and deliberately so. An expensive
+    auction is a decision with a deadline, so urgency leads. A $2 auction is
+    a flyer: what matters is whether the card is worth two dollars of your
+    attention, and only then which of the ones worth it ends first. Sorting
+    these by time left would rebuild the pile this section exists to break
+    up, just with a smaller price range.
+
+    An unreadable countdown still sorts last within its interest tier rather
+    than being guessed at zero -- same rule as the auction section.
+    """
+    hours = _parse_time_left_hours(deal.time_left_text)
+    return (
+        -desirability.interest_score(deal),
+        deal.time_left_text is None,
+        hours if hours is not None else float("inf"),
+        _price_for_sort(deal),
+        deal.id,
+    )
+
+
 def _savings(deal: Listing) -> float:
     return deal.dollar_savings or 0.0
 
@@ -1339,6 +1384,8 @@ def classify_sections(
     immediate_min_discount_pct: float = DEFAULT_IMMEDIATE_MIN_DISCOUNT_PCT,
     ending_soon_hours: float = DEFAULT_ENDING_SOON_HOURS,
     cheap_find_ceiling: float = DEFAULT_CHEAP_FIND_CEILING,
+    cheap_auction_floor: float = DEFAULT_CHEAP_AUCTION_FLOOR,
+    cheap_auction_ceiling: float = DEFAULT_CHEAP_AUCTION_CEILING,
 ) -> "OrderedDict":
     """Sort listings into report sections. Separate from rendering because
     this is the part most likely to be wrong, and a classification bug is
@@ -1403,6 +1450,29 @@ def classify_sections(
         target_hits,
         key=lambda d: (not getattr(d.target_hit, "in_buy_zone", False), -_savings(d), d.id),
     )
+
+    # Cheap auctions are claimed BEFORE the general auction section, and the
+    # order is the entire point. ACT NOW and TOP have already taken anything
+    # with a comp worth standing behind, so what reaches here is the part
+    # this project actually buys on: a small bid on a card with something to
+    # it, where the valuation engine has nothing to say and the downside is
+    # a dollar. Filed under AUCTIONS ENDING SOON -- one list, sorted by time
+    # left -- those cards sit below whatever slab happens to end sooner and
+    # are never seen.
+    #
+    # No attribute gate here on purpose. Whether a cheap card with nothing
+    # to it may reach the report at all is already decided upstream, once,
+    # by cheap_cards.require_desirable_attribute (src/main.py); re-deciding
+    # it here would quietly overrule that setting for one section.
+    cheap_auctions = []
+    for deal in ranked:
+        if deal.id in claimed or not deal.is_auction:
+            continue
+        cost = deal.total_cost
+        if cost is not None and cheap_auction_floor <= cost <= cheap_auction_ceiling:
+            cheap_auctions.append(deal)
+            claimed.add(deal.id)
+    sections[SECTION_CHEAP_AUCTIONS] = sorted(cheap_auctions, key=_cheap_auction_sort_key)
 
     auctions = []
     for deal in ranked:
@@ -1652,7 +1722,7 @@ def _render_section(key: str, deals: list, threshold_pct: float, ending_soon_hou
             continue
         if key in (SECTION_ACT_NOW, SECTION_TOP_OPPORTUNITIES, SECTION_TARGET_HITS):
             block = _thesis_block(index, deal, ending_soon_hours)
-        elif key == SECTION_AUCTIONS:
+        elif key in (SECTION_AUCTIONS, SECTION_CHEAP_AUCTIONS):
             block = _auction_block(index, deal, ending_soon_hours)
         elif key == SECTION_OFFERS:
             block = _offer_block(index, deal, threshold_pct)
@@ -1708,6 +1778,7 @@ def _summary_line(sections) -> str:
         (SECTION_TOP_OPPORTUNITIES, "opportunity", "opportunities"),
         (SECTION_TARGET_HITS, "target hit", "target hits"),
         (SECTION_INVESTMENT, "young core", "young core"),
+        (SECTION_CHEAP_AUCTIONS, "cheap auction", "cheap auctions"),
         (SECTION_AUCTIONS, "auction", "auctions"),
         (SECTION_OFFERS, "offer candidate", "offer candidates"),
         (SECTION_COOL_CARDS, "cool card", "cool cards"),
@@ -1742,6 +1813,7 @@ def _subject(sections, date_short: str, stats=None) -> str:
     opportunities = len(sections[SECTION_TOP_OPPORTUNITIES])
     targets = len(sections[SECTION_TARGET_HITS])
     auctions = len(sections[SECTION_AUCTIONS])
+    cheap_auctions = len(sections[SECTION_CHEAP_AUCTIONS])
 
     if act_now:
         subject = "{} ACT NOW".format(act_now)
@@ -1754,6 +1826,14 @@ def _subject(sections, date_short: str, stats=None) -> str:
         return "{} ({})".format(_plural(targets, "target card hit"), date_short)
     if auctions:
         return "{} to review ({})".format(_plural(auctions, "auction"), date_short)
+    # Ahead of the breakage warning is deliberate on the expensive sections
+    # above and deliberate here too: a bid you can lose for a dollar is still
+    # something to look at, and "No opportunities today" over a list of them
+    # is the subject line arguing with the email underneath it.
+    if cheap_auctions:
+        return "{} to bid on ({})".format(
+            _plural(cheap_auctions, "cheap auction"), date_short
+        )
     if getattr(stats, "breakage_warnings", None):
         return "CHECK THIS -- today's scan may be broken ({})".format(date_short)
     # No deal today does not mean nothing to look at. Leading with "No
@@ -2322,6 +2402,8 @@ def build_report(
     comp_requests_list=(),
     unidentified_listings: int = 0,
     cheap_find_ceiling: float = DEFAULT_CHEAP_FIND_CEILING,
+    cheap_auction_floor: float = DEFAULT_CHEAP_AUCTION_FLOOR,
+    cheap_auction_ceiling: float = DEFAULT_CHEAP_AUCTION_CEILING,
 ) -> tuple:
     """Returns ``(subject, body)`` -- a plain-text email, no HTML.
 
@@ -2381,6 +2463,8 @@ def build_report(
         immediate_min_discount_pct=immediate_min_discount_pct,
         ending_soon_hours=ending_soon_hours,
         cheap_find_ceiling=cheap_find_ceiling,
+        cheap_auction_floor=cheap_auction_floor,
+        cheap_auction_ceiling=cheap_auction_ceiling,
     )
     sections, trimmed = focus.trim(
         sections, BUDGET_ORDER, focus_rules, no_leftovers=BUDGET_NO_LEFTOVERS
@@ -2404,6 +2488,11 @@ def build_report(
         SECTION_COOL_CARDS,
         SECTION_CHEAP_FINDS,
         SECTION_INVESTMENT,
+        # CHEAP AUCTIONS counts for the same reason, and only that reason:
+        # it makes no claim about value either. AUCTIONS ENDING SOON stays
+        # out because a card there is normally a real sum of money with a
+        # deadline, which is a decision the reader still has to make.
+        SECTION_CHEAP_AUCTIONS,
     )
     has_decision_content = any(sections[key] for key in decision_sections)
 
