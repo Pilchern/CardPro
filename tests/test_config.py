@@ -282,6 +282,24 @@ def test_cheap_card_defaults_keep_the_junk_filter_on(tmp_path, monkeypatch):
     assert cfg.cheap_require_desirable_attribute is True
 
 
+def test_cheap_auction_band_loads(tmp_path, monkeypatch):
+    cfg = _load_with(
+        tmp_path,
+        monkeypatch,
+        settings_extra={"report": {"cheap_auction_floor": 1.0, "cheap_auction_ceiling": 25.0}},
+    )
+    assert cfg.cheap_auction_floor == 1.0
+    assert cfg.cheap_auction_ceiling == 25.0
+
+
+def test_cheap_auction_band_defaults_to_the_pocket_change_range(tmp_path, monkeypatch):
+    # A settings.json written before the section existed still gets the band,
+    # rather than a $0-to-$0 one that would empty the section silently.
+    cfg = _load_with(tmp_path, monkeypatch)
+    assert cfg.cheap_auction_floor == 0.5
+    assert cfg.cheap_auction_ceiling == 10.0
+
+
 def test_focus_settings_load(tmp_path, monkeypatch):
     cfg = _load_with(
         tmp_path,

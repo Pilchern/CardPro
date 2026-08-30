@@ -259,6 +259,124 @@ def test_auctions_sort_by_time_left_presence_then_soonest():
     assert [d.id for d in sections[report.SECTION_AUCTIONS]] == ["soon", "late", "unknown"]
 
 
+# ---------------------------------------------------------------------------
+# CHEAP AUCTIONS -- the pocket-change band
+# ---------------------------------------------------------------------------
+
+
+def cheap_auction(**overrides):
+    """An auction in the pocket-change band with no comp behind it, which is
+    what almost every one of these is in production."""
+    defaults = dict(
+        id="cheap-auction",
+        listing_type="auction",
+        is_opportunity=False,
+        comp_match=None,
+        market_value=None,
+        pct_under_market=None,
+        dollar_savings=None,
+        price=2.50,
+        shipping_price=0.0,
+        bid_count=1,
+        time_left_text="1d 02h",
+    )
+    defaults.update(overrides)
+    return make_listing(**defaults)
+
+
+def test_a_cheap_auction_gets_its_own_section_not_the_general_auction_pile():
+    # The whole reason the section exists. AUCTIONS ENDING SOON sorts by time
+    # left, so a $2 auction ending in a day sits below a $300 slab ending in
+    # an hour and is never seen.
+    cheap = cheap_auction(id="cheap")
+    dear = make_listing(id="dear", listing_type="auction", is_opportunity=False,
+                        price=300.0, time_left_text="0d 01h")
+    sections = report.classify_sections([cheap, dear], threshold_pct=30)
+    assert [d.id for d in sections[report.SECTION_CHEAP_AUCTIONS]] == ["cheap"]
+    assert [d.id for d in sections[report.SECTION_AUCTIONS]] == ["dear"]
+
+
+def test_an_auction_below_the_floor_is_not_a_cheap_find():
+    # Below the floor the number is almost always an opening bid nobody has
+    # touched, and a section of those is a list of every auction on eBay.
+    penny = cheap_auction(id="penny", price=0.25)
+    sections = report.classify_sections([penny], threshold_pct=30)
+    assert sections[report.SECTION_CHEAP_AUCTIONS] == []
+    assert [d.id for d in sections[report.SECTION_AUCTIONS]] == ["penny"]
+
+
+def test_the_band_is_measured_on_total_cost_not_the_bid_alone():
+    # A $9 bid with $6 postage costs $15. Reading the bid alone is the same
+    # mistake as reading a current bid as a price, one step removed.
+    with_postage = cheap_auction(id="postage", price=9.0, shipping_price=6.0)
+    sections = report.classify_sections([with_postage], threshold_pct=30)
+    assert sections[report.SECTION_CHEAP_AUCTIONS] == []
+    assert [d.id for d in sections[report.SECTION_AUCTIONS]] == ["postage"]
+
+
+def test_a_cheap_auction_that_is_a_real_deal_still_leads_the_email():
+    # Cheap auctions are claimed after ACT NOW and TOP, never before them: a
+    # small bid against a comp CardPro will stand behind is still a deal, and
+    # burying it in a browse section would be the section overruling the
+    # valuation engine.
+    deal = make_listing(id="deal", listing_type="auction", price=2.0,
+                        shipping_price=0.0, dollar_savings=400.0, pct_under_market=60.0)
+    sections = report.classify_sections([deal], threshold_pct=30)
+    assert sections[report.SECTION_CHEAP_AUCTIONS] == []
+    assert [d.id for d in sections[report.SECTION_ACT_NOW]] == ["deal"]
+
+
+def test_cheap_auctions_sort_by_the_card_not_the_clock():
+    # The inverse of the AUCTIONS sort, and deliberately so: a $2 auction is
+    # a flyer, so the question is whether the card is worth the attention,
+    # not whether the clock is running out.
+    plain_title = "2024 Panini Prizm Caleb Williams Silver Prizm #301"
+    rich_title = "2024 Panini Prizm Caleb Williams Auto RC #301 /99"
+    dull_but_urgent = cheap_auction(
+        id="dull", time_left_text="0d 01h", title=plain_title,
+        card_identity=card_identity.extract_card_identity(plain_title),
+        card_type="raw", grader=None, grade=None,
+    )
+    interesting_but_slow = cheap_auction(
+        id="interesting", time_left_text="5d 00h", title=rich_title,
+        card_identity=card_identity.extract_card_identity(rich_title),
+        is_rookie_card=True, card_type="raw", grader=None, grade=None,
+    )
+    sections = report.classify_sections(
+        [dull_but_urgent, interesting_but_slow], threshold_pct=30
+    )
+    assert [d.id for d in sections[report.SECTION_CHEAP_AUCTIONS]] == ["interesting", "dull"]
+
+
+def test_the_band_is_configurable():
+    fifteen = cheap_auction(id="fifteen", price=15.0)
+    default = report.classify_sections([fifteen], threshold_pct=30)
+    assert default[report.SECTION_CHEAP_AUCTIONS] == []
+
+    widened = report.classify_sections(
+        [fifteen], threshold_pct=30, cheap_auction_ceiling=20.0
+    )
+    assert [d.id for d in widened[report.SECTION_CHEAP_AUCTIONS]] == ["fifteen"]
+
+
+def test_the_cheap_auction_section_makes_no_deal_claim():
+    # It renders through _auction_block, so the current bid is labelled as a
+    # bid rather than a cost -- the distinction that turned a $40 opening bid
+    # into a reported 60%-off deal in v1.
+    body = flat(body_of([cheap_auction()]))
+    assert report.SECTION_TITLES[report.SECTION_CHEAP_AUCTIONS] in body
+    assert "this is a CURRENT BID, not an asking price" in body
+    assert "Not deals" in body
+
+
+def test_a_day_of_only_cheap_auctions_says_so_in_the_subject():
+    # "No opportunities today" over a list of biddable cards is the subject
+    # line arguing with the email underneath it.
+    subject, _ = report.build_report([cheap_auction()], 30, RUN_DATE)
+    assert "cheap auction" in subject
+    assert "No opportunities" not in subject
+
+
 def test_offer_section_requires_best_offer_no_opportunity_and_a_real_comp():
     offerable = make_listing(id="offer", has_best_offer=True, is_opportunity=False, pct_under_market=5.0)
     no_comp = make_listing(
@@ -420,6 +538,14 @@ def test_each_section_renders_when_it_has_content():
                      card_type="raw", grader=None, grade=None, is_rookie_card=False),
         make_listing(id="auction", listing_type="auction", is_opportunity=False, bid_count=2,
                      time_left_text="0d 05h", max_rational_bid=150.0),
+        make_listing(id="cheap_auction", listing_type="auction", is_opportunity=False,
+                     comp_match=None, market_value=None, pct_under_market=None,
+                     dollar_savings=None, price=2.5, shipping_price=0.0, bid_count=1,
+                     time_left_text="1d 02h",
+                     title="2024 Panini Prizm Caleb Williams Silver Prizm #301",
+                     card_identity=card_identity.extract_card_identity(
+                         "2024 Panini Prizm Caleb Williams Silver Prizm #301"),
+                     card_type="raw", grader=None, grade=None),
         make_listing(id="offer", has_best_offer=True, is_opportunity=False, pct_under_market=5.0),
         # No comp: a card with one belongs in a section that prints it.
         make_listing(id="cool", is_opportunity=False, comp_match=None, market_value=None,

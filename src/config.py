@@ -103,6 +103,10 @@ class Config:
     # makes any claim about value -- see config/settings.json "report".
     cheap_find_ceiling: float
     cool_cards_price_ceiling: float
+    # The pocket-change auction band for the CHEAP AUCTIONS section. Also
+    # no claim about value: a current bid is not a price.
+    cheap_auction_floor: float
+    cheap_auction_ceiling: float
     cheap_min_discount_pct: float
     cheap_min_savings_dollars: float
     cheap_require_desirable_attribute: bool
@@ -212,6 +216,12 @@ def load_config() -> Config:
         cheap_find_ceiling=float(_section(settings, "report").get("cheap_find_ceiling", 15.0)),
         cool_cards_price_ceiling=float(
             _section(settings, "focus").get("cool_cards_price_ceiling", 100.0)
+        ),
+        cheap_auction_floor=float(
+            _section(settings, "report").get("cheap_auction_floor", 0.50)
+        ),
+        cheap_auction_ceiling=float(
+            _section(settings, "report").get("cheap_auction_ceiling", 10.0)
         ),
         cheap_min_discount_pct=float(cheap.get("min_discount_pct", 50.0)),
         cheap_min_savings_dollars=float(cheap.get("min_savings_dollars", 3.0)),
