@@ -1071,6 +1071,42 @@ class TestRunEndToEnd:
         assert "CHECK THIS" in subject
         assert "eBay changed their email template" in body
 
+    def test_a_run_where_no_price_could_be_read_is_an_alarm(self, project_with_alerts_enabled,
+                                                            monkeypatch):
+        # Four days of "no opportunities today" that were really "the parser
+        # stopped reading eBay's template". Every listing arrived with a full
+        # title and price None, which reads exactly like a quiet market and
+        # is not one, so it says so in the email.
+        sent = []
+        self._wire(
+            project_with_alerts_enabled, monkeypatch,
+            [
+                alert_item("https://www.ebay.com/itm/1", None),
+                alert_item("https://www.ebay.com/itm/2", None),
+            ],
+            sent,
+        )
+        project_with_alerts_enabled.run(self._args())
+        subject, body, _html = sent[0]
+        assert "CHECK THIS" in subject
+        assert "readable price" in body
+
+    def test_an_ordinary_run_does_not_raise_the_price_alarm(self, project_with_alerts_enabled,
+                                                            monkeypatch):
+        # The alarm has to stay quiet on a normal morning or it is noise. A
+        # listing here and there with no price is normal.
+        sent = []
+        self._wire(
+            project_with_alerts_enabled, monkeypatch,
+            [alert_item("https://www.ebay.com/itm/%d" % i, 25.0) for i in range(9)]
+            + [alert_item("https://www.ebay.com/itm/99", None)],
+            sent,
+        )
+        project_with_alerts_enabled.run(self._args())
+        subject, body, _html = sent[0]
+        assert "CHECK THIS" not in subject
+        assert "readable price" not in body
+
     def test_the_truncation_stats_branch_runs_and_logs(self, project_with_alerts_enabled,
                                                        monkeypatch, caplog):
         # This branch crashed a live scan with `NameError: name 'logger' is

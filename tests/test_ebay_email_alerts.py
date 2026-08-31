@@ -589,3 +589,137 @@ def test_nothing_is_refused_when_a_later_candidate_gets_through():
     )
     ebay_email_alerts.extract_listings_from_html(html, counters=counters)
     assert counters["titles_recovery_refused"] == 0
+
+
+# --- One item, several links ------------------------------------------------
+# eBay's alert template gives each listing more than one anchor: the photo,
+# the title, sometimes a button, in separate table cells. The photo link is
+# rover-wrapped and carries the untruncated title in its alt text; the title
+# link sits next to the price. Reading only the first anchor found meant a
+# live run produced 1382 listings with a full title and price None on every
+# single one -- nothing to value, nothing to report, an empty email. The
+# listing is one listing, so the anchors are merged and neither one's own
+# second link counts as the boundary with the next listing.
+
+PHOTO_AND_TITLE_ROW = """
+<table><tr>
+  <td><a href="https://www.ebay.com/rover/1/711-53200/2?mpre=https%3A%2F%2Fwww.ebay.com%2Fitm%2F123456789012">
+      <img alt="2024 Panini Prizm Caleb Williams Silver Prizm RC #301" src="photo.jpg"></a></td>
+  <td><a href="https://www.ebay.com/itm/123456789012?hash=abc">2024 Panini Prizm Caleb Willi…</a>
+      <div>$4.99</div><div>+ $1.25 shipping</div></td>
+</tr></table>
+"""
+
+
+def test_photo_and_title_links_are_one_listing():
+    results = ebay_email_alerts.extract_listings_from_html(PHOTO_AND_TITLE_ROW)
+    assert len(results) == 1
+    assert results[0]["url"] == "https://www.ebay.com/itm/123456789012"
+
+
+def test_price_survives_a_second_link_to_the_same_item():
+    # The regression itself: the photo anchor wins on document order, and the
+    # title anchor beside the price used to end its search instead of feeding
+    # it.
+    listing = ebay_email_alerts.extract_listings_from_html(PHOTO_AND_TITLE_ROW)[0]
+    assert listing["price"] == 4.99
+    assert listing["shipping_price"] == 1.25
+
+
+def test_the_fuller_title_is_kept_when_the_anchors_disagree():
+    listing = ebay_email_alerts.extract_listings_from_html(PHOTO_AND_TITLE_ROW)[0]
+    assert listing["title"] == "2024 Panini Prizm Caleb Williams Silver Prizm RC #301"
+
+
+def test_a_second_link_to_the_same_item_cannot_replace_the_title():
+    # Longer is not enough. A "more from this seller" link points at the same
+    # item and would win on length alone, so it still has to carry the part
+    # of the title we can be sure of.
+    html = (
+        '<table><tr><td><a href="https://www.ebay.com/itm/123456789012">'
+        "2024 Panini Prizm Caleb Williams Silver RC #301</a><div>$4.99</div>"
+        '<a href="https://www.ebay.com/itm/123456789012?ssn=x">'
+        "See every other card this seller has listed right now</a></td></tr></table>"
+    )
+    listing = ebay_email_alerts.extract_listings_from_html(html)[0]
+    assert listing["title"] == "2024 Panini Prizm Caleb Williams Silver RC #301"
+
+
+def test_the_first_price_found_is_not_overwritten_by_a_later_link():
+    html = (
+        '<table><tr><td><a href="https://www.ebay.com/itm/123456789012">Caleb Williams RC</a>'
+        "<div>$4.99</div></td>"
+        '<td><a href="https://www.ebay.com/itm/123456789012?hash=b">Shipping calculator</a>'
+        "<div>$99.00</div></td></tr></table>"
+    )
+    listing = ebay_email_alerts.extract_listings_from_html(html)[0]
+    assert listing["price"] == 4.99
+
+
+def test_bid_evidence_from_either_link_makes_it_an_auction():
+    # A current bid is not an asking price, so the evidence has to survive
+    # being on the anchor that did not win.
+    html = (
+        '<table><tr>'
+        '<td><a href="https://www.ebay.com/rover/1?mpre=https%3A%2F%2Fwww.ebay.com%2Fitm%2F999888777666">'
+        '<img alt="2024 Topps Chrome Kyle Teel Refractor Auto"></a></td>'
+        '<td><a href="https://www.ebay.com/itm/999888777666">2024 Topps Chrome Kyle…</a>'
+        "<div>$0.99</div><div>3 bids</div><div>Time left: 4h 12m</div></td>"
+        "</tr></table>"
+    )
+    listing = ebay_email_alerts.extract_listings_from_html(html)[0]
+    assert listing["listing_type"] == ebay_email_alerts.LISTING_TYPE_AUCTION
+    assert listing["bid_count"] == 3
+    assert listing["price"] == 0.99
+
+
+def test_a_rover_wrapped_neighbour_still_bounds_the_search():
+    # The other half of the same rule: a DIFFERENT item's link is a boundary
+    # even when it is percent-encoded, or the cheap card on the left would
+    # borrow the slab on the right's price.
+    html = (
+        '<table><tr><td><a href="https://www.ebay.com/itm/111111111111">Caleb Williams RC</a></td>'
+        '<td><a href="https://www.ebay.com/rover/1?mpre=https%3A%2F%2Fwww.ebay.com%2Fitm%2F222222222222">'
+        "1986 Fleer Michael Jordan PSA 9</a><div>$4,999.99</div></td></tr></table>"
+    )
+    williams = next(r for r in ebay_email_alerts.extract_listings_from_html(html) if "Williams" in r["title"])
+    assert williams["price"] is None
+
+
+def test_a_photo_link_with_no_title_does_not_become_a_listing_of_its_own():
+    html = (
+        '<table><tr><td><a href="https://www.ebay.com/itm/123456789012"><img src="photo.jpg"></a>'
+        '<a href="https://www.ebay.com/itm/123456789012">Caleb Williams RC</a>'
+        "<div>$4.99</div></td></tr></table>"
+    )
+    results = ebay_email_alerts.extract_listings_from_html(html)
+    assert len(results) == 1
+    assert results[0]["title"] == "Caleb Williams RC"
+    assert results[0]["price"] == 4.99
+
+
+def test_merged_listings_are_counted_once():
+    counters = {}
+    ebay_email_alerts.extract_listings_from_html(PHOTO_AND_TITLE_ROW, counters=counters)
+    assert counters["titles_seen"] == 1
+    # The winning title is whole, so this row is not part of the truncation
+    # rate the health footer reports.
+    assert counters["titles_truncated"] == 0
+
+
+def test_a_refusal_on_the_losing_link_is_not_reported():
+    # The photo link's alt was refused, but the title link carried the whole
+    # title anyway. Reporting that near-miss would send tomorrow's reader
+    # after something we already have.
+    counters = {}
+    html = (
+        '<table><tr><td><a href="https://www.ebay.com/itm/123456789012" '
+        'title="Shop eBay for great deals on trading cards and collectibles">'
+        '<img alt="eBay"></a></td>'
+        '<td><a href="https://www.ebay.com/itm/123456789012?hash=b">'
+        "2024 Panini Prizm Caleb Williams Silver Prizm RC #301</a>"
+        "<div>$4.99</div></td></tr></table>"
+    )
+    listing = ebay_email_alerts.extract_listings_from_html(html, counters=counters)[0]
+    assert listing["title"] == "2024 Panini Prizm Caleb Williams Silver Prizm RC #301"
+    assert counters["titles_recovery_refused"] == 0
