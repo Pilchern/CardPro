@@ -45,8 +45,10 @@ import email
 import imaplib
 import logging
 import re
+from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from email.message import Message
+from functools import lru_cache
 from typing import Optional
 from urllib.parse import unquote
 
@@ -91,12 +93,12 @@ FREE_SHIPPING_RE = re.compile(r"\bfree\s+shipping\b", re.IGNORECASE)
 # wrapped in a rover redirect. The identity that survives all of that is the
 # item NUMBER, so that -- not the link text -- is what CardPro keys on.
 #
-# ITEM_URL_RE only answers "is this anchor an item link?" (it scopes each
-# listing's text away from its neighbour's, and bs4 matches hrefs with it).
-# It deliberately allows one slug segment before the number, since the slug
-# is part of the same link.
-ITEM_URL_RE = re.compile(r"""/itm/(?:[^/?#\s"'<>]+/)?\d+""")
-
+# Everything that asks "is this anchor an item link, and which item?" goes
+# through _item_number, so scoping one listing's text away from its
+# neighbour's compares item numbers rather than link shapes. A regex that
+# only answered "some item" used to serve that purpose, and could not tell a
+# second link to THIS item from the next listing's.
+#
 # The number itself. Required to be a whole path segment of 9+ digits so a
 # slug can never masquerade as one: "/itm/2024-Panini-.../336749665825" used
 # to yield the "2024" inside the slug, which is a dead link AND collapses two
@@ -234,56 +236,145 @@ def extract_listings_from_html(html: str, counters: Optional[dict] = None) -> li
     which the report states plainly instead of assuming Buy It Now.
     """
     soup = BeautifulSoup(html, "html.parser")
-    results = []
-    seen_urls = set()
-    truncated = 0
-    recovery_refused = 0
+    #: item number -> the listing built so far. An email links the same item
+    #: more than once (the photo and the title are separate anchors, often in
+    #: separate cells), and each anchor sees a different part of the row, so
+    #: they are merged into one listing rather than the first one winning.
+    listings = OrderedDict()
+    refused_by_item = {}
 
     for a in soup.find_all("a", href=True):
-        clean_url = _find_item_url(a["href"])
-        if not clean_url or clean_url in seen_urls:
+        item_number = _item_number(a["href"])
+        if item_number is None:
             continue
 
-        title, fuller_refused = _fullest_title(a)
-        if not title:
-            continue
-        if looks_truncated(title):
-            truncated += 1
-        if fuller_refused:
-            recovery_refused += 1
+        title, fuller_refused, title_verified = _fullest_title(a)
 
-        price = _find_nearby(a, _extract_price)
-        shipping_price = _find_nearby(a, _extract_shipping)
-        context = _nearby_text(a)
+        price = _find_nearby(a, _extract_price, item_number)
+        shipping_price = _find_nearby(a, _extract_shipping, item_number)
+        context = _nearby_text(a, item_number)
         listing_type, bid_count = _detect_listing_type(context)
-        seen_urls.add(clean_url)
-        results.append(
-            {
-                "title": title,
-                "url": clean_url,
-                "price": price,
-                "shipping_price": shipping_price,
-                "listing_type": listing_type,
-                "bid_count": bid_count,
-                "has_best_offer": bool(BEST_OFFER_RE.search(context)),
-                "time_left_text": _extract_time_left(context),
-            }
-        )
+
+        found = {
+            "title": title,
+            "url": _item_url(item_number),
+            "price": price,
+            "shipping_price": shipping_price,
+            "listing_type": listing_type,
+            "bid_count": bid_count,
+            "has_best_offer": bool(BEST_OFFER_RE.search(context)),
+            "time_left_text": _extract_time_left(context),
+            "title_verified": title_verified,
+        }
+
+        existing = listings.get(item_number)
+        if existing is None:
+            if not title:
+                # No title from this anchor and nothing to merge it into --
+                # a bare photo link with no alt text says nothing about the
+                # card. A later anchor for the same item may still carry one.
+                continue
+            listings[item_number] = found
+            refused_by_item[item_number] = fuller_refused
+        elif _merge_listing(existing, found):
+            # This anchor's title is the one we kept, so its near-miss is the
+            # one still costing us something -- and whatever the earlier
+            # anchor refused, it no longer has the title we are reporting.
+            refused_by_item[item_number] = fuller_refused
+
+    results = list(listings.values())
+    for listing in results:
+        # Bookkeeping for the merge, not a fact about the listing.
+        listing.pop("title_verified", None)
 
     if counters is not None and results:
         counters["titles_seen"] = counters.get("titles_seen", 0) + len(results)
-        counters["titles_truncated"] = counters.get("titles_truncated", 0) + truncated
+        counters["titles_truncated"] = counters.get("titles_truncated", 0) + sum(
+            1 for listing in results if looks_truncated(listing["title"])
+        )
         # Without this, a report still saying "98% truncated" cannot be read:
         # it could mean eBay's HTML simply carries no fuller copy of the
         # title (a real ceiling, nothing to fix here), or that a fuller copy
         # was sitting right there and our own stem check threw it away (our
         # bug, and fixable). Those two need different work, so they get
         # counted apart rather than argued about.
-        counters["titles_recovery_refused"] = (
-            counters.get("titles_recovery_refused", 0) + recovery_refused
+        counters["titles_recovery_refused"] = counters.get("titles_recovery_refused", 0) + sum(
+            1 for number in listings if refused_by_item.get(number)
         )
 
     return results
+
+
+#: What a second anchor for the same item may fill in. Every one of these is
+#: "unknown until something says otherwise", so the first real answer wins
+#: and a later anchor can never overwrite it with another unknown.
+_FILLABLE_FIELDS = ("price", "shipping_price", "bid_count", "time_left_text")
+
+
+def _merge_listing(existing: dict, found: dict) -> bool:
+    """Fold a second anchor for the same item into the listing already built.
+
+    eBay's alert template gives one item several links -- the photo, the
+    title, sometimes a "Buy It Now" button -- and they do not see the same
+    thing. The photo anchor usually carries the untruncated title in its alt
+    text and sits in its own table cell with no price in it; the title anchor
+    sits next to the price. Keeping only the first anchor threw away whatever
+    the other one knew, which is how every listing in a live run arrived with
+    a full title and no price at all.
+
+    Returns whether the title got fuller here, so the caller can stop
+    counting a refused recovery that a later anchor made good.
+    """
+    title_improved = False
+    if _title_wins(existing, found):
+        existing["title"] = found["title"]
+        existing["title_verified"] = existing["title_verified"] or found["title_verified"]
+        title_improved = True
+    elif found["title_verified"] and existing["title_verified"] is False:
+        # The title we are keeping was read off a photo link with no visible
+        # text, and this anchor has now supplied that text and agrees with
+        # it. That is the check _fullest_title could not run, run late.
+        existing["title_verified"] = True
+
+    for field in _FILLABLE_FIELDS:
+        if existing.get(field) is None and found.get(field) is not None:
+            existing[field] = found[field]
+
+    if existing["listing_type"] == LISTING_TYPE_UNKNOWN:
+        existing["listing_type"] = found["listing_type"]
+    elif found["listing_type"] == LISTING_TYPE_AUCTION:
+        # Bid evidence anywhere in the row wins, for the reason given in
+        # _detect_listing_type: calling a current bid an asking price is the
+        # expensive mistake, so it is the one this resolves against.
+        existing["listing_type"] = LISTING_TYPE_AUCTION
+
+    existing["has_best_offer"] = existing["has_best_offer"] or found["has_best_offer"]
+    return title_improved
+
+
+def _title_wins(existing: dict, found: dict) -> bool:
+    """Whether this anchor's title should replace the one already kept.
+
+    The same rule _fullest_title applies within one anchor, applied across
+    two anchors for one item: longer is not enough on its own, because a
+    "See more from this seller" link would win on length alone. It has to
+    contain the part of the title we can be sure of.
+
+    With one addition the single-anchor version cannot make. A photo link
+    has no visible text, so its alt was accepted with nothing to check it
+    against -- and "Shop eBay for great deals on trading cards" is longer
+    than most real titles. When a sibling link finally supplies visible
+    text, an unchecked title that does not contain it was never this card's
+    title, however long it is, and loses to the one that was displayed.
+    """
+    current, candidate = existing["title"], found["title"]
+    if not candidate:
+        return False
+    if not current:
+        return True
+    if found["title_verified"] and not existing["title_verified"]:
+        return _title_stem(candidate) not in current.lower()
+    return len(candidate) > len(current) and _title_stem(current) in candidate.lower()
 
 
 #: Where a fuller copy of the title may be hiding, in the order we prefer
@@ -310,9 +401,10 @@ def _title_stem(text: str) -> str:
     return stripped.strip().lower()
 
 
-def _fullest_title(anchor) -> tuple[str, bool]:
+def _fullest_title(anchor) -> tuple[str, bool, bool]:
     """The longest title for this listing that the email actually contains,
-    and whether a longer candidate was refused for not matching it.
+    whether a longer candidate was refused for not matching it, and whether
+    any of it is anchored to text eBay actually displayed for this listing.
 
     THIS IS THE BOTTLENECK, measured. Of the first 350 titles the live run
     stored, 98% arrived truncated, at a median of 30 characters -- "2024
@@ -339,6 +431,14 @@ def _fullest_title(anchor) -> tuple[str, bool]:
     "eBay sent no fuller copy" and "eBay sent one and we refused it", which
     a truncation rate on its own cannot tell you -- see the counters in
     extract_listings_from_html.
+
+    The third says whether the anchor had any visible text at all. A photo
+    link has none, so there is no stem to check its alt against and whatever
+    the alt says is taken on trust -- which is fine when the alt is the card
+    title and wrong when it is "Shop eBay for great deals". Nothing here can
+    tell those apart; _merge_listing can, once a sibling link supplies the
+    visible text this one lacked, so it needs to know which titles were
+    never checked.
     """
     # The separator is load-bearing: these are HTML emails, so a title is
     # routinely split across sibling <span>s or table cells, and joining the
@@ -374,9 +474,10 @@ def _fullest_title(anchor) -> tuple[str, bool]:
     # A refusal only counts while it is still costing us something: if a
     # later candidate got through, nothing was lost and reporting it as a
     # near-miss would send tomorrow's reader after a title we already have.
-    return best, refused and best == visible
+    return best, refused and best == visible, bool(visible)
 
 
+@lru_cache(maxsize=8192)
 def _item_number(href: str) -> Optional[str]:
     """The eBay item number in this href, or None.
 
@@ -390,6 +491,14 @@ def _item_number(href: str) -> Optional[str]:
         if match:
             return match.group(1)
     return None
+
+
+def _item_url(number: str) -> str:
+    """The canonical URL for an item number. One place, because this string
+    is the listing's id -- the dedupe key in seen_listings.json and the key
+    the comp corpus stores observations under -- and two spellings of it
+    would be two listings."""
+    return "https://www.ebay.com/itm/" + number
 
 
 def _find_item_url(href: str) -> Optional[str]:
@@ -411,78 +520,84 @@ def _find_item_url(href: str) -> Optional[str]:
     number = _item_number(href)
     if number is None:
         return None
-    return "https://www.ebay.com/itm/" + number
+    return _item_url(number)
 
 
-def _find_nearby(anchor_tag, extractor) -> Optional[float]:
-    """Looks for a value (price or shipping cost -- whatever `extractor`
-    pulls out of text) close to this specific listing's title link --
-    deliberately scoped narrowly so it doesn't pick up a neighboring
+def _links_another_listing(tag, item_number: str) -> bool:
+    """Whether `tag` is, or contains, a link to a DIFFERENT eBay item.
+
+    The distinction matters more than it looks. An email row links the same
+    item several times -- the photo, the title, a "Buy It Now" button -- and
+    those are all this listing. Treating any item link as a boundary meant a
+    listing's own second link cut it off from its own price, which is exactly
+    what happened once photo anchors started being read: every listing in a
+    live run came out with a full title and price None.
+
+    Compared by item NUMBER, not by link shape, and read with the same
+    decoding as _find_item_url, so a rover-wrapped copy of this item's link
+    is recognised as this item rather than mistaken for the next one.
+    """
+    if getattr(tag, "find_all", None) is None:
+        return False
+    if tag.name == "a" and tag.get("href") and _is_other_item(tag["href"], item_number):
+        return True
+    return any(_is_other_item(a["href"], item_number) for a in tag.find_all("a", href=True))
+
+
+def _is_other_item(href: str, item_number: str) -> bool:
+    other = _item_number(href)
+    return other is not None and other != item_number
+
+
+def _scoped_texts(anchor_tag, item_number: str):
+    """Every chunk of text CardPro may read for THIS listing, nearest first.
+
+    Deliberately scoped narrowly so it doesn't pick up a neighbouring
     listing's value when several listings share a flat structure with no
     per-listing wrapper (title link, then a price/shipping element as its
     sibling, repeated -- a common real-world email-template pattern).
-    Shared by _find_nearby_price and _find_nearby_shipping so both use the
-    identical, already-validated scoping logic.
+
+    Shared by _find_nearby and _nearby_text so a price and a bid count can
+    never be read from different listings.
     """
     # 1. the link's own text
-    value = extractor(anchor_tag.get_text(" ", strip=True))
-    if value is not None:
-        return value
+    yield anchor_tag.get_text(" ", strip=True)
 
-    # 2. next siblings at the same level, stopping at the next item link
-    #    (that belongs to the next listing, not this one)
+    # 2. next siblings at the same level, stopping at the next LISTING's
+    #    item link (another link to this same item is still this listing)
     for sibling in anchor_tag.find_next_siblings():
-        if getattr(sibling, "find", None) and (
-            (sibling.name == "a" and sibling.get("href") and ITEM_URL_RE.search(sibling.get("href", "")))
-            or sibling.find("a", href=ITEM_URL_RE)
-        ):
+        if _links_another_listing(sibling, item_number):
             break
-        value = extractor(sibling.get_text(" ", strip=True) if hasattr(sibling, "get_text") else str(sibling))
-        if value is not None:
-            return value
+        yield sibling.get_text(" ", strip=True) if hasattr(sibling, "get_text") else str(sibling)
 
     # 3. fall back to the narrowest ancestor that doesn't itself contain
     #    another listing's item link (too broad = wrong listing's value)
     for ancestor in anchor_tag.parents:
-        other_item_links = [
-            a for a in ancestor.find_all("a", href=True) if a is not anchor_tag and ITEM_URL_RE.search(a["href"])
-        ]
-        if other_item_links:
+        if any(
+            a is not anchor_tag and _is_other_item(a["href"], item_number)
+            for a in ancestor.find_all("a", href=True)
+        ):
             break
-        value = extractor(ancestor.get_text(" ", strip=True))
+        yield ancestor.get_text(" ", strip=True)
+
+
+def _find_nearby(anchor_tag, extractor, item_number: str) -> Optional[float]:
+    """The first value (price or shipping cost -- whatever `extractor` pulls
+    out of text) found near this listing's link, nearest chunk first."""
+    for text in _scoped_texts(anchor_tag, item_number):
+        value = extractor(text)
         if value is not None:
             return value
-
     return None
 
 
-def _nearby_text(anchor_tag) -> str:
-    """The text CardPro is allowed to read for THIS listing: the link's own
-    text plus following siblings up to (not including) the next listing's
-    item link, plus the narrowest ancestor that doesn't contain another
-    listing. Same scoping rule as _find_nearby -- reused rather than
-    reinvented so listing-type detection can never pick up the neighbouring
-    listing's "3 bids" and mislabel a Buy It Now as an auction.
+def _nearby_text(anchor_tag, item_number: str) -> str:
+    """The text CardPro is allowed to read for THIS listing, joined. Same
+    scoping as _find_nearby -- reused rather than reinvented so listing-type
+    detection can never pick up the neighbouring listing's "3 bids" and
+    mislabel a Buy It Now as an auction.
     """
-    parts = [anchor_tag.get_text(" ", strip=True)]
-
-    for sibling in anchor_tag.find_next_siblings():
-        if getattr(sibling, "find", None) and (
-            (sibling.name == "a" and sibling.get("href") and ITEM_URL_RE.search(sibling.get("href", "")))
-            or sibling.find("a", href=ITEM_URL_RE)
-        ):
-            break
-        parts.append(sibling.get_text(" ", strip=True) if hasattr(sibling, "get_text") else str(sibling))
-
-    for ancestor in anchor_tag.parents:
-        other_item_links = [
-            a for a in ancestor.find_all("a", href=True) if a is not anchor_tag and ITEM_URL_RE.search(a["href"])
-        ]
-        if other_item_links:
-            break
-        parts.append(ancestor.get_text(" ", strip=True))
-
-    return " ".join(part for part in parts if part)
+    return " ".join(part for part in _scoped_texts(anchor_tag, item_number) if part)
 
 
 def _detect_listing_type(text: str):

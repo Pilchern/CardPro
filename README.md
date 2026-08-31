@@ -130,7 +130,7 @@ more than one that says "95% under market" about a common.
    $2 one: a numbered rookie at $0.99 ends up below whatever slab happens
    to close an hour sooner, and is never seen. So auctions whose current
    bid plus shipping falls in your pocket-change band
-   (`report.cheap_auction_floor`..`cheap_auction_ceiling`, $0.50--$10 by
+   (`report.cheap_auction_floor`..`cheap_auction_ceiling`, $0.01--$10 by
    default) get their own section, ordered by how interesting the *card*
    is and only then by what ends soonest. It makes no deal claim -- a
    current bid is not a price and most of these have no comp at all.
@@ -1215,7 +1215,7 @@ question about how the email is organised rather than about auction maths:
 
 | Key | What it does | Default | When you'd change it |
 |---|---|---|---|
-| `report.cheap_auction_floor` | Bottom of the band. Below it a "bid" is almost always an untouched opening price, and a section of those is a list of every auction on eBay rather than a list of finds. | `0.5` | Set to `0` to include untouched openers. |
+| `report.cheap_auction_floor` | Bottom of the band. Below it a "bid" is usually an untouched opening price -- but the pocket-change band starts at a penny, and what may reach this section at all is already gated by `cheap_cards.require_desirable_attribute`, so an untouched $0.01 opener still needs a rookie, auto, patch, serial number, parallel or grade on it. | `0.01` | Raise it to `0.5` if penny openers start crowding the section. |
 | `report.cheap_auction_ceiling` | Top of the band, measured on **current bid + shipping**, not the bid alone. | `10.0` | Raise it to bid in a wider band. |
 
 What may reach the section at all is still decided once, upstream, by

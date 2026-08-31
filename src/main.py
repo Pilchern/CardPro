@@ -240,6 +240,28 @@ def fetch_ebay_alert_active(cfg, stats) -> list:
             seen, cut, stats.titles_truncated_pct, refused,
         )
 
+    if items:
+        # A price is the one thing every downstream stage needs: no price,
+        # no valuation, no cheap find, no auction, nothing in the email but a
+        # quiet "no opportunities today". That is exactly what a live run
+        # sent for four days straight while the parser was reading the photo
+        # link and finding the price beside the title link -- a failure that
+        # looked identical to a slow market. It is measured now, and a total
+        # loss is an alarm rather than a silence.
+        priced = sum(1 for item in items if item.get("price") is not None)
+        logger.info(
+            "Prices: %d of %d listing(s) had a readable price (%.0f%%)",
+            priced, len(items), 100.0 * priced / len(items),
+        )
+        if priced <= len(items) // 10:
+            stats.warn(
+                "Only {} of {} listing(s) in eBay's alert emails had a readable price. "
+                "Nothing without one can be valued, so today's email is near-empty "
+                "because the parser stopped reading eBay's template, not because the "
+                "market was quiet.".format(priced, len(items)),
+                broken=True,
+            )
+
     if counters.get("fetch_failures"):
         stats.warn(
             "{} alert email(s) could not be read from the mailbox and were skipped, so "
