@@ -109,6 +109,32 @@ SET_KEYWORDS = [
     # Topps Gold parallel of the same player, year and card number into ONE
     # exact bucket, which is the level allowed to declare a deal.
     "Topps Gold Label", "Gold Label",
+    # Measured against the live production corpus (docs/PROJECT_STATUS.md
+    # section 0): the single largest remaining class of set_name=None on
+    # FULL (non-truncated) titles. "Resurgence" and "Signature Class" are
+    # listed bare rather than as "Topps Resurgence" / "Topps Signature
+    # Class" because sellers routinely put the year between the brand word
+    # and the product name ("Topps 2025 Resurgence Football ..."), which a
+    # contiguous phrase would miss entirely -- the same reason bare
+    # "Prizm"/"Chrome"/"Sapphire" above have no brand prefix. Both names are
+    # specific enough hobby terms that a bare match carries no real risk of
+    # meaning something else.
+    "Resurgence", "Signature Class",
+    # Panini's real product name uses "&"; the pre-existing "Panini Rookies
+    # and Stars" entry above requires the literal words "and" AND the brand
+    # word directly adjacent, which the actual product ("Panini 2024
+    # Rookies & Stars ...") never satisfies because the year sits between
+    # them. Aliased to the older canonical name below so both spellings key
+    # the same comp bucket.
+    "Rookies & Stars",
+    # Upper Deck / Bowman sub-lines that only ever appear with their brand
+    # word directly in front in the corpus, so the full phrase is reachable
+    # as written (unlike Resurgence/Signature Class above).
+    "Upper Deck Parkhurst", "Bowman NPB",
+    # Named inserts, not base cards -- kept separate from the flagship
+    # bucket on purpose, since an insert is a different market from the
+    # base card it inserts into.
+    "Game Dated Moments", "Greatest Hits", "Silhouette",
 ]
 
 #: Spellings that mean the same product. Two names for one set means two comp
@@ -120,6 +146,7 @@ SET_ALIASES = {
     "Ginter": "Allen & Ginter",
     "Topps Series One": "Topps Series 1",
     "Topps Series Two": "Topps Series 2",
+    "Rookies & Stars": "Panini Rookies and Stars",
 }
 
 #: A bare "Chrome" is Topps Chrome or Bowman Chrome depending on the brand
@@ -726,6 +753,16 @@ TITLE_NOISE_WORDS = [
     "nfl", "nba", "mlb", "nhl", "football", "baseball", "basketball", "hockey",
     "free", "shipping", "ships", "new", "hot", "invest", "hof", "mvp", "roy",
     "jr", "sr", "ii", "iii", "iv",
+    # "Flagship" describes the base Topps line, it does not name a separate
+    # product from it -- unlike "Fire" or "Inception", there is no card
+    # anywhere titled just "Flagship". Measured on the live corpus: it was
+    # the ONLY unrecognised word in the brand-to-card-number window on 20
+    # full-title listings ("2026 Topps Flagship ... #35 ..."), which is
+    # exactly the one-unrecognised-word shape _flagship_window_is_clean
+    # refuses (it only waves through a run of exactly two, i.e. a name).
+    # Marking it noise lets those windows read as clean instead of as an
+    # unknown product blocking the flagship guard.
+    "flagship",
 ]
 
 

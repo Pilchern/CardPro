@@ -243,6 +243,68 @@ def test_new_set_keywords_extracted():
         assert card_identity.extract_card_identity(title).set_name.value == expected, title
 
 
+def test_set_keywords_reachable_when_year_splits_brand_and_product():
+    """"Resurgence" and "Signature Class" are listed bare in SET_KEYWORDS
+    because real listings put the year between the brand word and the
+    product name -- titles measured live in the corpus, not invented.
+    A contiguous "Topps Resurgence" phrase would never match these.
+    """
+    for title, expected in [
+        ("2025 Topps Resurgence #16 Caleb Williams Silver Static Auto", "Resurgence"),
+        ("Topps 2025 Resurgence Football Caleb Williams Gold Power Surge /50", "Resurgence"),
+        ("2024 Topps Signature Class Caleb Williams Fluidity Insert RC #F1 PSA 9", "Signature Class"),
+        ("Topps 2024 Signature Class Fluidity Caleb Williams Rookie RC F-1", "Signature Class"),
+    ]:
+        assert card_identity.extract_card_identity(title).set_name.value == expected, title
+
+
+def test_rookies_and_stars_ampersand_spelling_matches_older_canonical_name():
+    """The real product name uses "&"; the pre-existing "Panini Rookies and
+    Stars" vocabulary entry was unreachable because eBay titles put the year
+    between "Panini" and "Rookies" ("Panini 2024 Rookies & Stars ..."). Both
+    spellings must key the same comp bucket.
+    """
+    identity = card_identity.extract_card_identity(
+        "Panini 2024 Rookies & Stars Caleb Williams Bears Thrillers Longevity T-CWS PSA 9"
+    )
+    assert identity.set_name.value == "Panini Rookies and Stars"
+
+
+def test_upper_deck_and_bowman_sub_lines_extracted():
+    for title, expected in [
+        ("2023-24 Upper Deck Parkhurst Patterned Foil Connor Bedard #70 Rookie RC", "Upper Deck Parkhurst"),
+        ("2022 Bowman NPB Nippon Professional Baseball Munetaka Murakami #2 (RC)", "Bowman NPB"),
+        ("2023 Upper Deck Game Dated Moments Connor Bedard #2 PSA 9 /1199", "Game Dated Moments"),
+    ]:
+        assert card_identity.extract_card_identity(title).set_name.value == expected, title
+
+
+def test_insert_set_name_kept_separate_from_flagship_bucket():
+    """"Greatest Hits" is a Topps Flagship INSERT, a different market from
+    the base card it inserts into, so it must key its own comp bucket
+    rather than falling through to flagship "Topps".
+    """
+    identity = card_identity.extract_card_identity(
+        "2026 Topps Flagship Football - Colston Loveland Greatest Hits Pink Foil SP"
+    )
+    assert identity.set_name.value == "Greatest Hits"
+
+
+def test_flagship_asserted_when_title_says_flagship_explicitly():
+    """"Flagship" describes the base Topps line rather than naming a
+    separate product, so it must not block the flagship guard's
+    closed-world check. Measured live: this was the only unrecognised word
+    on 20 full-title listings, which is exactly the one-unrecognised-word
+    shape the guard refuses (it only waves through a run of exactly two,
+    i.e. a player's name).
+    """
+    identity = card_identity.extract_card_identity(
+        "2026 Caleb Williams Topps Flagship Auto Green Holo Foil /99 #35 Chicago Bears"
+    )
+    assert identity.set_name.value == "Topps"
+    assert identity.set_name.source == "title:flagship"
+
+
 # --- Negative signals ---------------------------------------------------
 
 
