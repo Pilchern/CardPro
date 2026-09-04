@@ -1,6 +1,6 @@
 # CardPro — Project Status
 
-_Last updated: August 27, 2026 (browse sections; identity stops reading the cut; sold comps from one paste)_
+_Last updated: September 4, 2026 (set-name vocabulary expansion, measured against the live corpus)_
 
 A personal, automated sports-card deal-finding system. Runs once a day,
 scans your eBay saved-search alerts for the watchlist below, values what it
@@ -143,6 +143,51 @@ input rather than reading it. Each is now a regression test.
 Sold comps also got much cheaper to enter: `python -m scripts.add_sold_comp
 --paste` reads every sale off a results page you copied, in one go. It is
 deliberately suspicious about what a sale is -- see §5.
+
+### September 4: closing the biggest set-name vocabulary gaps, measured
+
+§0's own numbers said where the work was: set name is the first blocker for
+the largest share of listings that fail to reach a flag-eligible key. Rather
+than guess at missing vocabulary, this pass pulled every full (non-truncated)
+stored title in the live corpus with `set_name=None` -- 175 of them -- and
+read what product each one actually names. Two kinds of gap, both in
+`src/card_identity.py`:
+
+- **Real products with no vocabulary entry at all**, worth adding in order of
+  how often they actually appeared: `Resurgence` and `Signature Class` (both
+  Topps, 17-21 hits each), `Rookies & Stars` (the real Panini "&" spelling --
+  the pre-existing "Panini Rookies and Stars" entry was unreachable because
+  the year sits between the brand word and the product name in real titles),
+  `Upper Deck Parkhurst`, `Bowman NPB`, and the inserts `Game Dated Moments`
+  and `Greatest Hits` (kept separate from their flagship base set on purpose
+  -- an insert is a different market from the base card it inserts into).
+  `Resurgence` and `Signature Class` are listed bare, same reasoning as bare
+  `Prizm`/`Chrome`/`Sapphire`: a contiguous "Topps Resurgence" phrase misses
+  every title where the year splits the brand word from the product name.
+- **A real product the flagship-guard path was already built to catch, but
+  refused to.** "Flagship" is how sellers describe the base Topps line, not
+  a separate product -- but it was the one word in `TITLE_NOISE_WORDS` this
+  module didn't already know, and `_flagship_window_is_clean` only waves a
+  window through when it has exactly zero or two unrecognised words (zero
+  words, or a first+last name). One unrecognised word -- "Flagship" itself --
+  was refusing the assertion on 20 full-title listings that otherwise had
+  everything the guard asks for, including a real card number. Adding it to
+  the noise list was the whole fix.
+
+Measured with `python -m scripts.replay_corpus --reextract` against the
+2,210-observation live corpus: set_name coverage on stored full titles rose
+56.4% -> 60.7% (+68 rows); across the whole corpus, `set_name` 44.3% ->
+47.3%, `same_card`-complete keys 18.7% -> 19.8%, `exact`-complete keys 14.3%
+-> 14.8%. All additive vocabulary (see the module's own comment on why that
+can only turn a set_name=None into a value, never change one that already
+matched) -- full suite (1232 tests, up from 1227) still green, and 97 of the
+175 titles remain genuinely unresolved: a new "Bowman University" college-NIL
+product line whose real taxonomy isn't established yet (guessed groupings
+here would be exactly the wrong-comp-bucket failure this project exists to
+avoid), a handful of `Topps Flagship` titles with no card number, and a few
+Upper Deck inserts only reachable via an abbreviated "UD"/"S2" spelling.
+Left alone rather than guessed at -- same rule as everywhere else in this
+file.
 
 ## 1. What this actually answers
 
