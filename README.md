@@ -1191,7 +1191,7 @@ price only.
 
 | Key | What it does | Default | When you'd change it |
 |---|---|---|---|
-| `marketplace_fee_pct` | Marketplace final value fee. The default is eBay's standard trading-card rate for a seller without a Store subscription, at time of writing. | `13.25` | Verify against your own account -- Store subscribers and Top Rated sellers pay less. Leaving it high is the safe error: it understates profit. If you charge buyers for shipping, eBay fees that too, so fold the difference in here. |
+| `marketplace_fee_pct` | Marketplace final value fee. The default is eBay's standard trading-card rate for a seller without a Store subscription, at time of writing. | `13.6` | Verify against your own account -- Store subscribers and Top Rated sellers pay less. Leaving it high is the safe error: it understates profit. If you charge buyers for shipping, eBay fees that too, so fold the difference in here. |
 | `marketplace_fixed_fee` | Flat per-order fee. | `0.3` | Match your marketplace. |
 | `payment_fee_pct` | Separate payment-processing percentage. Zero because eBay's managed payments bundles processing into the fee above -- charging it again would double-count. | `0.0` | Set it if you sell somewhere that bills processing separately. |
 | `outbound_shipping` | What it costs **you** to mail the card out. Default assumes a bubble mailer with USPS Ground Advantage and tracking. | `5.0` | Lower it (~$1) if you ship raw commons in an eBay Standard Envelope with no real tracking. |

@@ -44,7 +44,7 @@ def test_ebay_defaults_are_the_documented_numbers():
     # These are assumptions, not facts -- but they are assumptions the
     # report prints, so a silent change to one should break a test.
     fees = FeeModel.ebay_default()
-    assert fees.marketplace_fee_pct == 13.25
+    assert fees.marketplace_fee_pct == 13.6
     assert fees.marketplace_fixed_fee == 0.30
     assert fees.payment_fee_pct == 0.0
     assert fees.outbound_shipping == 5.00

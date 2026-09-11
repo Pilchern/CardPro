@@ -753,7 +753,7 @@ def test_economics_line_shown_with_assumptions_footer():
     assert "profit" in body
     assert "ROI)" in body
     assert "ECONOMICS ASSUMPTIONS" in body
-    assert "Selling fees assumed at 13.25%" in body
+    assert "Selling fees assumed at 13.60%" in body
 
 
 def test_economics_line_omitted_when_there_are_no_economics():
@@ -780,7 +780,7 @@ def test_assumptions_footer_holds_no_per_card_dollar_specifics():
     footer = flat(body_of(deals).split("ECONOMICS ASSUMPTIONS")[1])
     assert "Inbound shipping of $" not in footer
     assert "Inbound shipping is UNKNOWN" not in footer
-    assert "Selling fees assumed at 13.25%" in footer
+    assert "Selling fees assumed at 13.60%" in footer
     assert "Per-card figures" in footer
 
 

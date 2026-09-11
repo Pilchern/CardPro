@@ -200,7 +200,7 @@ def load_config() -> Config:
             "last_run_path", "data/last_run.json"
         ),
         require_flag_eligible_comp=bool(valuation.get("require_flag_eligible_comp", True)),
-        fee_marketplace_pct=float(economics.get("marketplace_fee_pct", 13.25)),
+        fee_marketplace_pct=float(economics.get("marketplace_fee_pct", 13.6)),
         fee_marketplace_fixed=float(economics.get("marketplace_fixed_fee", 0.30)),
         fee_payment_pct=float(economics.get("payment_fee_pct", 0.0)),
         outbound_shipping=float(economics.get("outbound_shipping", 5.0)),

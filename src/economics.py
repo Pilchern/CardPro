@@ -3,7 +3,7 @@ what you would actually net reselling it, and the most you could bid.
 
 Why this module exists: "saved $203" is not a number you can spend. The
 report's savings figure today is ``comp_median - price`` -- it ignores
-the ~13.5% eBay takes, the $5 it costs to mail a card with tracking, the
+the ~13.6% eBay takes, the $5 it costs to mail a card with tracking, the
 sleeve and toploader, and the sales tax on the way in. On a $30 card
 those costs are most of the "profit". A tool that tells you to spend real
 money owes you the arithmetic in full.
@@ -57,7 +57,7 @@ class FeeModel:
     into ``marketplace_fee_pct`` if you sell that way.
     """
 
-    marketplace_fee_pct: float  # % of sale price, e.g. 13.25 for eBay trading cards
+    marketplace_fee_pct: float  # % of sale price, e.g. 13.6 for eBay trading cards
     marketplace_fixed_fee: float  # flat per-order fee, e.g. 0.30
     payment_fee_pct: float  # 0.0 when payment processing is bundled into the above
     outbound_shipping: float  # what it costs YOU to ship it out
@@ -75,12 +75,12 @@ class FeeModel:
         shipping method and your buyer's location. Tune them; they are
         constructor arguments precisely so you can.
 
-        * ``marketplace_fee_pct = 13.25`` -- eBay's final value fee for
+        * ``marketplace_fee_pct = 13.6`` -- eBay's final value fee for
           the Trading Cards categories for a seller without a Store
-          subscription. Store subscribers and Top Rated sellers pay less;
-          some subcategories differ. If you are unsure, leaving it high
-          is the safe error: it understates profit rather than
-          overstating it.
+          subscription, on the first pricing tier. Store subscribers and
+          Top Rated sellers pay less; some subcategories differ. If you
+          are unsure, leaving it high is the safe error: it understates
+          profit rather than overstating it.
         * ``marketplace_fixed_fee = 0.30`` -- eBay's per-order fixed fee.
         * ``payment_fee_pct = 0.0`` -- eBay's managed payments bundles
           processing into the final value fee, so charging it again would
@@ -104,11 +104,11 @@ class FeeModel:
           measured. Set your own rate (e.g. 7.0) to include it.
 
         The honest summary: on a $30 sale these defaults cost you about
-        $10.28 -- roughly a third of the sale. That is the money the old
+        $10.38 -- roughly a third of the sale. That is the money the old
         ``comp_median - price`` savings figure was quietly leaving out.
         """
         return cls(
-            marketplace_fee_pct=13.25,
+            marketplace_fee_pct=13.6,
             marketplace_fixed_fee=0.30,
             payment_fee_pct=0.0,
             outbound_shipping=5.00,
