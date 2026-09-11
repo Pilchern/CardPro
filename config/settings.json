@@ -44,8 +44,8 @@
     "min_comp_span_days": 7
   },
   "economics": {
-    "_comment": "Resale assumptions, not facts. Every one of these shows up in the report next to the profit figure so you can see what the number depends on. Tune them to how you actually sell. marketplace_fee_pct 13.25 + $0.30 is eBay's standard trading-card final value fee at time of writing -- verify against your own account. resale_haircut_pct is the gap between the median comp and what you'd realistically get selling it promptly.",
-    "marketplace_fee_pct": 13.25,
+    "_comment": "Resale assumptions, not facts. Every one of these shows up in the report next to the profit figure so you can see what the number depends on. Tune them to how you actually sell. marketplace_fee_pct 13.6 + $0.30 is eBay's standard trading-card final value fee at time of writing -- verify against your own account. resale_haircut_pct is the gap between the median comp and what you'd realistically get selling it promptly.",
+    "marketplace_fee_pct": 13.6,
     "marketplace_fixed_fee": 0.3,
     "payment_fee_pct": 0.0,
     "outbound_shipping": 5.0,
