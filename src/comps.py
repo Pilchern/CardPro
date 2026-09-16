@@ -69,7 +69,10 @@ import math
 import statistics
 from dataclasses import dataclass
 from datetime import datetime
+from functools import lru_cache
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
+
+from src import card_identity
 
 # (label, min_inclusive, max_exclusive). Last tier's max is unbounded.
 PRICE_TIERS = [
@@ -389,6 +392,79 @@ def market_key(
     return ("graded", grader_n, grade_n, _clean_upper(qualifier))
 
 
+def printing_variant(
+    is_autograph: Optional[bool] = False,
+    relic: Optional[str] = None,
+    print_run: Optional[int] = None,
+    is_serial_numbered: Optional[bool] = False,
+    title_truncated: bool = False,
+) -> Optional[tuple]:
+    """The printing a card trades as -- the second thing every card-level
+    comp bucket must be segmented by, alongside ``market_key``.
+
+    ``(autograph, relic, numbering)``. Returns None -- "this level does not
+    apply" -- for a truncated title, or a card the title says is serial
+    numbered without saying to what. See
+    ``card_identity.printing_variant`` for the full argument; this is the
+    same rule expressed over loose values so the engine can key on it
+    without holding a ``CardIdentity``.
+
+    The defaults are the plain card (no autograph, no relic, unnumbered),
+    which is what a title that mentions none of those three things means.
+    Callers that genuinely do not know must pass ``title_truncated=True``
+    rather than accepting the defaults.
+    """
+    if title_truncated:
+        return None
+    if print_run is not None:
+        try:
+            numbering = ("numbered", int(print_run))
+        except (TypeError, ValueError):
+            return None
+    elif is_serial_numbered:
+        return None
+    else:
+        numbering = (card_identity.UNNUMBERED,)
+    relic_value = _clean(relic)
+    return (bool(is_autograph), relic_value.lower() if relic_value else None, numbering)
+
+
+@lru_cache(maxsize=16384)
+def _variant_from_title(title: str) -> Optional[tuple]:
+    """The variant re-read from a stored listing title.
+
+    The corpus predates the explicit fields below by six months, and it
+    stores the title every row was parsed from precisely so a parser
+    improvement can be applied to old data instead of waiting 180 days for
+    it to age out. Cached because a run looks up hundreds of listings
+    against a corpus of thousands of rows, and the same title is read once.
+    """
+    return card_identity.printing_variant(card_identity.extract_card_identity(title), title)
+
+
+def variant_of_observation(obs: dict) -> Optional[tuple]:
+    """The printing variant of one stored observation.
+
+    Explicit fields win when they are there; a row recorded before they
+    existed is re-read from its stored title; a row with neither is taken at
+    face value as a plain card, because that is what every field it does
+    carry says and refusing it would delete the older half of the corpus
+    from the only levels that can flag a deal.
+    """
+    if "is_autograph" in obs or "relic" in obs:
+        return printing_variant(
+            is_autograph=obs.get("is_autograph"),
+            relic=obs.get("relic"),
+            print_run=obs.get("print_run"),
+            is_serial_numbered=obs.get("is_serial_numbered"),
+            title_truncated=bool(obs.get("title_truncated")),
+        )
+    title = obs.get("title")
+    if title:
+        return _variant_from_title(str(title))
+    return printing_variant(print_run=obs.get("print_run"))
+
+
 @dataclass(frozen=True)
 class LevelSpec:
     """One comp level: how its bucket key is built, and whether a match at
@@ -408,15 +484,18 @@ class LevelSpec:
 
 
 def _key_exact(f: dict) -> Optional[tuple]:
-    if None in (f["year"], f["set_name"], f["parallel"], f["card_number"], f["market"]):
+    if None in (f["year"], f["set_name"], f["parallel"], f["card_number"], f["market"], f["variant"]):
         return None
-    return (f["player"], f["year"], f["set_name"], f["parallel"], f["card_number"], f["market"])
+    return (
+        f["player"], f["year"], f["set_name"], f["parallel"], f["card_number"],
+        f["market"], f["variant"],
+    )
 
 
 def _key_same_card(f: dict) -> Optional[tuple]:
-    if None in (f["year"], f["set_name"], f["parallel"], f["market"]):
+    if None in (f["year"], f["set_name"], f["parallel"], f["market"], f["variant"]):
         return None
-    return (f["player"], f["year"], f["set_name"], f["parallel"], f["market"])
+    return (f["player"], f["year"], f["set_name"], f["parallel"], f["market"], f["variant"])
 
 
 def _key_same_set(f: dict) -> Optional[tuple]:
@@ -511,6 +590,22 @@ class CompStatsV2:
     distinct_dates: int = 1  # number of distinct calendar dates among the kept points
     span_days: int = 1  # oldest..newest inclusive of both ends -- one day is 1, not 0
     is_concentrated: bool = False  # too few dates / too short a span to be independent
+    # -- how many CARDS are in here ----------------------------------------
+    # Distinct KNOWN card numbers among the kept points. One (or zero, when
+    # no point states a number) means the bucket is one card. More than one
+    # means it is several, and `same_card` -- which does not key on the card
+    # number -- is the level where that happens. Measured on the live
+    # corpus: a Pete Crow-Armstrong 2024 Topps Chrome Refractor bucket held
+    # the base card #16 at $54-$70 and the 1989 35th Anniversary insert
+    # #89CB-19 at $17-$18, and reported the insert as 69% under market.
+    distinct_card_numbers: int = 1
+    is_mixed_card_numbers: bool = False
+    #: The known card numbers themselves, upper-cased and sorted. Kept
+    #: alongside the count because self-exclusion can hide the mixing from
+    #: the count: a bucket holding base #16 and insert #89CB-19 looks
+    #: single-card to the #89CB-19 listing, which has just removed itself.
+    #: The lookup compares its own number against these instead.
+    card_numbers: Tuple[str, ...] = ()
 
 
 @dataclass
@@ -732,6 +827,19 @@ def compute_comp_stats(
     # Both measures are always reported; only the gate is conditional. Counted
     # over `kept`, i.e. after self-exclusion and the outlier trim, because the
     # question is how spread out the points that produced THIS median are.
+    # Card numbers come off the prepared fields when CompEngine built the
+    # point, and off the raw observation when compute_comp_stats is called
+    # standalone. Unknown is not a card number and does not count as one:
+    # a bucket of nine #BD-72s plus one listing whose number was unreadable
+    # is still one card, and that case is exactly what `same_card` is for.
+    card_numbers = set()
+    for point in kept:
+        number = point.get("_fields", {}).get("card_number") or point.get("card_number")
+        cleaned = _clean(number)
+        if cleaned is not None:
+            card_numbers.add(cleaned.upper())
+    distinct_card_numbers = len(card_numbers)
+
     distinct_dates = len({p["_date"].date() for p in kept})
     span_days = age_oldest - age_newest + 1  # inclusive of both ends
     is_concentrated = _is_concentrated(
@@ -760,10 +868,18 @@ def compute_comp_stats(
         distinct_dates=distinct_dates,
         span_days=span_days,
         is_concentrated=is_concentrated,
+        distinct_card_numbers=distinct_card_numbers,
+        is_mixed_card_numbers=distinct_card_numbers > 1,
+        card_numbers=tuple(sorted(card_numbers)),
     )
 
 
-def assess_comp_match(stats: CompStatsV2, level: str, min_comps_required: int) -> CompMatch:
+def assess_comp_match(
+    stats: CompStatsV2,
+    level: str,
+    min_comps_required: int,
+    card_number: Optional[str] = None,
+) -> CompMatch:
     """Apply the confidence ladder and the quality gates to a bucket's stats.
 
     Confidence is a checklist, not a model -- every step is a sentence the
@@ -780,6 +896,20 @@ def assess_comp_match(stats: CompStatsV2, level: str, min_comps_required: int) -
     purchase. A "low" comp is still worth printing.
     """
     spec = LEVEL_SPEC_BY_NAME[level]
+    # The bucket holds a card this listing is not. Two shapes, and the
+    # second is only visible from here: either the bucket itself mixes card
+    # numbers, or the listing's own number is absent from a bucket that
+    # states one. The second is what self-exclusion hides -- the insert
+    # removes itself, the remaining points are all the base card, and the
+    # bucket then looks perfectly clean to the one listing it is about to
+    # misvalue.
+    listing_number = _clean(card_number)
+    listing_number = listing_number.upper() if listing_number else None
+    wrong_card = stats.is_mixed_card_numbers or bool(
+        listing_number is not None
+        and stats.card_numbers
+        and any(number != listing_number for number in stats.card_numbers)
+    )
     confidence = spec.base_confidence
     if stats.basis != BASIS_SOLD:
         confidence = _downgrade(confidence)
@@ -791,6 +921,8 @@ def assess_comp_match(stats: CompStatsV2, level: str, min_comps_required: int) -
         confidence = _downgrade(confidence)
     if stats.is_concentrated:
         confidence = _downgrade(confidence)
+    if wrong_card:
+        confidence = _downgrade(confidence)
 
     reasons = []
     if not spec.flag_eligible:
@@ -801,6 +933,17 @@ def assess_comp_match(stats: CompStatsV2, level: str, min_comps_required: int) -
         reasons.append("stale_comps")
     if stats.is_dispersed:
         reasons.append("dispersed_comps")
+    if wrong_card:
+        # THE `same_card` HOLE. That level keys on player + year + set +
+        # parallel + market + variant and deliberately not on the card
+        # number, so that nine copies of #BD-72 plus one listing whose
+        # number was unreadable stay one bucket. The cost is that an INSERT
+        # -- same player, same year, same product, same parallel, different
+        # card, different number -- lands in it too, and a bucket holding
+        # both prints a median from neither. Two known numbers in one bucket
+        # is the measurement that says so, and it stops the bucket declaring
+        # a deal while leaving it usable as context.
+        reasons.append("mixed_card_numbers")
     if stats.is_concentrated:
         # Listed last so it never displaces a more specific reason at the
         # head of the tuple for callers that report only the first one.
@@ -919,6 +1062,11 @@ class CompEngine:
             "parallel": _clean(obs.get("parallel")),
             "card_number": _clean(obs.get("card_number")),
             "market": market_key(card_type, obs.get("grader"), obs.get("grade"), obs.get("qualifier")),
+            # An autograph, a patch and a /50 print run are three different
+            # cards wearing one set of identity fields -- see
+            # printing_variant. None means "this level does not apply",
+            # exactly as for market.
+            "variant": variant_of_observation(obs),
         }
         return {
             "price": price,
@@ -945,6 +1093,11 @@ class CompEngine:
         set_name: Optional[str] = None,
         parallel: Optional[str] = None,
         card_number: Optional[str] = None,
+        is_autograph: Optional[bool] = False,
+        relic: Optional[str] = None,
+        print_run: Optional[int] = None,
+        is_serial_numbered: Optional[bool] = False,
+        title_truncated: bool = False,
         exclude_id: Optional[str] = None,
     ) -> Optional[CompMatch]:
         """First level that both applies and still has min_comps_required
@@ -968,6 +1121,13 @@ class CompEngine:
             "parallel": _clean(parallel),
             "card_number": _clean(card_number),
             "market": market_key(card_type, grader, grade, qualifier),
+            "variant": printing_variant(
+                is_autograph=is_autograph,
+                relic=relic,
+                print_run=print_run,
+                is_serial_numbered=is_serial_numbered,
+                title_truncated=title_truncated,
+            ),
         }
         if fields["player"] is None:
             return None
@@ -982,7 +1142,9 @@ class CompEngine:
             stats = self._stats_for(spec.name, key, points, exclude_id)
             if stats is None or stats.sample_size < self.min_comps_required:
                 continue
-            return assess_comp_match(stats, spec.name, self.min_comps_required)
+            return assess_comp_match(
+                stats, spec.name, self.min_comps_required, card_number=fields["card_number"]
+            )
         return None
 
     def coverage(self) -> dict:

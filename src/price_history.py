@@ -181,6 +181,11 @@ def record(
     is_base: Optional[bool] = None,
     title: str = "",
     basis: str = "asking",
+    is_autograph: Optional[bool] = None,
+    relic: Optional[str] = None,
+    is_serial_numbered: Optional[bool] = None,
+    title_truncated: bool = False,
+    listing_type: Optional[str] = None,
 ) -> None:
     """Appends one price observation to the corpus.
 
@@ -256,7 +261,7 @@ def record(
         #
         # Storing it is what makes extraction improvable. Every identity
         # field here is the output of a parser that is demonstrably
-        # incomplete -- set_name resolves for about a sixth of listings --
+        # incomplete -- set_name resolves for 59% of listings and card_number for 45% --
         # and without the input, a change to that parser cannot be measured
         # against anything except invented examples. The corpus is the only
         # durable artefact this project has; a title not captured today is
@@ -272,6 +277,27 @@ def record(
         # weight.
         "title": title,
         "basis": basis,
+        # --- printing variant -------------------------------------------
+        # An autograph, a patch and a print run are the three things that
+        # change what a card IS while leaving every identity field above
+        # untouched, so comps segments its flag-eligible buckets on them --
+        # see comps.printing_variant. Stored explicitly rather than re-read
+        # from `title` on every load: the title is the fallback for the
+        # months of rows recorded before this existed, not the mechanism.
+        "is_autograph": is_autograph,
+        "relic": relic,
+        "is_serial_numbered": is_serial_numbered,
+        # True when eBay cut the title short. A cut lands past "Auto" and
+        # past "/150" far more often than not, so such a row is barred from
+        # the levels that can declare a deal rather than being recorded as
+        # a plain card it may not be.
+        "title_truncated": title_truncated,
+        # Recorded so that auction leakage into an asking-price corpus is
+        # measurable after the fact. Auctions are excluded upstream by
+        # main.record_observations, but only when the parser could TELL it
+        # was an auction: "unknown" fails open into this file, and until now
+        # nothing on disk said which rows those were.
+        "listing_type": listing_type,
     }
     if listing_id:
         for existing in entries:

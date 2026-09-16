@@ -249,6 +249,13 @@ def load_config() -> Config:
                 cool_cards_price_ceiling=float(
                     focus_settings.get("cool_cards_price_ceiling", 100.0)
                 ),
+                # Read from `economics`, not from `focus`: there is one
+                # sales-tax rate and it is a fact about you, not an
+                # editorial setting. Two copies of it would eventually
+                # disagree, and the symptom would be a price ceiling that
+                # means something different from the deal gate underneath
+                # it -- see focus.FocusRules.sales_tax_pct.
+                sales_tax_pct=float(economics.get("sales_tax_pct", 0.0)),
             )
             if focus_settings
             else focus.OFF

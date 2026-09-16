@@ -199,3 +199,12 @@ def test_a_zero_refusal_rate_is_still_reported():
 def test_no_refusal_line_when_nothing_was_measured():
     stats = _stats(listings_matched_to_watchlist=5)
     assert not any("refused as not-this-listing" in line for line in stats.health_lines())
+
+
+def test_unknown_listing_type_rate_is_measured():
+    stats = observability.RunStats(auctions=10, fixed_price=10, listing_type_unknown=30)
+    assert stats.unknown_listing_type_rate == 60.0
+
+
+def test_unknown_listing_type_rate_is_none_when_nothing_was_seen():
+    assert observability.RunStats().unknown_listing_type_rate is None

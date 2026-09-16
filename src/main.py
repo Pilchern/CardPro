@@ -100,6 +100,18 @@ SIGNAL_TO_REASON = {
     "lot": reasons.Reason.LOT,
 }
 
+#: Above this share of listings with an unreadable buying format, the alarm
+#: fires. It is the one place the pipeline fails OPEN: record_observations
+#: excludes auctions by `listing_type == "auction"`, so a listing whose
+#: format could not be read is written into the asking-price corpus, and if
+#: it was an auction what got written is a current bid -- the one thing this
+#: project says must never become a comp. The parser is deliberately
+#: conservative (no evidence either way yields "unknown"), which is right for
+#: one listing and an alarm across a whole run: at 40% the template has
+#: changed, not the market. Well clear of the ordinary rate, which is the
+#: share of fixed-price rows eBay renders without the words "Buy It Now".
+UNKNOWN_LISTING_TYPE_ALARM_PCT = 40.0
+
 # comps.CompMatch.blocked_reasons -> the canonical rejection reason.
 BLOCKED_TO_REASON = {
     "context_only_level": reasons.Reason.CONTEXT_ONLY_LEVEL,
@@ -107,6 +119,7 @@ BLOCKED_TO_REASON = {
     "stale_comps": reasons.Reason.STALE_COMPS,
     "dispersed_comps": reasons.Reason.DISPERSED_COMPS,
     "concentrated_sample": reasons.Reason.CONCENTRATED_SAMPLE,
+    "mixed_card_numbers": reasons.Reason.MIXED_CARD_NUMBERS,
 }
 
 
@@ -438,6 +451,11 @@ def record_observations(listings, history, today_str: str) -> int:
             is_base=identity.is_base.value if identity else None,
             title=listing.title,
             basis=comps.BASIS_ASKING,
+            is_autograph=identity.is_autograph.value if identity else None,
+            relic=_relic_of(identity),
+            is_serial_numbered=identity.is_serial_numbered.value if identity else None,
+            title_truncated=listing.title_truncated,
+            listing_type=listing.listing_type,
         )
         recorded += 1
     return recorded
@@ -482,6 +500,41 @@ def mark_truncated_titles(listings) -> None:
 # --------------------------------------------------------------------------
 # Evaluation -- the single path both sources go through
 # --------------------------------------------------------------------------
+
+
+def _total_cost_with_tax(cfg_listing, cfg) -> Optional[float]:
+    """What actually leaves your account: price + known shipping + sales tax.
+
+    One function so the three places that ask the question -- the deal gate
+    (via economics.Acquisition), the focus ceiling and the target bands --
+    cannot drift into three answers. None means the price could not be read,
+    which is not the same as free.
+    """
+    if cfg_listing.price is None:
+        return None
+    return economics.Acquisition(
+        price=cfg_listing.price,
+        shipping=cfg_listing.shipping_price,
+        sales_tax_pct=cfg.sales_tax_pct,
+    ).total_cost
+
+
+def _relic_of(identity) -> Optional[str]:
+    """"patch" / "relic" / None -- the memorabilia half of the comp variant.
+
+    A multi-colour patch is a different product from a jersey swatch, and
+    both are different products from the base card, so they key different
+    comp buckets. Kept next to the lookup that uses it rather than on
+    CardIdentity, because it is a comp-engine vocabulary, not a fact about
+    the card.
+    """
+    if identity is None:
+        return None
+    if identity.is_patch.value:
+        return "patch"
+    if identity.is_memorabilia.value:
+        return "relic"
+    return None
 
 
 def _fee_model(cfg):
@@ -612,7 +665,12 @@ def evaluate_listings(listings, engine, cfg, stats) -> None:
         listing.target_hit = targets.best_hit(
             cfg.target_cards,
             player=listing.player,
-            total_cost=listing.total_cost,
+            # The tax-inclusive cost, because a target threshold is a price
+            # YOU set for what you are willing to pay, and what you pay
+            # includes the tax. Listing.total_cost is the pre-tax figure the
+            # report prints beside the item price; at the shipped
+            # sales_tax_pct of 0.0 they are the same number.
+            total_cost=_total_cost_with_tax(listing, cfg),
             year=identity.year.value if identity else None,
             set_name=identity.set_name.value if identity else None,
             parallel=identity.parallel.value if identity else None,
@@ -634,6 +692,30 @@ def evaluate_listings(listings, engine, cfg, stats) -> None:
             set_name=identity.set_name.value if identity else None,
             parallel=identity.parallel.value if identity else None,
             card_number=identity.card_number.value if identity else None,
+            # An autograph, a patch and a print run change what the card IS,
+            # not just what it is worth, and none of them appear anywhere in
+            # the fields above -- see comps.printing_variant.
+            #
+            # `title_truncated` is deliberately NOT forwarded, and the
+            # asymmetry is the point. Truncation is refused on the
+            # OBSERVATION side (record_observations below stores it, and
+            # comps.variant_of_observation turns it into "level does not
+            # apply"), because a hidden "Auto /150" landing in the bucket of
+            # base copies raises that bucket's median and makes every real
+            # base card read as a deal -- the expensive direction. Read from
+            # the other side it is the cheap direction: a listing whose cut
+            # hid an autograph is compared against base copies, so its
+            # market value is UNDERSTATED and any discount it shows is a
+            # floor under the real one. The report already prints "eBay
+            # truncated the title" as a risk on those. Refusing here as well
+            # would cost a third of all valuations to prevent an error that
+            # only ever errs in the user's favour.
+            is_autograph=identity.is_autograph.value if identity else False,
+            relic=_relic_of(identity),
+            print_run=identity.print_run.value if identity else None,
+            # Still refuses the level when the title says "numbered" and the
+            # cut took the number: "one of something" is not comparable.
+            is_serial_numbered=identity.is_serial_numbered.value if identity else False,
             # A listing must never be part of the comp set used to judge it.
             exclude_id=listing.id,
         )
@@ -789,8 +871,9 @@ def build_craigslist_links(cfg, players) -> dict:
 def build_search_suggestions(cfg, listings) -> dict:
     """Saved searches worth adding, for the players where today's data shows
     no sign of coverage. See src/search_terms.py for why this matters:
-    graded cards are about 1% of everything observed so far, and set_name
-    resolves for about a sixth of listings.
+    graded cards are about 12% of everything observed so far, and the field
+    that gates the only comp level allowed to declare a deal -- the card
+    number -- resolves for 45%.
 
     What is recorded here is what makes a suggestion stop being suggested, so
     under-recording means being nagged forever to create a search you already
@@ -944,6 +1027,22 @@ def run(args: argparse.Namespace) -> None:
         )
 
     evaluate_listings(listings, engine, cfg, stats)
+
+    unknown_type_pct = stats.unknown_listing_type_rate
+    if unknown_type_pct is not None and unknown_type_pct >= UNKNOWN_LISTING_TYPE_ALARM_PCT:
+        # See UNKNOWN_LISTING_TYPE_ALARM_PCT. Not marked broken=True: the
+        # run's other numbers are still sound, and an auction read as
+        # fixed-price is a corpus problem that shows up over weeks rather
+        # than a report that is wrong this morning.
+        stats.warn(
+            "{:.0f}% of listings arrived with an unreadable buying format (auction vs "
+            "Buy It Now). Those are recorded as asking prices, so any auction among "
+            "them has put a CURRENT BID into the comp corpus, where it will misvalue "
+            "that card for {} days. Run `python -m scripts.test_ebay_alerts --raw` to "
+            "check whether eBay changed the markup.".format(
+                unknown_type_pct, cfg.ebay_alert_price_history_max_age_days
+            )
+        )
 
     seen = dedupe.load_seen(cfg.seen_listings_path)
     listings = apply_dedupe(listings, seen, today_str, stats)

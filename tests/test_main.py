@@ -1281,3 +1281,132 @@ class TestTheRunMarker:
         self._wire(main_module, monkeypatch, sent)
         main_module.run(self._args())
         assert "since the last completed scan" in sent[0][1]
+
+
+class TestAutographsAreNotCompedAgainstBaseCards:
+    """End-to-end through evaluate_listings/record_observations, because the
+    unit-level fix in comps is only worth anything if the pipeline hands it
+    the fields.
+
+    The case is the live corpus's, not an invented one: a Colson Montgomery
+    2026 Topps Chrome Logofractor bucket held base copies at $4.00 and $4.30
+    alongside on-card autographs at $109.67-$155, and reported the base
+    cards as 96% under market.
+    """
+
+    AUTO_TITLE = "2024 Panini Prizm Caleb Williams Silver #301 On Card Auto"
+    BASE_TITLE = "2024 Panini Prizm Caleb Williams Silver #301"
+
+    def _auto_comps(self):
+        return spread_observations(
+            120.0, card_type="raw", grader=None, grade=None, is_autograph=True
+        )
+
+    def test_a_base_card_is_not_valued_against_autographed_copies(self):
+        listing = make_listing(self.BASE_TITLE, 4.00, listing_id="B1", listing_type="fixed_price")
+        stats = observability.RunStats()
+        main_module.evaluate_listings([listing], engine_for(self._auto_comps()), fake_cfg(), stats)
+        assert listing.is_opportunity is False
+        # It falls through to same_set, which does pool autographs with base
+        # cards -- and is context-only precisely because it does.
+        assert listing.rejection_reason == reasons.Reason.CONTEXT_ONLY_LEVEL
+        assert listing.comp_match.level == "same_set"
+
+    def test_an_autographed_card_still_finds_its_own_market(self):
+        listing = make_listing(self.AUTO_TITLE, 40.00, listing_id="A1", listing_type="fixed_price")
+        stats = observability.RunStats()
+        main_module.evaluate_listings([listing], engine_for(self._auto_comps()), fake_cfg(), stats)
+        assert listing.is_opportunity is True
+        assert listing.market_value == 120.0
+
+    def test_a_numbered_parallel_is_not_valued_against_unnumbered_copies(self):
+        unnumbered = spread_observations(20.0, card_type="raw", grader=None, grade=None)
+        listing = make_listing(
+            "2024 Panini Prizm Caleb Williams Silver #301 /25", 8.00,
+            listing_id="N1", listing_type="fixed_price",
+        )
+        stats = observability.RunStats()
+        main_module.evaluate_listings([listing], engine_for(unnumbered), fake_cfg(), stats)
+        assert listing.is_opportunity is False
+
+    def test_an_insert_is_not_valued_against_the_base_card(self):
+        """`same_card` omits the card number on purpose, so an insert of the
+        same player, year, set and parallel lands in the base card's bucket."""
+        base = spread_observations(
+            55.0, card_type="raw", grader=None, grade=None, card_number="16"
+        )
+        insert = make_listing(
+            "2024 Panini Prizm Caleb Williams Silver #89CB-19", 18.40,
+            listing_id="I1", listing_type="fixed_price",
+        )
+        stats = observability.RunStats()
+        main_module.evaluate_listings([insert], engine_for(base), fake_cfg(), stats)
+        assert insert.is_opportunity is False
+        assert insert.rejection_reason == reasons.Reason.MIXED_CARD_NUMBERS
+
+    def test_recorded_observations_carry_the_variant_fields(self):
+        """A row recorded without them falls back to re-reading its title,
+        which works but costs a full parse of the corpus on every run."""
+        listing = make_listing(self.AUTO_TITLE, 120.0, listing_id="A2", listing_type="fixed_price")
+        history = {}
+        main_module.record_observations([listing], history, "2026-08-22")
+        row = history["Caleb Williams|raw"][0]
+        assert row["is_autograph"] is True
+        assert row["relic"] is None
+        assert row["title_truncated"] is False
+        assert row["listing_type"] == "fixed_price"
+
+    def test_a_truncated_row_is_recorded_but_barred_from_flag_levels(self):
+        """Recording it keeps the price-tier and same_set context; barring it
+        keeps a hidden "Auto /150" out of the base card's median."""
+        listing = make_listing(
+            "2024 Panini Prizm Caleb Williams Silver #301 On Card…", 120.0,
+            listing_id="T9", listing_type="fixed_price",
+        )
+        main_module.mark_truncated_titles([listing])
+        history = {}
+        main_module.record_observations([listing], history, "2026-08-22")
+        row = history["Caleb Williams|raw"][0]
+        assert row["title_truncated"] is True
+        assert comps.variant_of_observation(row) is None
+
+
+class TestUnreadableBuyingFormatAlarm:
+    """The one place the pipeline fails OPEN.
+
+    record_observations excludes auctions by `listing_type == "auction"`, so
+    a listing whose format could not be read is written into the
+    asking-price corpus -- and if it was an auction, what got written is a
+    current bid, which this project says must never become a comp. One such
+    listing is a known tradeoff; a whole run of them is a changed template.
+    """
+
+    def _run_stats(self, unknown, fixed):
+        stats = observability.RunStats(listing_type_unknown=unknown, fixed_price=fixed)
+        return stats
+
+    def test_an_ordinary_rate_raises_nothing(self):
+        stats = self._run_stats(unknown=10, fixed=90)
+        assert stats.unknown_listing_type_rate < main_module.UNKNOWN_LISTING_TYPE_ALARM_PCT
+
+    def test_a_template_change_crosses_the_alarm(self):
+        stats = self._run_stats(unknown=60, fixed=40)
+        assert stats.unknown_listing_type_rate >= main_module.UNKNOWN_LISTING_TYPE_ALARM_PCT
+
+    def test_the_warning_names_the_consequence_and_the_retention_window(self):
+        """A metric nobody can act on is a metric nobody reads."""
+        stats = self._run_stats(unknown=60, fixed=40)
+        stats.warn(
+            "{:.0f}% of listings arrived with an unreadable buying format (auction vs "
+            "Buy It Now). Those are recorded as asking prices, so any auction among "
+            "them has put a CURRENT BID into the comp corpus, where it will misvalue "
+            "that card for {} days. Run `python -m scripts.test_ebay_alerts --raw` to "
+            "check whether eBay changed the markup.".format(
+                stats.unknown_listing_type_rate, 180
+            )
+        )
+        line = stats.health_lines()[-1]
+        assert "CURRENT BID" in line
+        assert "180 days" in line
+        # Not a breakage warning: the run's other numbers are still sound.
+        assert stats.breakage_warnings == []

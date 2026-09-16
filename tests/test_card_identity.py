@@ -236,11 +236,62 @@ def test_new_set_keywords_extracted():
         ("2023 Topps Allen & Ginter Julio Rodriguez", "Allen & Ginter"),
         ("2024 Topps Gypsy Queen Bobby Witt Jr", "Gypsy Queen"),
         ("2024 Panini Instant Caleb Williams", "Panini Instant"),
-        # longest keyword still wins, so this one deliberately has no
-        # longer set phrase competing with it
-        ("2023 Topps Sapphire Corbin Carroll", "Sapphire"),
+        # A bare product line that two brands both issue resolves against
+        # the brand words in the title -- see BARE_SET_BY_BRAND.
+        ("2023 Topps Sapphire Corbin Carroll", "Topps Chrome Sapphire"),
     ]:
         assert card_identity.extract_card_identity(title).set_name.value == expected, title
+
+
+def test_bare_product_line_resolves_against_the_brand_words_present():
+    """"Chrome" and "Sapphire" are Topps products and Bowman products, and
+    the two are different cards at different prices.
+
+    Resolved against the brand words in the title rather than the extracted
+    manufacturer, because the manufacturer is the LEFTMOST brand word and
+    sellers routinely put the parent brand first. Twelve of the fourteen
+    bare-"Sapphire" rows in the live corpus are Bowman cards, several of
+    them titled "Topps 2024 Bowman Sapphire ..." -- resolving those by
+    manufacturer files a Bowman card under a Topps product.
+    """
+    for title, expected in [
+        ("2026 Topps Chrome Sapphire Munetaka Murakami RC #274", "Topps Chrome Sapphire"),
+        ("2024 Topps Bowman Sapphire Colson Montgomery #BCP-8 RC", "Bowman Chrome Sapphire"),
+        ("2022 Bowman Sapphire Edition #BCP-71 Colson Montgomery", "Bowman Chrome Sapphire"),
+        ("Topps 2024 Bowman Chrome Kyle Teel #BCP-118", "Bowman Chrome"),
+        ("2024 Topps Chrome Munetaka Murakami #274", "Topps Chrome"),
+    ]:
+        assert card_identity.extract_card_identity(title).set_name.value == expected, title
+
+
+def test_bare_product_line_with_no_brand_word_is_left_alone():
+    """Unknown is never a guess: neither brand named means neither answer."""
+    assert card_identity.extract_card_identity(
+        "2022 Sapphire Edition #BCP-71 Colson Montgomery"
+    ).set_name.value == "Sapphire"
+
+
+def test_bare_optic_is_donruss_optic():
+    """One product, two spellings, two half-depth comp buckets. No other
+    manufacturer makes an Optic line, so this one is a flat alias."""
+    for title in ("2024 Panini Donruss Optic Caleb Williams #301",
+                  "2024 Optic Caleb Williams Holo #301"):
+        assert card_identity.extract_card_identity(title).set_name.value == "Donruss Optic", title
+
+
+def test_named_refractor_modifiers_are_not_pooled_into_plain_refractor():
+    """Measured on the live corpus: a Caleb Wilson 2025 Bowman Chrome
+    #BCP-83 bucket held ten Reptilian Refractors and two Geometric ones
+    under the single name "Refractor"."""
+    for title, expected in [
+        ("2025 Bowman Chrome Caleb Wilson Reptilian Refractor #BCP-83", "Reptilian Refractor"),
+        ("2026 Topps Chrome Munetaka Murakami #274 RC Geometric Refractor", "Geometric Refractor"),
+        # "Prizm" here is the SET, so the parallel is the modifier alone --
+        # the same answer the module already gives for "Mojo Prizm".
+        ("2024 Panini Prizm Caleb Williams Shock Prizm #301", "Shock"),
+        ("2024 Panini Prizm Caleb Williams Lazer Prizm #301", "Lazer"),
+    ]:
+        assert card_identity.extract_card_identity(title).parallel.value == expected, title
 
 
 def test_set_keywords_reachable_when_year_splits_brand_and_product():
