@@ -90,7 +90,8 @@ SET_KEYWORDS = [
     "Zenith", "Luminance", "Court Kings", "Impeccable", "Noir", "Crown Royale",
     "One and One", "Eminence", "Elite Extra Edition", "Leaf Metal",
     "Leaf Metal Draft", "Bowman's Best", "Bowman Draft", "Bowman Sterling",
-    "Cosmic Chrome", "Topps Chrome Sapphire", "SP Authentic", "SPx",
+    "Cosmic Chrome", "Topps Chrome Sapphire", "Bowman Chrome Sapphire",
+    "SP Authentic", "SPx",
     "Upper Deck MVP", "O-Pee-Chee", "Metal Universe", "Topps Fire",
     "Topps Inception", "Topps Definitive", "Topps Dynasty", "Topps Tier One",
     "Topps Series 1", "Topps Series 2", "Topps Series One", "Topps Series Two",
@@ -142,6 +143,12 @@ SET_KEYWORDS = [
 #: least of. Applied after matching, so the vocabulary above can list every
 #: spelling a seller might type while the corpus only ever stores one.
 SET_ALIASES = {
+    # "Optic" alone is always Donruss Optic -- no other manufacturer makes
+    # an Optic line. The two spellings were two buckets in the live corpus
+    # (112 rows under "Donruss Optic", 40 under "Optic"), each shallower
+    # than the one card market they describe, and depth is the thing this
+    # project has least of.
+    "Optic": "Donruss Optic",
     "Collectors Choice": "Collector's Choice",
     "Ginter": "Allen & Ginter",
     "Topps Series One": "Topps Series 1",
@@ -149,15 +156,32 @@ SET_ALIASES = {
     "Rookies & Stars": "Panini Rookies and Stars",
 }
 
-#: A bare "Chrome" is Topps Chrome or Bowman Chrome depending on the brand
-#: word in the same title, and they are different products at different
+#: A bare product line that more than one brand issues: "Chrome" is Topps
+#: Chrome or Bowman Chrome, "Sapphire" is Topps Chrome Sapphire or Bowman
+#: Chrome Sapphire, and each pair is two different products at two different
 #: prices. The live corpus had this splitting one Kyle Teel card across a
-#: 'Chrome' bucket and a 'Topps Chrome' bucket on nothing but which words the
-#: seller typed. Only these two manufacturers make a "Chrome" line, so a
-#: title naming any other brand leaves the bare name alone rather than
-#: inventing a product.
-BARE_SET_BY_MANUFACTURER = {
-    "Chrome": {"Topps": "Topps Chrome", "Bowman": "Bowman Chrome"},
+#: 'Chrome' bucket and a 'Topps Chrome' bucket on nothing but which words
+#: the seller typed.
+#:
+#: Resolved against the BRAND WORDS PRESENT IN THE TITLE, in the order
+#: listed, rather than against the extracted manufacturer. The manufacturer
+#: is the leftmost brand word, and sellers routinely put the parent brand
+#: first: "Topps 2024 Bowman Sapphire Colson Montgomery #BCP-8" is a Bowman
+#: product whose manufacturer resolves to Topps, and resolving by
+#: manufacturer would file it under Topps Chrome Sapphire -- merging two
+#: products instead of the two spellings of one. Twelve of the fourteen
+#: bare-"Sapphire" rows in the corpus are Bowman, several of them titled
+#: exactly that way. So Bowman is checked first: Bowman is a Topps line, and
+#: a title naming both is a Bowman card.
+#:
+#: A title naming neither brand keeps the bare name rather than being
+#: assigned one at random -- unknown is never a guess.
+BARE_SET_BY_BRAND = {
+    "Chrome": (("Bowman", "Bowman Chrome"), ("Topps", "Topps Chrome")),
+    "Sapphire": (
+        ("Bowman", "Bowman Chrome Sapphire"),
+        ("Topps", "Topps Chrome Sapphire"),
+    ),
 }
 
 # --- Parallel vocabulary, split by how much a match is worth ------------
@@ -191,11 +215,29 @@ UNAMBIGUOUS_PARALLELS = [
     # and a scarce parallel got valued against base copies.
     "Raywave", "Speckle", "Sparkle", "Marble", "Mini-Diamond", "Cracked",
     "Padparadscha", "Fuchsia", "Peridot", "Die-Cut", "Holo", "Prismatic",
+    # Measured against the live corpus (September 2026): every one of these
+    # was appearing directly in front of "Refractor" or "Prizm" and was
+    # being discarded, so a scarce named parallel keyed the same bucket as
+    # the base refractor. Counts at the time: Shock 44, Reptilian 25,
+    # Geometric 11, Lazer 7, Pandora 3, Velocity 2, Tri-Color 2. The
+    # Caleb Wilson 2025 Bowman Chrome #BCP-83 bucket held ten Reptilian
+    # Refractors and two Geometric ones under one name.
+    #
+    # Adding a word here can only ever make a bucket NARROWER, which is the
+    # safe direction: a parallel read wrongly keys a bucket that matches
+    # nothing and the listing is reported unvalued, while a parallel not
+    # read at all pools two different cards and prints a median from
+    # neither. Deliberately left out despite appearing in the same
+    # position: "Mosaic" and "Chrome" (set names), "Prism" (a seller's
+    # misspelling of Prizm), and "Flash"/"Pulse"/"Surge"/"Leather", which
+    # are ordinary English as often as they are parallel names.
+    "Reptilian", "Geometric", "Shock", "Lazer", "Pandora", "Velocity",
+    "Tri-Color",
 ]
 
 COLOR_PARALLEL_WORDS = [
     "Silver", "Gold", "Green", "Blue", "Red", "Orange", "Purple", "Pink", "Black",
-    "White", "Bronze", "Teal", "Aqua", "Yellow",
+    "White", "Bronze", "Teal", "Aqua", "Yellow", "Magenta",
 ]
 
 # Words that turn a bare colour into a real parallel name when they sit
@@ -634,22 +676,24 @@ def _extract_parallel(masked_title: str) -> Field:
     return Field(value=None, confidence="none", source="title")
 
 
-def _canonical_set(set_field: Field, manufacturer: Optional[str]) -> Field:
+def _canonical_set(set_field: Field, title: str) -> Field:
     """One name per product, so one product means one comp bucket.
 
     Does two things and nothing else: folds known alternate spellings onto a
-    single name, and resolves a bare product line ("Chrome") against the
-    brand word in the same title. Both only ever REPLACE a name that was
-    already found in the vocabulary -- neither can invent a set for a title
-    that has none, which is the guess this module refuses to make.
+    single name, and resolves a bare product line ("Chrome", "Sapphire")
+    against the brand words present in the same title. Both only ever
+    REPLACE a name that was already found in the vocabulary -- neither can
+    invent a set for a title that has none, which is the guess this module
+    refuses to make.
     """
     name = set_field.value
     if name is None:
         return set_field
     name = SET_ALIASES.get(name, name)
-    by_manufacturer = BARE_SET_BY_MANUFACTURER.get(name)
-    if by_manufacturer and manufacturer in by_manufacturer:
-        name = by_manufacturer[manufacturer]
+    for brand, resolved in BARE_SET_BY_BRAND.get(name, ()):
+        if re.search(rf"\b{re.escape(brand)}\b", title, re.IGNORECASE):
+            name = resolved
+            break
     if name == set_field.value:
         return set_field
     return Field(value=name, confidence=set_field.confidence, source=set_field.source)
@@ -1231,10 +1275,7 @@ def extract_card_identity(title: str) -> CardIdentity:
     manufacturer_field = _leftmost_keyword_field(masked, MANUFACTURERS)
     card_number_field = _extract_card_number(title)
     set_masked = mask_for_set_lookup(title)
-    set_field = _canonical_set(
-        _keyword_field(set_masked, SET_KEYWORDS),
-        manufacturer_field.value,
-    )
+    set_field = _canonical_set(_keyword_field(set_masked, SET_KEYWORDS), set_masked)
     if set_field.value is None:
         # ONLY here, with the ordinary vocabulary lookup already empty, so
         # the flagship can never outrank a named product. See
@@ -1287,3 +1328,78 @@ def extract_card_identity(title: str) -> CardIdentity:
             tuple(negative_field.value or ()),
         ),
     )
+
+
+# --- Printing variant ---------------------------------------------------
+#
+# WHY THIS EXISTS. `comps._key_exact` and `_key_same_card` key on player,
+# year, set, parallel, card number and market. Every one of those can be
+# identical across two cards that trade at twenty times each other's price:
+# a base "2026 Topps Chrome Logofractor" and an on-card AUTOGRAPH of the
+# same Logofractor share all six fields, and the live corpus put them in one
+# bucket. Measured on data/ebay_alert_price_history.json: 18 of the 108
+# same_card buckets deep enough to be used (17%) mixed autographed with
+# unautographed copies, and 33 of them (31%) mixed print runs. Three of the
+# engine's would-be flags came out of one such bucket -- a $4.00 base card
+# reported as 96% under a $109.67 median built from /75 and /150 autos.
+#
+# That is audit failure mode #3 (pooling different cards) arriving through a
+# door the market key does not cover. The fix is the same shape as the market
+# key: segment on the thing that actually changes what the card is.
+#
+# THE THREE AXES, and why only these three:
+#   * autograph -- the single largest multiplier in the modern hobby.
+#   * relic/patch -- a patch card is a different product from a base card,
+#     and a multi-colour patch is a different product from a jersey swatch.
+#   * print run -- /50, /150 and unnumbered are three different scarcities
+#     of the same picture.
+# Rookie status is deliberately NOT here: it is a property of the card
+# number within a set, so `exact` already separates rookies, and `same_card`
+# only pools them with other cards of the same player, year, set and
+# parallel, which for a rookie-year release is the same card.
+
+#: What a variant tuple's numbering slot holds when the title says the card
+#: carries no serial numbering.
+UNNUMBERED = "unnumbered"
+
+
+def printing_variant(identity: CardIdentity, title: str = "") -> Optional[tuple]:
+    """The printing this card trades as, or None when the title cannot say.
+
+    Returns ``(autograph, relic, numbering)`` where ``autograph`` is a bool,
+    ``relic`` is ``"patch"``/``"relic"``/``None``, and ``numbering`` is
+    ``(UNNUMBERED,)`` or ``("numbered", print_run)``.
+
+    **None means the level this keys must not be attempted**, exactly like
+    ``comps.market_key`` returning None for an unreadable slab. Two cases
+    produce it, and both are the cut rather than the card:
+
+    * a TRUNCATED title. eBay's ellipsis lands before the end of most long
+      titles, and "Auto", "/150" and "Patch" all live at the end. Reading
+      "no autograph" off a title that stops mid-word is the same mistake as
+      reading "PSA 1" off "PSA 1...".
+    * a title that says the card is serial numbered without saying to what
+      (``is_serial_numbered`` true, ``print_run`` unknown). "Numbered to
+      something" cannot be compared with "numbered to 150".
+
+    Everywhere else the absence of the word is the answer, which is the rule
+    ``is_autograph`` has always followed: sellers reliably say "auto" when
+    there is one, because it is the most valuable word they can type.
+    """
+    if _is_truncated(title or ""):
+        return None
+    autograph = bool(identity.is_autograph.value)
+    if identity.is_patch.value:
+        relic = "patch"
+    elif identity.is_memorabilia.value:
+        relic = "relic"
+    else:
+        relic = None
+    print_run = identity.print_run.value
+    if print_run is not None:
+        numbering = ("numbered", int(print_run))
+    elif identity.is_serial_numbered.value:
+        return None  # numbered, but the run itself was cut off
+    else:
+        numbering = (UNNUMBERED,)
+    return (autograph, relic, numbering)

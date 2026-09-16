@@ -87,6 +87,20 @@ DEFAULT_MAILBOX = "[Gmail]/All Mail"
 PRICE_RE = re.compile(r"\$([\d,]+(?:\.\d{2})?)")
 SHIPPING_RE = re.compile(r"\+?\s*\$([\d,]+(?:\.\d{2})?)\s*shipping", re.IGNORECASE)
 FREE_SHIPPING_RE = re.compile(r"\bfree\s+shipping\b", re.IGNORECASE)
+#: A money amount that is postage rather than the card's price. eBay writes
+#: it either way round -- "+$4.99 shipping" under the price, and
+#: "Shipping: $4.99" in some templates -- and _find_nearby walks the
+#: scoped text chunks NEAREST FIRST, so a sibling cell holding only the
+#: shipping line hands the first "$N" it finds to _extract_price. Measured
+#: directly: _extract_price("+ $4.99 shipping") returned 4.99. A $120 card
+#: recorded at $4.99 is a 96%-under-market "deal" and an asking price in
+#: the comp corpus that no card was ever listed at, which is the more
+#: expensive half.
+_SHIPPING_AMOUNT_RE = re.compile(
+    r"(?:\bshipping\b[^$]{0,12}\$([\d,]+(?:\.\d{2})?))"
+    r"|(?:\$([\d,]+(?:\.\d{2})?)[^$]{0,12}?\bshipping\b)",
+    re.IGNORECASE,
+)
 # eBay serves the same item under several link shapes -- bare
 # (/itm/336749665825), SEO ("/itm/2024-Panini-Prizm-Caleb-Williams-RC-301/
 # 336749665825"), with a ?hash= tail, off m.ebay.com or ebay.co.uk, and
@@ -638,26 +652,59 @@ def _extract_time_left(text: str) -> Optional[str]:
     return (countdown or match).group(0).strip()
 
 
+def _shipping_spans(text: str) -> list:
+    """Character spans of every money amount that is postage, not the price."""
+    spans = []
+    for match in _SHIPPING_AMOUNT_RE.finditer(text):
+        for group in (1, 2):
+            if match.group(group) is not None:
+                spans.append(match.span(group))
+    return spans
+
+
 def _extract_price(text: str) -> Optional[float]:
-    match = PRICE_RE.search(text)
-    if not match:
-        return None
-    try:
-        return float(match.group(1).replace(",", ""))
-    except ValueError:
-        return None
+    """The card's asking price in this chunk of text, or None.
+
+    Skips money amounts that the surrounding words identify as postage. An
+    item price and a shipping cost are both "$N" and CardPro is reading an
+    email template it does not control, so the only thing separating them is
+    the word next to them -- and reading the wrong one does not produce a
+    missing price, it produces a confidently wrong one.
+    """
+    skip = _shipping_spans(text)
+    for match in PRICE_RE.finditer(text):
+        if any(start <= match.start(1) < end for start, end in skip):
+            continue
+        try:
+            return float(match.group(1).replace(",", ""))
+        except ValueError:
+            return None
+    return None
 
 
 def _extract_shipping(text: str) -> Optional[float]:
     """None means unknown, not "$0 shipping" -- only an explicit "Free
-    shipping" gets treated as a confirmed $0."""
+    shipping" gets treated as a confirmed $0.
+
+    Reads the amount whichever side of the word it sits on. SHIPPING_RE only
+    matches "$4.99 shipping"; eBay also writes "Shipping: $4.99", and the
+    same spans _extract_price refuses to read as a price are exactly the
+    ones that ARE the shipping. One rule, used from both ends, so the two
+    extractors can never disagree about which number is which.
+    """
     if FREE_SHIPPING_RE.search(text):
         return 0.0
     match = SHIPPING_RE.search(text)
-    if not match:
+    raw = match.group(1) if match else None
+    if raw is None:
+        spans = _shipping_spans(text)
+        if spans:
+            start, end = spans[0]
+            raw = text[start:end]
+    if raw is None:
         return None
     try:
-        return float(match.group(1).replace(",", ""))
+        return float(raw.replace(",", ""))
     except ValueError:
         return None
 
@@ -700,12 +747,31 @@ def fetch_alert_listings(
     )
     if counters is not None:
         counters["messages"] = len(messages)
-    listings = []
+    # Keyed by item url, ACROSS messages. Deduping inside one email was
+    # never enough: eBay sends one alert per saved search, a card matching
+    # two searches arrives in two emails, and the lookback window overlaps
+    # consecutive runs -- so the same item came back as two listings with
+    # the same id and different halves of the data. Every stage downstream
+    # then did the work twice (two identity extractions, two comp lookups,
+    # two rows in every RunStats counter) and the report deduped only at
+    # classification, by which point the health footer had already
+    # over-counted the day. Merging here fixes it once, and the merge is the
+    # one already written for two anchors in one email: the copy with the
+    # fuller title wins, and each field is filled by whichever copy knew it.
+    merged = OrderedDict()
     for msg in messages:
         html = get_html_body(msg)
         if not html:
             continue
-        listings.extend(extract_listings_from_html(html, counters=counters))
+        for listing in extract_listings_from_html(html, counters=counters):
+            existing = merged.get(listing["url"])
+            if existing is None:
+                merged[listing["url"]] = dict(listing, title_verified=True)
+            else:
+                _merge_listing(existing, dict(listing, title_verified=True))
+    listings = list(merged.values())
+    for listing in listings:
+        listing.pop("title_verified", None)
 
     if messages and not listings:
         # Recorded for the caller, not only logged. This is the single

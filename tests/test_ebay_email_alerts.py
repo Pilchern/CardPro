@@ -723,3 +723,121 @@ def test_a_refusal_on_the_losing_link_is_not_reported():
     listing = ebay_email_alerts.extract_listings_from_html(html, counters=counters)[0]
     assert listing["title"] == "2024 Panini Prizm Caleb Williams Silver Prizm RC #301"
     assert counters["titles_recovery_refused"] == 0
+
+
+class _FakeMessage:
+    """The single-part text/html shape get_html_body reads."""
+
+    def __init__(self, html):
+        self._html = html
+
+    def is_multipart(self):
+        return False
+
+    def get_content_type(self):
+        return "text/html"
+
+    def get_payload(self, decode=False):
+        return self._html.encode("utf-8")
+
+    def get_content_charset(self):
+        return "utf-8"
+
+
+class TestPriceIsNotShipping:
+    """An item price and a shipping cost are both "$N", and _find_nearby
+    walks the scoped chunks nearest first -- so a sibling cell holding only
+    the shipping line handed its number to _extract_price.
+
+    This does not produce a missing price, it produces a confident wrong
+    one: a $120 card recorded at $4.99 is a 96%-under-market "deal" AND an
+    asking price in the 180-day comp corpus that no card was ever listed at.
+    """
+
+    def test_a_shipping_only_chunk_yields_no_price(self):
+        assert ebay_email_alerts._extract_price("+ $4.99 shipping") is None
+        assert ebay_email_alerts._extract_price("Shipping: $4.99") is None
+
+    def test_free_shipping_does_not_make_the_next_number_the_price(self):
+        assert ebay_email_alerts._extract_price("Free shipping $12.00") is None
+
+    def test_the_price_still_wins_when_both_are_present(self):
+        assert ebay_email_alerts._extract_price("$25.00 +$4.99 shipping") == 25.00
+        assert ebay_email_alerts._extract_price("$1,250.00 + $8.50 shipping") == 1250.00
+
+    def test_shipping_is_read_from_either_side_of_the_word(self):
+        assert ebay_email_alerts._extract_shipping("+ $4.99 shipping") == 4.99
+        assert ebay_email_alerts._extract_shipping("Shipping: $4.99") == 4.99
+
+    def test_a_shipping_cell_before_the_price_cell_is_not_read_as_the_price(self):
+        html = (
+            '<table><tr><td><a href="https://www.ebay.com/itm/123456789012">'
+            "2024 Panini Prizm Caleb Williams Silver #301</a></td>"
+            "<td>+$4.99 shipping</td><td>$120.00</td></tr></table>"
+        )
+        listing = ebay_email_alerts.extract_listings_from_html(html)[0]
+        assert listing["price"] == 120.00
+        assert listing["shipping_price"] == 4.99
+
+
+class TestCrossEmailDedupe:
+    """eBay sends one alert per saved search, so a card matching two
+    searches arrives in two emails -- and the lookback window overlaps
+    consecutive runs on top of that.
+
+    Deduping only inside one email meant the same item became two listings
+    with the same id: two identity extractions, two comp lookups, and two
+    rows in every RunStats counter, so the health footer over-counted the
+    day it is there to describe.
+    """
+
+    ROW = (
+        '<table><tr><td><a href="{href}">'
+        "2024 Panini Prizm Caleb Williams Silver Prizm RC #301</a>"
+        "<div>{detail}</div></td></tr></table>"
+    )
+
+    def _fetch(self, monkeypatch, *htmls, counters=None):
+        monkeypatch.setattr(
+            ebay_email_alerts,
+            "fetch_alert_messages",
+            lambda *a, **k: [_FakeMessage(html) for html in htmls],
+        )
+        return ebay_email_alerts.fetch_alert_listings("a@b.c", "pw", "ebay.com", 2, counters=counters)
+
+    def test_the_same_item_in_two_emails_is_one_listing(self, monkeypatch):
+        html = self.ROW.format(href="https://www.ebay.com/itm/123456789012", detail="$25.00")
+        listings = self._fetch(monkeypatch, html, html)
+        assert len(listings) == 1
+
+    def test_the_two_copies_are_merged_rather_than_one_discarded(self, monkeypatch):
+        """Each email sees a different part of the row, so taking the first
+        and dropping the second throws away what the second knew."""
+        priced = self.ROW.format(href="https://www.ebay.com/itm/123456789012", detail="$25.00")
+        shipped = self.ROW.format(
+            href="https://www.ebay.com/itm/123456789012", detail="+$4.99 shipping 3 bids"
+        )
+        listings = self._fetch(monkeypatch, priced, shipped)
+        assert len(listings) == 1
+        assert listings[0]["price"] == 25.00
+        assert listings[0]["shipping_price"] == 4.99
+        assert listings[0]["listing_type"] == ebay_email_alerts.LISTING_TYPE_AUCTION
+        assert listings[0]["bid_count"] == 3
+
+    def test_different_items_are_still_separate(self, monkeypatch):
+        first = self.ROW.format(href="https://www.ebay.com/itm/123456789012", detail="$25.00")
+        second = self.ROW.format(href="https://www.ebay.com/itm/987654321098", detail="$30.00")
+        assert len(self._fetch(monkeypatch, first, second)) == 2
+
+    def test_one_item_under_two_link_shapes_is_still_one_listing(self, monkeypatch):
+        bare = self.ROW.format(href="https://www.ebay.com/itm/123456789012", detail="$25.00")
+        seo = self.ROW.format(
+            href="https://m.ebay.com/itm/2024-Panini-Prizm-Caleb-Williams/123456789012?hash=x",
+            detail="$25.00",
+        )
+        assert len(self._fetch(monkeypatch, bare, seo)) == 1
+
+    def test_no_internal_bookkeeping_leaks_into_the_result(self, monkeypatch):
+        html = self.ROW.format(href="https://www.ebay.com/itm/123456789012", detail="$25.00")
+        listing = self._fetch(monkeypatch, html, html)[0]
+        assert "title_verified" not in listing

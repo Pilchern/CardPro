@@ -303,11 +303,48 @@ class TestLevelSelection:
         assert match.flag_eligible is True
 
     def test_falls_through_to_same_card_when_card_number_differs(self):
+        """A different KNOWN card number is a different card, so same_card
+        still answers -- as context, never as a deal.
+
+        The level exists for the case where a number is unreadable, not for
+        the case where it is readable and says something else. Measured on
+        the live corpus: a Pete Crow-Armstrong 2024 Topps Chrome Refractor
+        bucket held the base card #16 at $54-$70 and the 1989 35th
+        Anniversary insert #89CB-19 at $17-$18, and this level reported the
+        insert as 69% under market.
+        """
         obs = _spread((95.0, 100.0, 105.0), year=2024, set_name="Prizm", parallel="Silver", card_number="999")
         match = _engine(obs).lookup(player="Caleb Williams", card_type="raw", price=40.0, **_IDENTITY)
         assert match.level == "same_card"
+        assert match.flag_eligible is False
+        assert "mixed_card_numbers" in match.blocked_reasons
+
+    def test_same_card_still_flags_when_only_this_listing_lacks_a_number(self):
+        """The case the level is FOR: nine copies of #BD-72 plus one listing
+        whose number could not be read is one card, not two."""
+        obs = _spread((150.0, 160.0, 175.0), year=2024, set_name="Prizm", parallel="Silver", card_number="BD-72")
+        match = _engine(obs).lookup(
+            player="Caleb Williams", card_type="raw", price=75.0,
+            year=2024, set_name="Prizm", parallel="Silver",
+        )
+        assert match.level == "same_card"
         assert match.flag_eligible is True
-        assert match.confidence == "low"  # medium base, minus one for asking basis, minus one for n<5
+
+    def test_same_card_bucket_mixing_two_known_numbers_is_context_only(self):
+        """Even to a listing with no number of its own: a bucket that holds
+        two cards prints a median from neither."""
+        obs = (
+            _spread((54.0, 55.0, 69.0), year=2024, set_name="Prizm", parallel="Silver", card_number="16")
+            + _spread((17.0, 18.0, 18.5), year=2024, set_name="Prizm", parallel="Silver", card_number="89CB-19")
+        )
+        match = _engine(obs).lookup(
+            player="Caleb Williams", card_type="raw", price=10.0,
+            year=2024, set_name="Prizm", parallel="Silver",
+        )
+        assert match.level == "same_card"
+        assert match.flag_eligible is False
+        assert "mixed_card_numbers" in match.blocked_reasons
+        assert match.stats.distinct_card_numbers == 2
 
     def test_price_tier_match_is_context_only(self):
         """The exact production defect: nothing is known about the card, so
@@ -582,8 +619,9 @@ class TestQualityGates:
         so this gate is checked directly -- it is the defence for any caller
         that assembles a CompMatch itself."""
         obs = [_ob(p, **_IDENTITY) for p in (95.0, 100.0)]
+        plain = comps.printing_variant()
         stats = comps.compute_comp_stats(_engine(obs)._buckets["exact"][
-            ("Caleb Williams", 2024, "Prizm", "Silver", "123", ("raw",))
+            ("Caleb Williams", 2024, "Prizm", "Silver", "123", ("raw",), plain)
         ], today=TODAY)
         match = comps.assess_comp_match(stats, "exact", min_comps_required=3)
         assert match.stats.sample_size == 2
@@ -1047,3 +1085,93 @@ def test_compute_comp_stats_works_on_plain_observation_dicts():
         [_ob(95.0), _ob(100.0), _ob(105.0)], today=TODAY
     )
     assert (stats.sample_size, stats.median, stats.basis) == (3, 100.0, "asking")
+
+
+class TestPrintingVariant:
+    """An autograph, a patch and a print run change what the card IS while
+    leaving every identity field the comp key uses untouched.
+
+    The scenario is real and was measured on the live corpus
+    (data/ebay_alert_price_history.json, September 2026): a `same_card`
+    bucket for Colson Montgomery / 2026 / Topps Chrome / Logofractor / raw
+    held two base copies at $4.00 and $4.30 alongside on-card autographs at
+    $109.67, $125, $150 and $155. The weighted median came out at $109.67
+    and the engine reported both base cards as 96% under market -- audit
+    failure mode #3 arriving through a door market_key does not cover.
+    """
+
+    def test_plain_card_is_the_default(self):
+        assert comps.printing_variant() == (False, None, ("unnumbered",))
+
+    def test_truncated_title_has_no_known_variant(self):
+        assert comps.printing_variant(title_truncated=True) is None
+
+    def test_numbered_without_a_run_has_no_known_variant(self):
+        """"One of something" cannot be compared with "one of 150"."""
+        assert comps.printing_variant(is_serial_numbered=True) is None
+
+    def test_print_runs_are_different_variants(self):
+        assert comps.printing_variant(print_run=50) != comps.printing_variant(print_run=150)
+        assert comps.printing_variant(print_run=50) != comps.printing_variant()
+
+    def test_relic_is_case_folded_and_patch_is_its_own_market(self):
+        assert comps.printing_variant(relic="Patch") == comps.printing_variant(relic="patch")
+        assert comps.printing_variant(relic="patch") != comps.printing_variant(relic="relic")
+
+    def test_autograph_is_not_comped_against_the_base_card(self):
+        autos = _spread((109.0, 125.0, 150.0, 155.0), **_IDENTITY, is_autograph=True)
+        base = _spread((4.0, 4.3, 4.5), **_IDENTITY, is_autograph=False)
+        engine = _engine(autos + base)
+
+        # The base card sees only base copies, so it is not "96% under".
+        match = engine.lookup(
+            player="Caleb Williams", card_type="raw", price=4.0, is_autograph=False, **_IDENTITY
+        )
+        assert match is not None
+        assert match.stats.median < 10.0
+
+        # ...and the autograph sees only autographs.
+        auto = engine.lookup(
+            player="Caleb Williams", card_type="raw", price=90.0, is_autograph=True, **_IDENTITY
+        )
+        assert auto is not None
+        assert auto.stats.median > 100.0
+
+    def test_numbered_parallel_is_not_comped_against_the_unnumbered_one(self):
+        numbered = _spread((250.0, 275.0, 300.0), **_IDENTITY, print_run=50)
+        unnumbered = _spread((20.0, 22.0, 24.0), **_IDENTITY)
+        engine = _engine(numbered + unnumbered)
+
+        match = engine.lookup(
+            player="Caleb Williams", card_type="raw", price=21.0, **_IDENTITY
+        )
+        assert match.stats.median < 30.0
+
+    def test_observation_variant_is_re_read_from_a_stored_title(self):
+        """The corpus predates the explicit fields by months and stores the
+        title every row was parsed from, precisely so a parser improvement
+        reaches old rows instead of waiting 180 days for them to age out."""
+        auto = comps.variant_of_observation(
+            {"title": "2026 Topps Chrome Colson Montgomery LOGOFRACTOR ON CARD ROOKIE Auto /75 SOX"}
+        )
+        base = comps.variant_of_observation(
+            {"title": "Topps Chrome 2026 Colson Montgomery Logofractor RC Chicago White Sox #259"}
+        )
+        assert auto == (True, None, ("numbered", 75))
+        assert base == (False, None, ("unnumbered",))
+        assert auto != base
+
+    def test_observation_with_a_truncated_title_is_barred_from_flag_levels(self):
+        assert comps.variant_of_observation(
+            {"title": "2026 Topps Chrome Colson Montgomery Logofractor RC Auto …"}
+        ) is None
+
+    def test_explicit_fields_win_over_the_stored_title(self):
+        assert comps.variant_of_observation(
+            {"title": "a title that says nothing", "is_autograph": True, "relic": "patch"}
+        ) == (True, "patch", ("unnumbered",))
+
+    def test_row_with_neither_field_nor_title_is_taken_as_a_plain_card(self):
+        """Refusing it would delete the older half of a six-month corpus
+        from the only levels that can flag a deal."""
+        assert comps.variant_of_observation({"price": 10.0}) == comps.printing_variant()

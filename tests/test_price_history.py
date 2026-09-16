@@ -24,6 +24,11 @@ def _obs(price, date, listing_id="", **identity_overrides):
         "is_base": None,
         "title": "",
         "basis": "asking",
+        "is_autograph": None,
+        "relic": None,
+        "is_serial_numbered": None,
+        "title_truncated": False,
+        "listing_type": None,
     }
     obs.update(identity_overrides)
     return obs

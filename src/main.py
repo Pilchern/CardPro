@@ -107,6 +107,7 @@ BLOCKED_TO_REASON = {
     "stale_comps": reasons.Reason.STALE_COMPS,
     "dispersed_comps": reasons.Reason.DISPERSED_COMPS,
     "concentrated_sample": reasons.Reason.CONCENTRATED_SAMPLE,
+    "mixed_card_numbers": reasons.Reason.MIXED_CARD_NUMBERS,
 }
 
 
@@ -438,6 +439,11 @@ def record_observations(listings, history, today_str: str) -> int:
             is_base=identity.is_base.value if identity else None,
             title=listing.title,
             basis=comps.BASIS_ASKING,
+            is_autograph=identity.is_autograph.value if identity else None,
+            relic=_relic_of(identity),
+            is_serial_numbered=identity.is_serial_numbered.value if identity else None,
+            title_truncated=listing.title_truncated,
+            listing_type=listing.listing_type,
         )
         recorded += 1
     return recorded
@@ -482,6 +488,24 @@ def mark_truncated_titles(listings) -> None:
 # --------------------------------------------------------------------------
 # Evaluation -- the single path both sources go through
 # --------------------------------------------------------------------------
+
+
+def _relic_of(identity) -> Optional[str]:
+    """"patch" / "relic" / None -- the memorabilia half of the comp variant.
+
+    A multi-colour patch is a different product from a jersey swatch, and
+    both are different products from the base card, so they key different
+    comp buckets. Kept next to the lookup that uses it rather than on
+    CardIdentity, because it is a comp-engine vocabulary, not a fact about
+    the card.
+    """
+    if identity is None:
+        return None
+    if identity.is_patch.value:
+        return "patch"
+    if identity.is_memorabilia.value:
+        return "relic"
+    return None
 
 
 def _fee_model(cfg):
@@ -634,6 +658,30 @@ def evaluate_listings(listings, engine, cfg, stats) -> None:
             set_name=identity.set_name.value if identity else None,
             parallel=identity.parallel.value if identity else None,
             card_number=identity.card_number.value if identity else None,
+            # An autograph, a patch and a print run change what the card IS,
+            # not just what it is worth, and none of them appear anywhere in
+            # the fields above -- see comps.printing_variant.
+            #
+            # `title_truncated` is deliberately NOT forwarded, and the
+            # asymmetry is the point. Truncation is refused on the
+            # OBSERVATION side (record_observations below stores it, and
+            # comps.variant_of_observation turns it into "level does not
+            # apply"), because a hidden "Auto /150" landing in the bucket of
+            # base copies raises that bucket's median and makes every real
+            # base card read as a deal -- the expensive direction. Read from
+            # the other side it is the cheap direction: a listing whose cut
+            # hid an autograph is compared against base copies, so its
+            # market value is UNDERSTATED and any discount it shows is a
+            # floor under the real one. The report already prints "eBay
+            # truncated the title" as a risk on those. Refusing here as well
+            # would cost a third of all valuations to prevent an error that
+            # only ever errs in the user's favour.
+            is_autograph=identity.is_autograph.value if identity else False,
+            relic=_relic_of(identity),
+            print_run=identity.print_run.value if identity else None,
+            # Still refuses the level when the title says "numbered" and the
+            # cut took the number: "one of something" is not comparable.
+            is_serial_numbered=identity.is_serial_numbered.value if identity else False,
             # A listing must never be part of the comp set used to judge it.
             exclude_id=listing.id,
         )
