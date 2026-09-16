@@ -100,6 +100,18 @@ SIGNAL_TO_REASON = {
     "lot": reasons.Reason.LOT,
 }
 
+#: Above this share of listings with an unreadable buying format, the alarm
+#: fires. It is the one place the pipeline fails OPEN: record_observations
+#: excludes auctions by `listing_type == "auction"`, so a listing whose
+#: format could not be read is written into the asking-price corpus, and if
+#: it was an auction what got written is a current bid -- the one thing this
+#: project says must never become a comp. The parser is deliberately
+#: conservative (no evidence either way yields "unknown"), which is right for
+#: one listing and an alarm across a whole run: at 40% the template has
+#: changed, not the market. Well clear of the ordinary rate, which is the
+#: share of fixed-price rows eBay renders without the words "Buy It Now".
+UNKNOWN_LISTING_TYPE_ALARM_PCT = 40.0
+
 # comps.CompMatch.blocked_reasons -> the canonical rejection reason.
 BLOCKED_TO_REASON = {
     "context_only_level": reasons.Reason.CONTEXT_ONLY_LEVEL,
@@ -992,6 +1004,22 @@ def run(args: argparse.Namespace) -> None:
         )
 
     evaluate_listings(listings, engine, cfg, stats)
+
+    unknown_type_pct = stats.unknown_listing_type_rate
+    if unknown_type_pct is not None and unknown_type_pct >= UNKNOWN_LISTING_TYPE_ALARM_PCT:
+        # See UNKNOWN_LISTING_TYPE_ALARM_PCT. Not marked broken=True: the
+        # run's other numbers are still sound, and an auction read as
+        # fixed-price is a corpus problem that shows up over weeks rather
+        # than a report that is wrong this morning.
+        stats.warn(
+            "{:.0f}% of listings arrived with an unreadable buying format (auction vs "
+            "Buy It Now). Those are recorded as asking prices, so any auction among "
+            "them has put a CURRENT BID into the comp corpus, where it will misvalue "
+            "that card for {} days. Run `python -m scripts.test_ebay_alerts --raw` to "
+            "check whether eBay changed the markup.".format(
+                unknown_type_pct, cfg.ebay_alert_price_history_max_age_days
+            )
+        )
 
     seen = dedupe.load_seen(cfg.seen_listings_path)
     listings = apply_dedupe(listings, seen, today_str, stats)

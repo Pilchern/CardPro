@@ -852,6 +852,16 @@ def _confidence_text(deal: Listing) -> str:
                 stats.sample_size, stats.distinct_dates, stats.span_days
             )
         )
+    if getattr(stats, "is_mixed_card_numbers", False):
+        # Same reason the concentrated line exists: a confidence that steps
+        # down without saying so reads as a black box. This one names the
+        # numbers, because "cards #16 and #89CB-19" is a fact the reader can
+        # check against the listing in one glance.
+        why.append(
+            "the comps are more than one card ({})".format(
+                ", ".join("#" + number for number in stats.card_numbers[:4])
+            )
+        )
     return "{} -- {}".format(confidence.upper(), "; ".join(why))
 
 
