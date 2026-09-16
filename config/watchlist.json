@@ -21,7 +21,8 @@
     "Munetaka Murakami",
     "Kyle Teel",
     "Colson Montgomery",
-    "Pete Crow-Armstrong"
+    "Pete Crow-Armstrong",
+    "Andre Dawson"
   ],
   "_player_tiers_comment": "Purely a display tag shown on flagged deals in the report -- doesn't affect matching, comps, or flagging math at all. 'legend' = established/retired, value is about the deal itself. 'young_core' = active young player being bet on for long-term growth, not just today's price. Players not listed here default to 'legend'. Edit freely as your read on a player changes.",
   "player_tiers": {
