@@ -1064,11 +1064,38 @@ def _extract_is_base(
     declare a deal. Measured on the live corpus, resolving this is the single
     largest available gain in comp coverage.
 
-    THIS FIELD DOES NOT YET KEY A COMP BUCKET, deliberately. It is recorded
-    so the size of that gain can be measured on real data (see
-    scripts/replay_corpus.py) before anything is valued off it. What would
-    justify promoting it: replaying a corpus several weeks wide and confirming
-    that the buckets it creates contain what they claim to.
+    THIS FIELD DOES NOT KEY A COMP BUCKET, and the question of whether it
+    should is now CLOSED rather than open. The test this docstring used to
+    name -- replay a corpus several weeks wide and confirm the buckets it
+    creates contain what they claim to -- was run against the 27-day corpus
+    in data/ebay_alert_price_history.json (2026-08-21 .. 2026-09-16), with
+    `parallel` replaced by a base sentinel wherever this field is true.
+
+    It creates 88 buckets of three or more, covering 457 observations, and
+    HALF OF THEM (44) hold more than one known card number. They do not
+    contain what they claim to. The worst are not close calls:
+
+      * Connor Bedard / 2023 / Upper Deck Series 2 -- $2.00 (Glossy Rookies
+        insert #R47) through $210 (Young Guns #451).
+      * Connor Bedard / 2023 / Young Guns -- $1.00 through $500, pooling
+        base #451 with Canvas #C382 and Extended Series Retro.
+      * Pete Crow-Armstrong / 2024 / Topps Chrome -- base #16 with the
+        35th Anniversary insert #89CB-19 and a Logofractor.
+
+    The cause is not this guard being loose. It is that "base" is a claim
+    about the PARALLEL and says nothing about WHICH CARD: a product issues
+    one base card per player and a dozen inserts, all unparalleled, all
+    reading as base. The missing key is the card number, which `exact`
+    already requires -- so the honest version of this idea is not a base
+    sentinel at the same_card level, it is better card-number extraction
+    feeding the level that already keys on it.
+
+    The mixed-card-numbers gate in comps.assess_comp_match would block the
+    44 measurable cases, which is the reason this is a closed question and
+    not a live risk. It would not block the rest, where no side states a
+    number at all. Re-open this only with evidence of the shape above, not
+    with a coverage number: the gain being large is exactly what made it
+    tempting the first time.
 
     The guard is closed-world and errs toward unknown. Base is asserted only
     when the title is complete, names a set we recognise, carries no serial
