@@ -297,9 +297,13 @@ def extract_listings_from_html(html: str, counters: Optional[dict] = None) -> li
             refused_by_item[item_number] = fuller_refused
 
     results = list(listings.values())
-    for listing in results:
+    for number, listing in listings.items():
         # Bookkeeping for the merge, not a fact about the listing.
         listing.pop("title_verified", None)
+        # Kept, not popped: fetch_alert_listings recomputes the title
+        # counters after merging across emails, and needs this to survive
+        # that merge. It pops it once the counters are final.
+        listing["title_recovery_refused"] = bool(refused_by_item.get(number))
 
     if counters is not None and results:
         counters["titles_seen"] = counters.get("titles_seen", 0) + len(results)
@@ -420,14 +424,14 @@ def _fullest_title(anchor) -> tuple[str, bool, bool]:
     whether a longer candidate was refused for not matching it, and whether
     any of it is anchored to text eBay actually displayed for this listing.
 
-    THIS IS THE BOTTLENECK, measured. Of the first 350 titles the live run
-    stored, 98% arrived truncated, at a median of 30 characters -- "2024
-    Panini Caleb Williams Pr...", cut off mid-word before the set name. The
-    set, the parallel, the card number and the grade all live past that cut,
-    which is the whole reason set_name resolved for a sixth of listings and
-    the flagship-set path (which needs a card number) almost never fires. It
-    is not that the parser is weak; it is that it was being handed thirty
-    characters.
+    THIS WAS THE BOTTLENECK, and reading these attributes is what moved it.
+    Of the first 350 titles the live run stored, 98% arrived truncated, at a
+    median of 30 characters -- "2024 Panini Caleb Williams Pr...", cut off
+    mid-word before the set name -- which is the whole reason set_name
+    resolved for a sixth of listings at the time. Measured again over the
+    5,277 listings in the corpus on 2026-09-16: 33% truncated, set_name 59%,
+    parallel 33%, card_number 45%. The constraint is now the card number,
+    not the cut.
 
     eBay truncates the VISIBLE link text. The same anchor's title attribute,
     its aria-label, and the item image's alt text are written for tooltips
@@ -767,11 +771,34 @@ def fetch_alert_listings(
             existing = merged.get(listing["url"])
             if existing is None:
                 merged[listing["url"]] = dict(listing, title_verified=True)
-            else:
-                _merge_listing(existing, dict(listing, title_verified=True))
+                continue
+            refused = existing.get("title_recovery_refused") and listing.get(
+                "title_recovery_refused"
+            )
+            _merge_listing(existing, dict(listing, title_verified=True))
+            # A refusal only counts while it is still costing us something.
+            # If either copy got the fuller title through, nothing was lost.
+            existing["title_recovery_refused"] = bool(refused)
     listings = list(merged.values())
+
+    if counters is not None and listings:
+        # Recomputed over the MERGED listings, replacing the per-email
+        # running totals above. An item in two alert emails was being
+        # counted twice in the denominator of a rate the health footer
+        # presents as "what share of titles arrived truncated" -- and that
+        # rate is the headline number for the biggest constraint on this
+        # whole system, so it had better count listings rather than
+        # sightings.
+        counters["titles_seen"] = len(listings)
+        counters["titles_truncated"] = sum(
+            1 for listing in listings if looks_truncated(listing["title"])
+        )
+        counters["titles_recovery_refused"] = sum(
+            1 for listing in listings if listing.get("title_recovery_refused")
+        )
     for listing in listings:
         listing.pop("title_verified", None)
+        listing.pop("title_recovery_refused", None)
 
     if messages and not listings:
         # Recorded for the caller, not only logged. This is the single

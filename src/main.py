@@ -502,6 +502,23 @@ def mark_truncated_titles(listings) -> None:
 # --------------------------------------------------------------------------
 
 
+def _total_cost_with_tax(cfg_listing, cfg) -> Optional[float]:
+    """What actually leaves your account: price + known shipping + sales tax.
+
+    One function so the three places that ask the question -- the deal gate
+    (via economics.Acquisition), the focus ceiling and the target bands --
+    cannot drift into three answers. None means the price could not be read,
+    which is not the same as free.
+    """
+    if cfg_listing.price is None:
+        return None
+    return economics.Acquisition(
+        price=cfg_listing.price,
+        shipping=cfg_listing.shipping_price,
+        sales_tax_pct=cfg.sales_tax_pct,
+    ).total_cost
+
+
 def _relic_of(identity) -> Optional[str]:
     """"patch" / "relic" / None -- the memorabilia half of the comp variant.
 
@@ -648,7 +665,12 @@ def evaluate_listings(listings, engine, cfg, stats) -> None:
         listing.target_hit = targets.best_hit(
             cfg.target_cards,
             player=listing.player,
-            total_cost=listing.total_cost,
+            # The tax-inclusive cost, because a target threshold is a price
+            # YOU set for what you are willing to pay, and what you pay
+            # includes the tax. Listing.total_cost is the pre-tax figure the
+            # report prints beside the item price; at the shipped
+            # sales_tax_pct of 0.0 they are the same number.
+            total_cost=_total_cost_with_tax(listing, cfg),
             year=identity.year.value if identity else None,
             set_name=identity.set_name.value if identity else None,
             parallel=identity.parallel.value if identity else None,
@@ -849,8 +871,9 @@ def build_craigslist_links(cfg, players) -> dict:
 def build_search_suggestions(cfg, listings) -> dict:
     """Saved searches worth adding, for the players where today's data shows
     no sign of coverage. See src/search_terms.py for why this matters:
-    graded cards are about 1% of everything observed so far, and set_name
-    resolves for about a sixth of listings.
+    graded cards are about 12% of everything observed so far, and the field
+    that gates the only comp level allowed to declare a deal -- the card
+    number -- resolves for 45%.
 
     What is recorded here is what makes a suggestion stop being suggested, so
     under-recording means being nagged forever to create a search you already

@@ -478,18 +478,31 @@ that would bring it back.
   shown to.
 
   **The cause underneath it was measured on August 26 and it is not the
-  vocabulary.** 98% of stored titles arrive truncated, at a median of 30
+  vocabulary.** 98% of stored titles arrived truncated, at a median of 30
   characters -- "2024 Panini Prizm Caleb Willi..." -- and the set, parallel,
   card number and grade all live past that cut. No amount of parser work
-  reads a word that is not there. `src/ebay_email_alerts.py` now takes the
-  fullest title the email contains, including `title`/`aria-label`/`alt`
-  attributes rather than only the visible anchor text; whether eBay actually
-  carries one there is unknown from here and is graded by the next live run.
-  The report reports both numbers, deliberately: the truncation rate, and
-  how often a fuller copy was present and refused by our own match check.
-  A stubborn 98% means opposite things in those two cases.
+  reads a word that is not there. `src/ebay_email_alerts.py` was changed to
+  take the fullest title the email contains, including `title`/`aria-label`/
+  `alt` attributes rather than only the visible anchor text.
 
-  Everything else on this list is downstream of this one.
+  **UPDATE, September 16 2026 -- that worked, and this paragraph was the
+  last thing still saying otherwise.** Measured over the 5,277 stored
+  listings now in the corpus:
+
+  | | August 26 | September 16 |
+  |---|---|---|
+  | titles truncated | 98% | **33%** |
+  | `set_name` resolved | ~17% | **59%** |
+  | `parallel` resolved | ~3% | **33%** |
+  | `card_number` resolved | -- | **45%** |
+  | `year` resolved | -- | **90%** |
+
+  The bottleneck moved. It is no longer "eBay sends us thirty characters";
+  it is the card number, which is the field `exact` -- the only level that
+  can safely flag a deal -- keys on, and which resolves for under half of
+  what arrives. See `docs/AUDIT_2026_09.md` H4 for why the obvious
+  alternative (asserting "base" to unlock `same_card`) was measured and
+  rejected.
 - **No confirmed sold prices anywhere.** Structural: 100% of the corpus is
   asking prices. The hand-entry path now exists (`src/sold_comps.py`,
   `python -m scripts.add_sold_comp`, and `--paste` for a whole results page

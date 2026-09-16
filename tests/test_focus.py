@@ -17,6 +17,7 @@ countable. A test that focus dropped something is only half a test -- the
 other half is that the count came back.
 """
 from collections import OrderedDict
+from types import SimpleNamespace
 
 from src import desirability, focus
 from src.models import Listing
@@ -523,3 +524,45 @@ def test_the_scarcity_escape_does_not_apply_to_a_card_that_will_be_valued():
     listing.desirable_attributes = desirability.attributes_of(listing)
     rules = focus.FocusRules(price_ceiling=40.0, cool_cards_price_ceiling=100.0)
     assert focus.omission_reason(listing, rules) == focus.ABOVE_CEILING
+
+
+class TestSalesTaxReachesTheCeiling:
+    """`Listing.total_cost` is price + shipping; the deal gate's cost
+    (`economics.Acquisition.total_cost`) is price + shipping + tax.
+
+    At the shipped `sales_tax_pct: 0.0` they are the same number, so this is
+    latent -- set a real rate and a $40 ceiling quietly becomes a pre-tax $40
+    while every figure printed beneath it is post-tax.
+    """
+
+    def _listing(self, price, shipping=None):
+        return SimpleNamespace(
+            id="L1", price=price, shipping_price=shipping,
+            total_cost=price if shipping is None else price + shipping,
+            target_hit=None, is_auction=False, comp_match=None,
+            pct_under_market=None, dollar_savings=None,
+        )
+
+    def test_no_tax_configured_leaves_the_ceiling_exactly_where_it_was(self):
+        rules = focus.FocusRules(price_ceiling=40.0)
+        assert focus.omission_reason(self._listing(40.0), rules) is None
+
+    def test_tax_can_push_a_listing_over_the_ceiling(self):
+        rules = focus.FocusRules(price_ceiling=40.0, sales_tax_pct=10.0)
+        # $38 + 10% = $41.80, which is over a ceiling meant to describe what
+        # leaves your account.
+        assert focus.omission_reason(self._listing(38.0), rules) == focus.ABOVE_CEILING
+        assert focus.omission_reason(self._listing(36.0), rules) is None
+
+    def test_tax_applies_to_shipping_too(self):
+        rules = focus.FocusRules(price_ceiling=40.0, sales_tax_pct=10.0)
+        assert focus.omission_reason(self._listing(30.0, shipping=8.0), rules) == focus.ABOVE_CEILING
+
+    def test_an_unreadable_price_is_still_unknown_not_taxed_to_zero(self):
+        listing = SimpleNamespace(
+            id="L1", price=None, shipping_price=None, total_cost=None,
+            target_hit=None, is_auction=False, comp_match=None,
+            pct_under_market=None, dollar_savings=None,
+        )
+        rules = focus.FocusRules(price_ceiling=40.0, sales_tax_pct=10.0)
+        assert focus.omission_reason(listing, rules) == focus.PRICE_UNKNOWN

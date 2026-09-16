@@ -841,3 +841,35 @@ class TestCrossEmailDedupe:
         html = self.ROW.format(href="https://www.ebay.com/itm/123456789012", detail="$25.00")
         listing = self._fetch(monkeypatch, html, html)[0]
         assert "title_verified" not in listing
+
+
+class TestTitleCountersCountListingsNotSightings(TestCrossEmailDedupe):
+    """The truncation rate is the headline number for the biggest constraint
+    on the whole system, so its denominator had better be listings.
+
+    Counting per email meant an item in two alert emails landed in the
+    denominator twice.
+    """
+
+    def test_one_item_in_two_emails_is_counted_once(self, monkeypatch):
+        html = self.ROW.format(href="https://www.ebay.com/itm/123456789012", detail="$25.00")
+        counters = {}
+        self._fetch(monkeypatch, html, html, counters=counters)
+        assert counters["titles_seen"] == 1
+        assert counters["titles_truncated"] == 0
+
+    def test_a_truncated_title_still_counts_as_truncated(self, monkeypatch):
+        html = (
+            '<table><tr><td><a href="https://www.ebay.com/itm/123456789012">'
+            "2024 Panini Prizm Caleb Williams Silver Pr\u2026</a>"
+            "<div>$25.00</div></td></tr></table>"
+        )
+        counters = {}
+        self._fetch(monkeypatch, html, html, counters=counters)
+        assert counters["titles_seen"] == 1
+        assert counters["titles_truncated"] == 1
+
+    def test_no_internal_counter_bookkeeping_leaks_into_the_result(self, monkeypatch):
+        html = self.ROW.format(href="https://www.ebay.com/itm/123456789012", detail="$25.00")
+        listing = self._fetch(monkeypatch, html, html)[0]
+        assert "title_recovery_refused" not in listing

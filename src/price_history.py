@@ -261,7 +261,7 @@ def record(
         #
         # Storing it is what makes extraction improvable. Every identity
         # field here is the output of a parser that is demonstrably
-        # incomplete -- set_name resolves for about a sixth of listings --
+        # incomplete -- set_name resolves for 59% of listings and card_number for 45% --
         # and without the input, a change to that parser cannot be measured
         # against anything except invented examples. The corpus is the only
         # durable artefact this project has; a title not captured today is

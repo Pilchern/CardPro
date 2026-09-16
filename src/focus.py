@@ -95,6 +95,19 @@ class FocusRules:
     require_auction_bidding_room: bool = True
     max_listings: int = 40
     max_per_section: int = 10
+    #: The sales-tax rate from ``config/settings.json`` -> ``economics``,
+    #: applied to the cost this module measures against ``price_ceiling``.
+    #:
+    #: Without it the ceiling silently means something different from the
+    #: deal gate. ``Listing.total_cost`` is price + shipping;
+    #: ``economics.Acquisition.total_cost`` -- which is what the discount and
+    #: the profit are computed from -- is price + shipping + tax. At the
+    #: shipped ``sales_tax_pct: 0.0`` the two are identical and nothing
+    #: happens here; set a real rate and a $40 ceiling quietly becomes a
+    #: pre-tax $40 while every number printed under it is post-tax. The
+    #: ceiling is meant to be what leaves your account.
+    sales_tax_pct: float = 0.0
+
     #: A higher ceiling for cards with something genuinely scarce about them
     #: -- a signature, a patch, a serial number. "Is this the cheap end I
     #: shop at" and "is this a card worth looking at" are different
@@ -122,17 +135,27 @@ class Selection:
         return sum(self.omitted.values())
 
 
-def _price(listing) -> Optional[float]:
-    """What this listing would cost you right now, shipping included when
-    known. For an auction that is the current bid -- which is exactly the
-    number you would have to beat to be in it, so it is the right one to
-    measure a bidding budget against, even though it is emphatically not
-    the price the card will sell for.
+def _price(listing, rules: FocusRules = None) -> Optional[float]:
+    """What this listing would cost you right now: shipping included when
+    known, plus the sales tax you will actually be charged.
+
+    For an auction that is the current bid -- which is exactly the number you
+    would have to beat to be in it, so it is the right one to measure a
+    bidding budget against, even though it is emphatically not the price the
+    card will sell for.
+
+    Tax is applied here rather than read off the listing because
+    ``Listing.total_cost`` is deliberately the pre-tax figure the report
+    prints beside the item price. The ceiling is about what leaves your
+    account; see ``FocusRules.sales_tax_pct``.
     """
     total = getattr(listing, "total_cost", None)
-    if total is not None:
-        return total
-    return getattr(listing, "price", None)
+    if total is None:
+        total = getattr(listing, "price", None)
+    if total is None:
+        return None
+    rate = rules.sales_tax_pct if rules is not None else 0.0
+    return total * (1.0 + rate / 100.0)
 
 
 def is_exceptional(listing, rules: FocusRules) -> bool:
@@ -197,7 +220,7 @@ def omission_reason(listing, rules: FocusRules) -> Optional[str]:
         return None
     if not _has_bidding_room(listing, rules):
         return NO_BIDDING_ROOM
-    price = _price(listing)
+    price = _price(listing, rules)
     if price is None:
         # No price means no way to tell whether it is the kind of card you
         # shop for, and no valuation behind it either. It is counted, not
