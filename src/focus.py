@@ -115,6 +115,14 @@ class FocusRules:
     #: second. Set equal to price_ceiling to switch this off.
     cool_cards_price_ceiling: float = 100.0
 
+    #: Low-numbered cards are what you actually collect, so they get their
+    #: own ceiling: numbered at or under ``numbered_max_print_run`` and
+    #: costing at or under ``numbered_price_ceiling`` always reaches the
+    #: email. The median /99-or-less card in the corpus asks $100, so the
+    #: $40 ceiling hid 74% of them and the cool-cards ceiling half. 0 = off.
+    numbered_max_print_run: int = 0
+    numbered_price_ceiling: float = 0.0
+
 
 #: Focus disabled: every listing kept, no cap. The default for
 #: ``report.build_report`` so that callers written before focus existed --
@@ -249,7 +257,18 @@ def omission_reason(listing, rules: FocusRules) -> Optional[str]:
         and desirability.is_standout(listing)
     ):
         return None
+    if not already_valued and _is_low_numbered(listing, rules) and price <= rules.numbered_price_ceiling:
+        return None
     return ABOVE_CEILING
+
+
+def _is_low_numbered(listing, rules: FocusRules) -> bool:
+    if rules.numbered_max_print_run <= 0:
+        return False
+    identity = getattr(listing, "card_identity", None)
+    field = getattr(identity, "print_run", None) if identity is not None else None
+    print_run = getattr(field, "value", None)
+    return print_run is not None and print_run <= rules.numbered_max_print_run
 
 
 def select(deals, rules: FocusRules) -> Selection:

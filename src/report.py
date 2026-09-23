@@ -2391,6 +2391,9 @@ def _focus_line(rules) -> str:
     if not rules.enabled:
         return ""
     parts = ["Focus: cards at or under {}".format(_money(rules.price_ceiling))]
+    if rules.numbered_max_print_run > 0:
+        parts.append("numbered /{} or less up to {}".format(
+            rules.numbered_max_print_run, _money(rules.numbered_price_ceiling)))
     if rules.require_auction_bidding_room:
         parts.append("auctions still under your max bid")
     if rules.max_listings > 0:

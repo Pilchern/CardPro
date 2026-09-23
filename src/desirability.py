@@ -64,6 +64,10 @@ ATTRIBUTE_TAGS = {
 #: distinction isn't used to gate anything today, only to explain.
 SCARCE_PRINT_RUN = 500
 
+#: /99 and under is the collector's line: it ranks above a /499 of the same
+#: card, which it used to tie with.
+LOW_NUMBERED_PRINT_RUN = 99
+
 
 def attributes_of(listing) -> tuple:
     """Every desirability attribute this listing demonstrably has.
@@ -198,6 +202,8 @@ def interest_score(listing) -> int:
             score += 5
         elif print_run <= 25:
             score += 3
+        elif print_run <= LOW_NUMBERED_PRINT_RUN:
+            score += 2
         elif print_run <= SCARCE_PRINT_RUN:
             score += 1
     return score

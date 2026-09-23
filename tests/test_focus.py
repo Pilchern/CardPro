@@ -566,3 +566,43 @@ class TestSalesTaxReachesTheCeiling:
         )
         rules = focus.FocusRules(price_ceiling=40.0, sales_tax_pct=10.0)
         assert focus.omission_reason(listing, rules) == focus.PRICE_UNKNOWN
+
+
+class TestLowNumberedCeiling:
+    """/99-or-less is what the owner collects, so it gets its own ceiling."""
+
+    RULES = focus.FocusRules(
+        price_ceiling=40.0, cool_cards_price_ceiling=100.0,
+        numbered_max_print_run=99, numbered_price_ceiling=200.0,
+    )
+
+    def _listing(self, title, price):
+        from src import card_identity
+
+        listing = make_listing(price=price, comp_match=None)
+        listing.title = title
+        listing.card_identity = card_identity.extract_card_identity(title)
+        listing.desirable_attributes = desirability.attributes_of(listing)
+        return listing
+
+    def test_a_slash_99_over_both_older_ceilings_gets_in(self):
+        listing = self._listing("2024 Prizm Caleb Williams Gold Prizm /10 #301", 180.0)
+        assert focus.omission_reason(listing, self.RULES) is None
+
+    def test_over_its_own_ceiling_it_is_still_left_out(self):
+        listing = self._listing("2024 Prizm Caleb Williams Gold Prizm /10 #301", 250.0)
+        assert focus.omission_reason(listing, self.RULES) == focus.ABOVE_CEILING
+
+    def test_a_slash_199_does_not_count(self):
+        listing = self._listing("2024 Prizm Caleb Williams Purple Prizm /199 #301", 180.0)
+        assert focus.omission_reason(listing, self.RULES) == focus.ABOVE_CEILING
+
+    def test_off_by_default(self):
+        listing = self._listing("2024 Prizm Caleb Williams Gold Prizm /10 #301", 180.0)
+        rules = focus.FocusRules(price_ceiling=40.0, cool_cards_price_ceiling=100.0)
+        assert focus.omission_reason(listing, rules) == focus.ABOVE_CEILING
+
+    def test_a_slash_99_outranks_a_slash_499_of_the_same_card(self):
+        low = self._listing("2024 Prizm Caleb Williams Blue Prizm /99 #301", 30.0)
+        high = self._listing("2024 Prizm Caleb Williams Blue Prizm /499 #301", 30.0)
+        assert desirability.interest_score(low) > desirability.interest_score(high)
