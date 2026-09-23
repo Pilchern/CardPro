@@ -612,7 +612,7 @@ def test_a_cut_title_from_a_numbered_search_uses_the_numbered_ceiling():
     from src import card_identity
 
     title = "2024 Panini Prizm Caleb Willi…"
-    listing = make_listing(price=180.0, comp_match=None, search_query="caleb williams (/99,/50,/25)")
+    listing = make_listing(price=180.0, comp_match=None, search_query="caleb williams (/99,/50,/25)", title_truncated=True)
     listing.title = title
     listing.card_identity = card_identity.extract_card_identity(title)
     listing.desirable_attributes = desirability.attributes_of(listing)

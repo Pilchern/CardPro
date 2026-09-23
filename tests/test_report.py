@@ -2679,7 +2679,7 @@ def test_a_search_implied_print_run_is_labelled_as_such():
     """The number was cut off; the tag must not read as if the title said it."""
 
     title = "2024 Panini Prizm Caleb Willi…"
-    listing = make_listing(title=title, search_query="caleb williams (/99,/50,/25)")
+    listing = make_listing(title=title, search_query="caleb williams (/99,/50,/25)", title_truncated=True)
     listing.card_identity = card_identity.extract_card_identity(title)
     listing.desirable_attributes = desirability.attributes_of(listing)
-    assert "#'D /99 OR LESS (PER SEARCH)" in " ".join(report._tags(listing)).upper()
+    assert "#'D /99 OR LESS? (PER SEARCH)" in " ".join(report._tags(listing)).upper()
