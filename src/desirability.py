@@ -23,6 +23,7 @@ the card itself and is the same for everybody.
 """
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 # Canonical attribute names. Order is the order they're shown in.
@@ -69,6 +70,57 @@ SCARCE_PRINT_RUN = 500
 LOW_NUMBERED_PRINT_RUN = 99
 
 
+_AUTO_WORDS = frozenset({"auto", "autos", "autograph", "autographs", "autographed"})
+_PRINT_RUN_TOKEN = re.compile(r"^#?/(\d{1,4})$")
+
+
+def search_implied(query: Optional[str]) -> tuple[bool, Optional[int]]:
+    """(autograph, highest print run) that a saved search's POSITIVE keywords
+    guarantee about the full title of every match.
+
+    eBay matches keywords against the whole title and cuts only what it
+    prints, so "pete crow-armstrong auto" says every match's title contains
+    "auto" even when the cut left 30 characters. A group like
+    "(/99,/50,/25)" says the title carries one of those print runs, so the
+    card is numbered to 99 or fewer. Exclusions ("-lot") guarantee nothing
+    and are skipped, as is any group with a non-print-run alternative in it.
+
+    Deliberately NOT inferred: a grade. "psa" also matches "PSA 10
+    candidate" and "PSA/DNA" on raw cards, and a guessed grade would reach
+    the comp key. What is inferred here only decides what reaches the email
+    and how it ranks; it never becomes a comp.
+    """
+    if not query:
+        return False, None
+    autograph = False
+    runs = []
+    for token in re.findall(r"-?\([^)]*\)|\S+", query.lower()):
+        if token.startswith("-"):
+            continue
+        if token.startswith("("):
+            alternatives = [part.strip() for part in token.strip("()").split(",") if part.strip()]
+            matches = [_PRINT_RUN_TOKEN.match(part) for part in alternatives]
+            if alternatives and all(matches):
+                runs.append(max(int(m.group(1)) for m in matches))
+            continue
+        if token in _AUTO_WORDS:
+            autograph = True
+        match = _PRINT_RUN_TOKEN.match(token)
+        if match:
+            runs.append(int(match.group(1)))
+    return autograph, (min(runs) if runs else None)
+
+
+def print_run_bound(listing) -> Optional[int]:
+    """The print run the title states, else the most the saved search
+    guarantees it can be, else None."""
+    identity = getattr(listing, "card_identity", None)
+    stated = _print_run(identity) if identity is not None else None
+    if stated is not None:
+        return stated
+    return search_implied(getattr(listing, "search_query", None))[1]
+
+
 def attributes_of(listing) -> tuple:
     """Every desirability attribute this listing demonstrably has.
 
@@ -106,6 +158,12 @@ def attributes_of(listing) -> tuple:
             found.append(SERIAL_NUMBERED)
         if identity.parallel.value is not None:
             found.append(PARALLEL)
+
+    search_auto, search_run = search_implied(getattr(listing, "search_query", None))
+    if search_auto and AUTOGRAPH not in found:
+        found.append(AUTOGRAPH)
+    if search_run is not None and SERIAL_NUMBERED not in found:
+        found.append(SERIAL_NUMBERED)
 
     if getattr(listing, "card_type", None) == "graded":
         found.append(GRADED)
@@ -195,8 +253,7 @@ def interest_score(listing) -> int:
     score = sum(INTEREST_WEIGHTS.get(name, 0) for name in settled_attributes(listing))
     if not score:
         return 0
-    identity = getattr(listing, "card_identity", None)
-    print_run = _print_run(identity) if identity is not None else None
+    print_run = print_run_bound(listing)
     if print_run is not None:
         if print_run == 1:
             score += 5

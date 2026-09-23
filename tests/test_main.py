@@ -1431,3 +1431,28 @@ class TestPlayerFromSavedSearch:
         history = {}
         assert main_module.record_observations([listing], history, "2026-09-23") == 0
         assert history == {}
+
+
+def test_capped_saved_searches_are_named_in_the_footer(monkeypatch):
+    stats = observability.RunStats()
+    cfg = SimpleNamespace(
+        gmail_address="a", gmail_app_password="b", ebay_alerts_sender_contains="ebay.com",
+        ebay_alerts_lookback_days=2, ebay_alerts_mailbox=None, players=["Caleb Williams"],
+        target_cards=[],
+    )
+
+    def fake_fetch(*_args, counters=None, **_kwargs):
+        counters["messages"] = 2
+        counters["capped_searches"] = {
+            "pete crow-armstrong -lot -reprint": (1744, 16),
+            "caleb williams psa 10": (45, 12),
+        }
+        return []
+
+    monkeypatch.setattr(main_module.ebay_email_alerts, "fetch_alert_listings", fake_fetch)
+    main_module.fetch_ebay_alert_active(cfg, stats)
+    warning = next(w for w in stats.warnings if "saved search" in w)
+    # Worst first, exclusions dropped, numbers readable.
+    assert warning.index('"pete crow-armstrong" (1,744 new, 16 shown)') < warning.index(
+        '"caleb williams psa 10" (45 new, 12 shown)'
+    )

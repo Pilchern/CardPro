@@ -265,9 +265,7 @@ def omission_reason(listing, rules: FocusRules) -> Optional[str]:
 def _is_low_numbered(listing, rules: FocusRules) -> bool:
     if rules.numbered_max_print_run <= 0:
         return False
-    identity = getattr(listing, "card_identity", None)
-    field = getattr(identity, "print_run", None) if identity is not None else None
-    print_run = getattr(field, "value", None)
+    print_run = desirability.print_run_bound(listing)
     return print_run is not None and print_run <= rules.numbered_max_print_run
 
 

@@ -156,3 +156,53 @@ class TestIsStandout:
 
     def test_a_base_common_is_not(self):
         assert not desirability.is_standout(listing_for("2024 Topps Caleb Williams #150"))
+
+
+class TestSearchImplied:
+    """eBay matches a saved search against the full title, so its positive
+    keywords say something about the part of the title eBay cut off."""
+
+    def test_a_print_run_group_bounds_the_card(self):
+        query = "caleb williams (/99,/75,/50,/25,/10,/5) -lot -reprint -digital"
+        assert desirability.search_implied(query) == (False, 99)
+
+    def test_auto_is_an_autograph(self):
+        assert desirability.search_implied("pete crow-armstrong auto") == (True, None)
+
+    def test_exclusions_guarantee_nothing(self):
+        assert desirability.search_implied("kyle teel -auto -(/99,/50)") == (False, None)
+
+    def test_a_group_with_any_other_word_proves_nothing(self):
+        assert desirability.search_implied("bedard (/99,refractor)") == (False, None)
+
+    def test_psa_is_never_read_as_a_grade(self):
+        """'PSA 10 candidate' on a raw card matches a psa search."""
+        assert desirability.search_implied("caleb williams psa 10") == (False, None)
+
+    def test_no_search_no_evidence(self):
+        assert desirability.search_implied(None) == (False, None)
+
+    def test_a_cut_title_from_a_numbered_search_is_numbered_and_ranked(self):
+        from src import card_identity
+        from src.models import Listing
+
+        title = "2024 Panini Prizm Caleb Willi…"
+        listing = Listing(
+            id="1", source="ebay-alert", title=title, price=150.0, url="u",
+            player="Caleb Williams", card_type="raw", card_identity=card_identity.extract_card_identity(title),
+            search_query="caleb williams (/99,/50,/25)",
+        )
+        assert desirability.SERIAL_NUMBERED in desirability.attributes_of(listing)
+        assert desirability.print_run_bound(listing) == 99
+
+    def test_a_stated_print_run_beats_the_search_bound(self):
+        from src import card_identity
+        from src.models import Listing
+
+        title = "2024 Panini Prizm Caleb Williams Gold /10 #301"
+        listing = Listing(
+            id="1", source="ebay-alert", title=title, price=150.0, url="u",
+            player="Caleb Williams", card_type="raw", card_identity=card_identity.extract_card_identity(title),
+            search_query="caleb williams (/99,/50,/25)",
+        )
+        assert desirability.print_run_bound(listing) == 10

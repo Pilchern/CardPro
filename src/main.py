@@ -197,6 +197,7 @@ def _build_listing(cfg, *, listing_id, source, title, price, url, players, shipp
         negative_signals=tuple(identity.negative_signals.value or ()),
         matched_players=tuple(matched),
         player_from_search=from_search,
+        search_query=search_query,
     )
 
 
@@ -317,6 +318,25 @@ def fetch_ebay_alert_active(cfg, stats) -> list:
             "%d unreadable-format listing(s) at $%.2f or less treated as opening bids",
             counters.get("recommendations", 0), len(items),
             counters.get("probable_opening_bids", 0), ebay_email_alerts.PROBABLE_OPENING_BID_MAX,
+        )
+
+    capped = counters.get("capped_searches")
+    if capped:
+        worst = sorted(capped.items(), key=lambda kv: -kv[1][0])
+        listed = "; ".join(
+            '"{}" ({:,} new, {} shown)'.format(
+                # The exclusions are the same on every search; the terms
+                # are what tell you which search it is.
+                " ".join(word for word in query.split() if not word.startswith("-")),
+                reported, shown,
+            )
+            for query, (reported, shown) in worst[:5]
+        )
+        more = " and {} more".format(len(worst) - 5) if len(worst) > 5 else ""
+        stats.warn(
+            "{} saved search(es) found more new listings than eBay's alert shows: {}{}. "
+            "CardPro only ever sees what the email shows, so narrow these (add a set, "
+            "grade or print run) or delete them.".format(len(worst), listed, more)
         )
 
     listings = []

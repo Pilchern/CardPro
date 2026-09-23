@@ -522,6 +522,11 @@ def _print_run(deal: Listing) -> Optional[int]:
     return field.value if field is not None else None
 
 
+def _title_says_autograph(deal: Listing) -> bool:
+    identity = deal.card_identity
+    return bool(identity is not None and identity.is_autograph.value)
+
+
 def _tags(deal: Listing) -> list:
     """Attribute tags. Deliberately never combined with each other or with
     a number -- see the module docstring on the forbidden blended score.
@@ -548,6 +553,11 @@ def _tags(deal: Listing) -> list:
         # tag, and it is the one number a collector scans the row for.
         if attribute == desirability.SERIAL_NUMBERED and print_run is not None:
             tag += " /{}".format(print_run)
+        elif attribute == desirability.SERIAL_NUMBERED and desirability.print_run_bound(deal):
+            # eBay cut the number off; the saved search guarantees the ceiling.
+            tag += " /{} OR LESS (PER SEARCH)".format(desirability.print_run_bound(deal))
+        elif attribute == desirability.AUTOGRAPH and not _title_says_autograph(deal):
+            tag += " (PER SEARCH)"
         tags.append(tag)
     return tags
 

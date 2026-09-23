@@ -606,3 +606,18 @@ class TestLowNumberedCeiling:
         low = self._listing("2024 Prizm Caleb Williams Blue Prizm /99 #301", 30.0)
         high = self._listing("2024 Prizm Caleb Williams Blue Prizm /499 #301", 30.0)
         assert desirability.interest_score(low) > desirability.interest_score(high)
+
+
+def test_a_cut_title_from_a_numbered_search_uses_the_numbered_ceiling():
+    from src import card_identity
+
+    title = "2024 Panini Prizm Caleb Willi…"
+    listing = make_listing(price=180.0, comp_match=None, search_query="caleb williams (/99,/50,/25)")
+    listing.title = title
+    listing.card_identity = card_identity.extract_card_identity(title)
+    listing.desirable_attributes = desirability.attributes_of(listing)
+    rules = focus.FocusRules(
+        price_ceiling=40.0, cool_cards_price_ceiling=100.0,
+        numbered_max_print_run=99, numbered_price_ceiling=200.0,
+    )
+    assert focus.omission_reason(listing, rules) is None
