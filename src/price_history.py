@@ -445,6 +445,31 @@ def prune_old(history: dict, max_age_days: int, today: datetime) -> dict:
     return pruned
 
 
+def drop_probable_opening_bids(history: dict, max_price: float) -> tuple[dict, int]:
+    """(history without the rows at or under max_price that were not read as
+    Buy It Now, how many went).
+
+    The corpus was recorded before the parser treated pocket-change prices
+    as opening bids -- see ebay_email_alerts.PROBABLE_OPENING_BID_MAX -- and
+    those rows keep misvaluing their cards for the whole retention window.
+    Run every day rather than once: it is idempotent, costs nothing, and
+    needs no hand edit of a file the scan rewrites and commits daily.
+    """
+    cleaned: dict = {}
+    dropped = 0
+    for key, observations in history.items():
+        kept = [
+            obs for obs in observations
+            if obs.get("listing_type") == "fixed_price"
+            or obs.get("price") is None
+            or obs["price"] > max_price
+        ]
+        dropped += len(observations) - len(kept)
+        if kept:
+            cleaned[key] = kept
+    return cleaned, dropped
+
+
 def deduped_observations(history: dict) -> list[dict]:
     """One observation per unique listing (the latest by date), each tagged
     with its "player" and "card_type" (parsed out of the storage key) -- the

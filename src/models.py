@@ -53,6 +53,11 @@ class Listing:
     # product, break slot, ...) -- see card_identity.NEGATIVE_SIGNAL_LABELS.
     negative_signals: tuple = ()
     matched_players: tuple = ()  # every watchlist player in the title; >1 means a multi-player card
+    # The title did not name the player; the saved search it arrived from did.
+    # eBay cuts a search match's title to ~30 characters, which drops the
+    # surname from most of them. Known player, thin identity: shown, never
+    # recorded as a comp -- see main.record_observations.
+    player_from_search: bool = False
 
     # Why this listing did NOT become a reported opportunity, or why it was
     # downgraded. Exactly one canonical reason from src/reasons.py. Nothing

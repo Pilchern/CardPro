@@ -941,7 +941,7 @@ class TestRunEndToEnd:
                                                                      monkeypatch, tmp_path):
         # If SMTP fails, nothing may be marked as reported-when-it-was-not:
         # the seen file would suppress these listings from tomorrow's email,
-        # and the marker would make the 17:00 backup run skip the day it
+        # and the marker would make the 19:00 backup run skip the day it
         # exists for. Both stay behind the send even though the comp corpus
         # (below) no longer does.
         def explode(*_args, **_kwargs):
@@ -1371,42 +1371,63 @@ class TestAutographsAreNotCompedAgainstBaseCards:
         assert comps.variant_of_observation(row) is None
 
 
-class TestUnreadableBuyingFormatAlarm:
-    """The one place the pipeline fails OPEN.
+class TestBuyingFormatAlarm:
+    """eBay's template never labels Buy It Now, so "unknown" is normal; the
+    thing that would mean a changed template is the bid lines vanishing."""
 
-    record_observations excludes auctions by `listing_type == "auction"`, so
-    a listing whose format could not be read is written into the
-    asking-price corpus -- and if it was an auction, what got written is a
-    current bid, which this project says must never become a comp. One such
-    listing is a known tradeoff; a whole run of them is a changed template.
-    """
+    def _stats(self, auctions, fixed=0, unknown=0):
+        return observability.RunStats(auctions=auctions, fixed_price=fixed, listing_type_unknown=unknown)
 
-    def _run_stats(self, unknown, fixed):
-        stats = observability.RunStats(listing_type_unknown=unknown, fixed_price=fixed)
-        return stats
+    def test_a_normal_run_is_mostly_unknown_and_raises_nothing(self):
+        """The old 40%-unknown alarm fired on this every day."""
+        assert main_module.buying_format_warning(self._stats(auctions=20, unknown=80)) is None
 
-    def test_an_ordinary_rate_raises_nothing(self):
-        stats = self._run_stats(unknown=10, fixed=90)
-        assert stats.unknown_listing_type_rate < main_module.UNKNOWN_LISTING_TYPE_ALARM_PCT
+    def test_no_auctions_in_a_large_run_is_the_alarm(self):
+        warning = main_module.buying_format_warning(self._stats(auctions=0, unknown=80))
+        assert "CURRENT BID" in warning
+        assert "80 listings" in warning
 
-    def test_a_template_change_crosses_the_alarm(self):
-        stats = self._run_stats(unknown=60, fixed=40)
-        assert stats.unknown_listing_type_rate >= main_module.UNKNOWN_LISTING_TYPE_ALARM_PCT
+    def test_a_small_run_with_no_auctions_is_just_a_quiet_day(self):
+        assert main_module.buying_format_warning(self._stats(auctions=0, unknown=10)) is None
 
-    def test_the_warning_names_the_consequence_and_the_retention_window(self):
-        """A metric nobody can act on is a metric nobody reads."""
-        stats = self._run_stats(unknown=60, fixed=40)
-        stats.warn(
-            "{:.0f}% of listings arrived with an unreadable buying format (auction vs "
-            "Buy It Now). Those are recorded as asking prices, so any auction among "
-            "them has put a CURRENT BID into the comp corpus, where it will misvalue "
-            "that card for {} days. Run `python -m scripts.test_ebay_alerts --raw` to "
-            "check whether eBay changed the markup.".format(
-                stats.unknown_listing_type_rate, 180
-            )
+
+class TestPlayerFromSavedSearch:
+    """eBay cuts a search match's title to ~30 characters, which dropped the
+    player's surname from 64 of 79 matches in six real alerts -- and every
+    one of those was discarded as NO_PLAYER_MATCH."""
+
+    PLAYERS = ["Pete Crow-Armstrong", "Caleb Williams", "Caleb Wilson"]
+    CFG = SimpleNamespace(player_tiers={})
+
+    def _build(self, title, search_query):
+        return main_module._build_listing(
+            self.CFG, listing_id="https://www.ebay.com/itm/1", source="ebay-alert", title=title,
+            price=480.0, url="https://www.ebay.com/itm/1", players=self.PLAYERS,
+            search_query=search_query,
         )
-        line = stats.health_lines()[-1]
-        assert "CURRENT BID" in line
-        assert "180 days" in line
-        # Not a breakage warning: the run's other numbers are still sound.
-        assert stats.breakage_warnings == []
+
+    def test_a_cut_off_name_is_recovered_from_the_search(self):
+        listing = self._build("2024 Topps Chrome Pete Crow-A…", "pete crow-armstrong auto -lot")
+        assert listing.player == "Pete Crow-Armstrong"
+        assert listing.player_from_search is True
+
+    def test_the_title_still_wins_when_it_names_the_player(self):
+        listing = self._build("2024 Prizm Caleb Williams Silver #301", "caleb williams psa 10")
+        assert listing.player == "Caleb Williams"
+        assert listing.player_from_search is False
+
+    def test_a_search_naming_two_players_proves_nothing(self):
+        assert self._build("2025 Bowman Chrome Dual Au…", "caleb williams caleb wilson dual") is None
+
+    def test_no_search_no_player_is_still_rejected(self):
+        """A recommendation has no search behind it."""
+        assert self._build("2024 Topps Chrome Pete Crow-A…", None) is None
+
+    def test_it_is_shown_but_never_recorded_as_a_comp(self):
+        """A "psa" search's match whose title lost "PSA" would otherwise land
+        in the RAW bucket at a slab's price."""
+        listing = self._build("2024 Topps Chrome Pete Crow-A…", "pete crow-armstrong psa")
+        listing.listing_type = "fixed_price"
+        history = {}
+        assert main_module.record_observations([listing], history, "2026-09-23") == 0
+        assert history == {}

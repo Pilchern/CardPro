@@ -488,3 +488,26 @@ class TestObservedDates:
 
     def test_an_empty_corpus_has_no_dates(self):
         assert price_history.observed_dates({}) == set()
+
+
+class TestDropProbableOpeningBids:
+    def test_drops_pocket_change_rows_not_read_as_buy_it_now(self):
+        history = {
+            "Caleb Wilson|raw": [
+                {"id": "a", "price": 0.99, "date": "2026-09-01"},
+                {"id": "b", "price": 1.00, "date": "2026-09-01", "listing_type": "unknown"},
+                {"id": "c", "price": 0.99, "date": "2026-09-01", "listing_type": "fixed_price"},
+                {"id": "d", "price": 13.99, "date": "2026-09-01"},
+            ],
+            "Kyle Teel|raw": [{"id": "e", "price": 0.5, "date": "2026-09-01"}],
+        }
+        cleaned, dropped = price_history.drop_probable_opening_bids(history, 1.00)
+        assert dropped == 3
+        assert [obs["id"] for obs in cleaned["Caleb Wilson|raw"]] == ["c", "d"]
+        # An emptied bucket goes entirely rather than lingering as [].
+        assert "Kyle Teel|raw" not in cleaned
+
+    def test_is_idempotent(self):
+        history = {"X|raw": [{"id": "a", "price": 5.0, "date": "2026-09-01"}]}
+        cleaned, dropped = price_history.drop_probable_opening_bids(history, 1.00)
+        assert dropped == 0 and cleaned == history

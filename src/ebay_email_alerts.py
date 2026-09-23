@@ -50,7 +50,7 @@ from datetime import datetime, timedelta, timezone
 from email.message import Message
 from functools import lru_cache
 from typing import Optional
-from urllib.parse import unquote
+from urllib.parse import parse_qs, unquote, urlparse
 
 from bs4 import BeautifulSoup
 
@@ -153,6 +153,40 @@ LISTING_TYPE_UNKNOWN = "unknown"
 
 TRUNCATION_MARKERS = ("…", "...")  # eBay truncates long titles in these emails with an ellipsis
 
+#: Measured against six real alert emails on 2026-09-23: the item photo's alt
+#: text reads "Image of <the same truncated title>". Taken as-is it wins the
+#: longest-title contest and puts two words into every title that no seller
+#: wrote.
+_ALT_TEXT_PREFIX_RE = re.compile(r"^image\s+of\s+", re.IGNORECASE)
+
+#: An item link carrying eBay's recommendation tracking. Every alert has two
+#: blocks: "New day, new search matches" -- what your saved search found --
+#: and "You might also like" -- eBay's picks, which it chose, which need not
+#: satisfy your search's filters, and which are 35% of the listings in the
+#: emails measured. Only the second kind carries _trkparms.
+_RECOMMENDATION_HREF_MARKER = "_trkparms="
+
+#: eBay's own buying-format filters, as they appear in a saved search's URL.
+#: The alert template prints "N bids" under an auction with bids and prints
+#: NOTHING under a Buy It Now or under an auction nobody has bid on yet, so
+#: the email alone cannot tell those last two apart. A saved search filtered
+#: to one format can: everything it matches is that format.
+_SEARCH_FORMAT_FILTERS = (
+    ("LH_BIN", LISTING_TYPE_FIXED),
+    ("LH_Auction", LISTING_TYPE_AUCTION),
+)
+
+#: At or under this, a listing whose format could not be read is treated as
+#: an auction. In the live corpus $0.99 (183 rows) and $1.00 (86) spike far
+#: above their neighbours ($1.04: 2, $1.25: 17) -- that is eBay's default
+#: opening bid, not a price anybody set for the card, and an untouched
+#: auction shows no "bids" line for the parser to find. Five of the nine
+#: listings the engine would have flagged on 2026-09-22 were $0.99/$1.00
+#: rows "93% under market". Calling a $0.99 Buy It Now an auction costs one
+#: slot in the wrong section; calling a $0.99 opening bid a price poisons
+#: the comp corpus for six months. Same asymmetry as _detect_listing_type.
+PROBABLE_OPENING_BID_MAX = 1.00
+
 
 def fetch_alert_messages(
     gmail_address: str,
@@ -250,6 +284,7 @@ def extract_listings_from_html(html: str, counters: Optional[dict] = None) -> li
     which the report states plainly instead of assuming Buy It Now.
     """
     soup = BeautifulSoup(html, "html.parser")
+    search_query, search_format = _saved_search(soup)
     #: item number -> the listing built so far. An email links the same item
     #: more than once (the photo and the title are separate anchors, often in
     #: separate cells), and each anchor sees a different part of the row, so
@@ -268,6 +303,9 @@ def extract_listings_from_html(html: str, counters: Optional[dict] = None) -> li
         shipping_price = _find_nearby(a, _extract_shipping, item_number)
         context = _nearby_text(a, item_number)
         listing_type, bid_count = _detect_listing_type(context)
+        is_recommendation = _RECOMMENDATION_HREF_MARKER in a["href"]
+        if listing_type == LISTING_TYPE_UNKNOWN and search_format and not is_recommendation:
+            listing_type = search_format
 
         found = {
             "title": title,
@@ -279,6 +317,10 @@ def extract_listings_from_html(html: str, counters: Optional[dict] = None) -> li
             "has_best_offer": bool(BEST_OFFER_RE.search(context)),
             "time_left_text": _extract_time_left(context),
             "title_verified": title_verified,
+            "is_recommendation": is_recommendation,
+            # Only for what the search itself found: eBay's recommendations
+            # were never promised to match it.
+            "search_query": None if is_recommendation else search_query,
         }
 
         existing = listings.get(item_number)
@@ -367,6 +409,12 @@ def _merge_listing(existing: dict, found: dict) -> bool:
         existing["listing_type"] = LISTING_TYPE_AUCTION
 
     existing["has_best_offer"] = existing["has_best_offer"] or found["has_best_offer"]
+    # One sighting as a search match is enough: eBay may also recommend an
+    # item your search found, and the search is the stronger claim.
+    existing["is_recommendation"] = existing.get("is_recommendation", False) and found.get(
+        "is_recommendation", False
+    )
+    existing["search_query"] = existing.get("search_query") or found.get("search_query")
     return title_improved
 
 
@@ -476,7 +524,7 @@ def _fullest_title(anchor) -> tuple[str, bool, bool]:
     for candidate in candidates:
         if not candidate:
             continue
-        candidate = " ".join(str(candidate).split())
+        candidate = _ALT_TEXT_PREFIX_RE.sub("", " ".join(str(candidate).split()))
         if len(candidate) <= len(best):
             continue
         # startswith is the common case -- eBay simply cuts the string --
@@ -641,6 +689,42 @@ def _detect_listing_type(text: str):
     return LISTING_TYPE_UNKNOWN, None
 
 
+def _saved_search(soup) -> tuple[Optional[str], Optional[str]]:
+    """(keywords, buying format) of the saved search this alert is for.
+
+    Read off the alert's own "See new results" link, which is eBay's search
+    URL with the search's keywords in _nkw and its filters alongside. The
+    format is None unless the search is filtered to exactly one.
+    """
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        if "/sch/" not in href or "_nkw=" not in href:
+            continue
+        params = parse_qs(urlparse(href).query)
+        keywords = (params.get("_nkw") or [None])[0]
+        formats = {
+            listing_type
+            for param, listing_type in _SEARCH_FORMAT_FILTERS
+            if (params.get(param) or [""])[0] == "1"
+        }
+        return keywords, formats.pop() if len(formats) == 1 else None
+    return None, None
+
+
+def apply_opening_bid_rule(listing: dict) -> bool:
+    """Treat an unreadable-format listing at pocket-change price as an
+    auction -- see PROBABLE_OPENING_BID_MAX. Returns whether it applied."""
+    price = listing.get("price")
+    if (
+        listing.get("listing_type") == LISTING_TYPE_UNKNOWN
+        and price is not None
+        and price <= PROBABLE_OPENING_BID_MAX
+    ):
+        listing["listing_type"] = LISTING_TYPE_AUCTION
+        return True
+    return False
+
+
 def _extract_time_left(text: str) -> Optional[str]:
     """The raw countdown string ("6d 04h") when eBay included one, else None.
     Kept as text on purpose: it's shown to a human for triage, and converting
@@ -799,6 +883,10 @@ def fetch_alert_listings(
     for listing in listings:
         listing.pop("title_verified", None)
         listing.pop("title_recovery_refused", None)
+        if apply_opening_bid_rule(listing) and counters is not None:
+            counters["probable_opening_bids"] = counters.get("probable_opening_bids", 0) + 1
+    if counters is not None:
+        counters["recommendations"] = sum(1 for l in listings if l.get("is_recommendation"))
 
     if messages and not listings:
         # Recorded for the caller, not only logged. This is the single

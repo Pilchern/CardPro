@@ -15,26 +15,29 @@ name: Daily Card Deal Scan
 
 on:
   schedule:
-    # 13:00 UTC ~= 8:00am US Central. Fixed UTC time, so it drifts to
-    # ~7:00am Central during standard time (winter) -- GitHub Actions cron
-    # doesn't follow DST. Adjust the hour below twice a year if you want it
-    # exact, or leave it -- a one-hour drift isn't worth the extra
-    # complexity of a second seasonal schedule.
-    - cron: "0 13 * * *"
+    # 15:00 UTC ~= 10:00am US Central. eBay sends the day's saved-search
+    # alerts in one burst between about 13:55 and 14:25 UTC (measured over
+    # 2026-09-20..23). This ran at 13:00 for its first month, i.e. before
+    # the burst every day, so each morning's report was built from the
+    # PREVIOUS day's alerts -- ~23 hours stale on a market where a
+    # mispriced young-core card is gone in hours. Fixed UTC time, so it
+    # drifts to ~9:00am Central in winter -- GitHub Actions cron doesn't
+    # follow DST, and eBay's send time is what matters, not your clock.
+    - cron: "0 15 * * *"
     # Backup, four hours later. GitHub's scheduled workflows are best-effort:
     # under load they are delayed by hours and sometimes dropped outright,
     # and a dropped run was the one failure nothing here could see -- no
     # email, no failure notification, no red job, just silence that looks
     # exactly like a day you were not looking. This run passes
-    # --skip-if-ran-today, so on the days the 13:00 run worked it exits in
+    # --skip-if-ran-today, so on the days the 15:00 run worked it exits in
     # seconds having done nothing.
-    - cron: "0 17 * * *"
+    - cron: "0 19 * * *"
   workflow_dispatch: {}  # lets you trigger a run manually from the Actions tab
 
 permissions:
   contents: write  # needed to commit updated dedupe/comp-history state back to the repo
 
-# One scan at a time. Without this, a manual dispatch fired while the 13:00
+# One scan at a time. Without this, a manual dispatch fired while the 15:00
 # cron run is in flight gives two jobs checked out at the same commit: the
 # second push is rejected non-fast-forward, and by then the email has already
 # gone out and the day's ~400 observations only exist on a runner that is
@@ -76,14 +79,14 @@ jobs:
           EBAY_CLIENT_ID: ${{ secrets.EBAY_CLIENT_ID }}
           EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
           SCHEDULE: ${{ github.event.schedule }}
-        # The 17:00 backup passes --skip-if-ran-today and exits in seconds
-        # when the 13:00 run already completed. Keyed on WHICH cron fired,
+        # The 19:00 backup passes --skip-if-ran-today and exits in seconds
+        # when the 15:00 run already completed. Keyed on WHICH cron fired,
         # not on the clock: GitHub delays scheduled runs by hours, so a
-        # 13:00 run that starts at 17:30 would skip itself under a
+        # 15:00 run that starts at 19:30 would skip itself under a
         # wall-clock test -- which is the exact failure this exists to fix.
         # A manual dispatch has no schedule and therefore always scans.
         run: |
-          if [ "${SCHEDULE}" = "0 17 * * *" ]; then
+          if [ "${SCHEDULE}" = "0 19 * * *" ]; then
             python -m src.main --skip-if-ran-today
           else
             python -m src.main
