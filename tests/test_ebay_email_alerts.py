@@ -985,3 +985,30 @@ class TestOpeningBidRule:
         assert by_number["222"]["listing_type"] == "auction"
         assert counters["probable_opening_bids"] == 1
         assert counters["recommendations"] == 1
+
+
+class TestCappedSearches:
+    """eBay's alert shows at most 16 of a search's new matches. A search that
+    reports far more is one CardPro can barely see."""
+
+    def _fetch(self, subject, html):
+        msg = MIMEText(html, "html")
+        msg["Subject"] = subject
+        counters = {}
+        with mock.patch.object(ebay_email_alerts, "fetch_alert_messages", return_value=[msg]):
+            ebay_email_alerts.fetch_alert_listings("a", "b", "ebay.com", 2, counters=counters)
+        return counters
+
+    def test_a_search_reporting_more_than_it_shows_is_recorded(self):
+        counters = self._fetch("pete crow-armstrong auto, Trading Card S...: 1,744 matches",
+                               _live_template(_SEARCH))
+        # Two search matches shown; the recommendation does not count.
+        assert counters["capped_searches"] == {"pete crow-armstrong auto": (1744, 2)}
+
+    def test_a_search_showing_everything_is_not(self):
+        counters = self._fetch("pete crow-armstrong auto: 2 matches", _live_template(_SEARCH))
+        assert "capped_searches" not in counters
+
+    def test_a_subject_without_a_count_is_ignored(self):
+        counters = self._fetch("Your eBay order", _live_template(_SEARCH))
+        assert "capped_searches" not in counters

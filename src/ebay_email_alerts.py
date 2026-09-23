@@ -42,6 +42,7 @@ eBay changes their email template later, re-run
 from __future__ import annotations
 
 import email
+import email.header
 import imaplib
 import logging
 import re
@@ -187,6 +188,11 @@ _SEARCH_FORMAT_FILTERS = (
 #: the comp corpus for six months. Same asymmetry as _detect_listing_type.
 PROBABLE_OPENING_BID_MAX = 1.00
 
+#: "caleb williams rookie, Trading Card Sing...: 764 matches". eBay reports
+#: how many new matches a search had and then shows at most 16 of them (six
+#: real alerts, 2026-09-23): a search reporting 1,744 lets CardPro see 1%.
+_SUBJECT_MATCH_COUNT_RE = re.compile(r":\s*([\d,]+)\s+match", re.IGNORECASE)
+
 
 def fetch_alert_messages(
     gmail_address: str,
@@ -247,6 +253,28 @@ def fetch_alert_messages(
 def _imap_date(lookback_days: int) -> str:
     since_dt = datetime.now(timezone.utc) - timedelta(days=lookback_days)
     return since_dt.strftime("%d-%b-%Y")
+
+
+def _note_capped_search(msg: Message, listings: list, counters: dict) -> None:
+    """Record a saved search whose alert showed fewer matches than eBay
+    says it found -- the search is too broad for its alert to be read."""
+    raw_subject = msg.get("Subject") if hasattr(msg, "get") else None
+    if not raw_subject:
+        return
+    subject = str(email.header.make_header(email.header.decode_header(raw_subject)))
+    match = _SUBJECT_MATCH_COUNT_RE.search(subject)
+    if not match:
+        return
+    reported = int(match.group(1).replace(",", ""))
+    shown = sum(1 for listing in listings if not listing.get("is_recommendation"))
+    if reported <= shown:
+        return
+    query = next((l["search_query"] for l in listings if l.get("search_query")), None)
+    name = query or subject[: match.start()].strip()
+    capped = counters.setdefault("capped_searches", {})
+    # One search, several emails in the lookback window: keep the worst day.
+    if reported > capped.get(name, (0, 0))[0]:
+        capped[name] = (reported, shown)
 
 
 def get_html_body(msg: Message) -> Optional[str]:
@@ -851,7 +879,10 @@ def fetch_alert_listings(
         html = get_html_body(msg)
         if not html:
             continue
-        for listing in extract_listings_from_html(html, counters=counters):
+        found = extract_listings_from_html(html, counters=counters)
+        if counters is not None:
+            _note_capped_search(msg, found, counters)
+        for listing in found:
             existing = merged.get(listing["url"])
             if existing is None:
                 merged[listing["url"]] = dict(listing, title_verified=True)

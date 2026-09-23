@@ -58,6 +58,11 @@ class Listing:
     # surname from most of them. Known player, thin identity: shown, never
     # recorded as a comp -- see main.record_observations.
     player_from_search: bool = False
+    # The keywords of the saved search this listing matched, when it was a
+    # search match rather than one of eBay's recommendations. eBay matches a
+    # search against the FULL title, so a positive keyword is evidence about
+    # the part of the title eBay cut off -- see desirability.search_implied.
+    search_query: Optional[str] = None
 
     # Why this listing did NOT become a reported opportunity, or why it was
     # downgraded. Exactly one canonical reason from src/reasons.py. Nothing
