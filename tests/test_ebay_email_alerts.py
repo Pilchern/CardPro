@@ -873,3 +873,115 @@ class TestTitleCountersCountListingsNotSightings(TestCrossEmailDedupe):
         html = self.ROW.format(href="https://www.ebay.com/itm/123456789012", detail="$25.00")
         listing = self._fetch(monkeypatch, html, html)[0]
         assert "title_recovery_refused" not in listing
+
+
+# --------------------------------------------------------------------------
+# The live template, as measured against six real alerts on 2026-09-23:
+# a "new search matches" block whose titles eBay cuts to ~30 characters and
+# whose photo alt reads "Image of <that cut title>", then a "You might also
+# like" block of eBay's own picks (full titles, _trkparms on every link).
+# "N bids" appears under an auction with bids; nothing appears under a Buy It
+# Now. Synthetic, but the same shape -- no real tracking ids.
+# --------------------------------------------------------------------------
+
+def _live_template(search_href):
+    return """
+<html><body>
+<a href="{search}">3 new: pete crow-armstrong auto</a>
+<div class="item_0">
+  <a href="https://www.ebay.com/itm/111111111111?mkevt=1&recoId=111111111111&recoPos=1">
+    <img alt="Image of 2024 Topps Chrome Pete Crow-A…" src="x.jpg"></a>
+  <a href="https://www.ebay.com/itm/111111111111?mkevt=1&recoId=111111111111&recoPos=1">2024 Topps Chrome Pete Crow-A…</a>
+  <p>$480.00</p>
+</div>
+<div class="item_1">
+  <a href="https://www.ebay.com/itm/222222222222?mkevt=1&recoId=222222222222&recoPos=2">2024 Bowman's Best Impact Pla…</a>
+  <p>$0.99</p>
+</div>
+<h2>You might also like</h2>
+<div class="item_0">
+  <a href="https://www.ebay.com/itm/333333333333?_trkparms=algo%3DHOMESPLICE.SIM&mkevt=1&recoId=333333333333">
+    <img alt="Pete Crow-Armstrong 2024 Topps Chrome Refractor Auto /499 RA-PCA" src="y.jpg"></a>
+  <a href="https://www.ebay.com/itm/333333333333?_trkparms=algo%3DHOMESPLICE.SIM&mkevt=1&recoId=333333333333">Pete Crow-Armstrong 2024 Topp...</a>
+  <p>$315.00</p><p>14 bids</p>
+</div>
+</body></html>
+""".format(search=search_href)
+
+
+_SEARCH = "https://www.ebay.com/sch/i.html?_nkw=pete+crow-armstrong+auto&_sacat=212&mkevt=1"
+
+
+def _by_number(listings):
+    return {listing["url"].rsplit("/", 1)[1][:3]: listing for listing in listings}
+
+
+def test_the_image_of_alt_prefix_never_reaches_a_title():
+    listings = _by_number(ebay_email_alerts.extract_listings_from_html(_live_template(_SEARCH)))
+    assert listings["111"]["title"] == "2024 Topps Chrome Pete Crow-A…"
+
+
+def test_search_matches_carry_the_search_and_recommendations_do_not():
+    listings = _by_number(ebay_email_alerts.extract_listings_from_html(_live_template(_SEARCH)))
+    assert listings["111"]["search_query"] == "pete crow-armstrong auto"
+    assert listings["111"]["is_recommendation"] is False
+    assert listings["333"]["search_query"] is None
+    assert listings["333"]["is_recommendation"] is True
+
+
+def test_bid_lines_still_mark_auctions_and_silence_stays_unknown():
+    listings = _by_number(ebay_email_alerts.extract_listings_from_html(_live_template(_SEARCH)))
+    assert listings["333"]["listing_type"] == "auction"
+    assert listings["333"]["bid_count"] == 14
+    assert listings["111"]["listing_type"] == "unknown"
+
+
+def test_a_buy_it_now_only_search_labels_its_matches():
+    """The only way the email can tell a Buy It Now from an unbid auction."""
+    html = _live_template(_SEARCH + "&LH_BIN=1")
+    listings = _by_number(ebay_email_alerts.extract_listings_from_html(html))
+    assert listings["111"]["listing_type"] == "fixed_price"
+    # eBay's picks were never promised to satisfy the search's filters.
+    assert listings["333"]["listing_type"] == "auction"
+
+
+def test_an_auction_only_search_labels_its_matches():
+    html = _live_template(_SEARCH + "&LH_Auction=1")
+    listings = _by_number(ebay_email_alerts.extract_listings_from_html(html))
+    assert listings["111"]["listing_type"] == "auction"
+
+
+def test_a_search_matching_one_email_and_recommended_in_another_is_a_match():
+    found = dict(title="t", listing_type="unknown", has_best_offer=False, title_verified=True,
+                 is_recommendation=False, search_query="pete crow-armstrong auto")
+    existing = dict(found, is_recommendation=True, search_query=None)
+    ebay_email_alerts._merge_listing(existing, found)
+    assert existing["is_recommendation"] is False
+    assert existing["search_query"] == "pete crow-armstrong auto"
+
+
+class TestOpeningBidRule:
+    def test_pocket_change_with_no_format_is_an_auction(self):
+        listing = {"price": 0.99, "listing_type": "unknown"}
+        assert ebay_email_alerts.apply_opening_bid_rule(listing) is True
+        assert listing["listing_type"] == "auction"
+
+    def test_a_known_buy_it_now_keeps_its_format(self):
+        listing = {"price": 0.99, "listing_type": "fixed_price"}
+        assert ebay_email_alerts.apply_opening_bid_rule(listing) is False
+        assert listing["listing_type"] == "fixed_price"
+
+    def test_above_the_line_nothing_changes(self):
+        listing = {"price": 1.25, "listing_type": "unknown"}
+        assert ebay_email_alerts.apply_opening_bid_rule(listing) is False
+        assert listing["listing_type"] == "unknown"
+
+    def test_fetch_applies_it_and_counts_it(self):
+        counters = {}
+        msg = MIMEText(_live_template(_SEARCH), "html")
+        with mock.patch.object(ebay_email_alerts, "fetch_alert_messages", return_value=[msg]):
+            listings = ebay_email_alerts.fetch_alert_listings("a", "b", "ebay.com", 2, counters=counters)
+        by_number = _by_number(listings)
+        assert by_number["222"]["listing_type"] == "auction"
+        assert counters["probable_opening_bids"] == 1
+        assert counters["recommendations"] == 1

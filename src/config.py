@@ -249,6 +249,8 @@ def load_config() -> Config:
                 cool_cards_price_ceiling=float(
                     focus_settings.get("cool_cards_price_ceiling", 100.0)
                 ),
+                numbered_max_print_run=int(focus_settings.get("numbered_max_print_run", 0)),
+                numbered_price_ceiling=float(focus_settings.get("numbered_price_ceiling", 0.0)),
                 # Read from `economics`, not from `focus`: there is one
                 # sales-tax rate and it is a fact about you, not an
                 # editorial setting. Two copies of it would eventually

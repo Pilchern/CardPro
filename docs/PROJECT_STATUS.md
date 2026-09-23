@@ -401,8 +401,8 @@ that would bring it back.
 
 ## 7. Infrastructure
 
-- **Scheduling: GitHub Actions** (`.github/workflows/daily-scan.yml`), 13:00
-  UTC daily, **plus a 17:00 UTC backup** and manual dispatch. The backup
+- **Scheduling: GitHub Actions** (`.github/workflows/daily-scan.yml`), 15:00
+  UTC daily, **plus a 19:00 UTC backup** and manual dispatch. The backup
   passes `--skip-if-ran-today` and exits in seconds on the days the first
   run worked. It exists because GitHub's scheduled workflows are
   best-effort -- under load they are delayed by hours and sometimes dropped
@@ -623,7 +623,7 @@ src/
   sold_comps.py             -- hand-entered sold prices, the only real transaction data
   comp_requests.py          -- which sold comps to go and get, ranked by listings unlocked
   price_history.py          -- self-building comp corpus, one row per listing
-  run_marker.py             -- when the scan last completed; the 17:00 backup reads it
+  run_marker.py             -- when the scan last completed; the 19:00 backup reads it
   ebay_email_alerts.py      -- IMAP fetch, HTML extraction, listing-type detection
   ebay_client.py            -- eBay Browse/Insights client (dormant)
   craigslist_links.py       -- ready-to-click search links

@@ -100,17 +100,30 @@ SIGNAL_TO_REASON = {
     "lot": reasons.Reason.LOT,
 }
 
-#: Above this share of listings with an unreadable buying format, the alarm
-#: fires. It is the one place the pipeline fails OPEN: record_observations
-#: excludes auctions by `listing_type == "auction"`, so a listing whose
-#: format could not be read is written into the asking-price corpus, and if
-#: it was an auction what got written is a current bid -- the one thing this
-#: project says must never become a comp. The parser is deliberately
-#: conservative (no evidence either way yields "unknown"), which is right for
-#: one listing and an alarm across a whole run: at 40% the template has
-#: changed, not the market. Well clear of the ordinary rate, which is the
-#: share of fixed-price rows eBay renders without the words "Buy It Now".
-UNKNOWN_LISTING_TYPE_ALARM_PCT = 40.0
+#: The buying-format canary. eBay's alert template prints "N bids" under an
+#: auction that has bids and prints nothing at all under a Buy It Now -- no
+#: "Buy It Now" label exists in it (six real alerts, 2026-09-23) -- so a high
+#: "unknown" share is the template's normal state, not a symptom. The alarm
+#: that used to fire at 40% unknown therefore fired every single run, which
+#: teaches the reader to skip the warnings block. What a template change
+#: WOULD look like is the bid lines vanishing: in those six alerts roughly a
+#: fifth of listings read as auctions. A run this big with none is broken.
+NO_AUCTIONS_ALARM_MIN_LISTINGS = 50
+
+
+def buying_format_warning(stats) -> Optional[str]:
+    """The warning to raise when no listing in a large run read as an
+    auction, else None. See NO_AUCTIONS_ALARM_MIN_LISTINGS."""
+    total = stats.auctions + stats.fixed_price + stats.listing_type_unknown
+    if total < NO_AUCTIONS_ALARM_MIN_LISTINGS or stats.auctions:
+        return None
+    return (
+        "None of {} listings read as an auction. eBay's alerts print a bid count under "
+        "every auction with bids, so zero means the parser has stopped seeing them -- and "
+        "an auction it cannot see is recorded as an asking price, putting a CURRENT BID "
+        "into the comp corpus. Run `python -m scripts.test_ebay_alerts --raw` to check "
+        "whether eBay changed the markup.".format(total)
+    )
 
 # comps.CompMatch.blocked_reasons -> the canonical rejection reason.
 BLOCKED_TO_REASON = {
@@ -140,10 +153,23 @@ def setup_logging() -> None:
 
 
 def _build_listing(cfg, *, listing_id, source, title, price, url, players, shipping_price=None,
-                   listing_type="unknown", bid_count=None, time_left_text=None, has_best_offer=False):
+                   listing_type="unknown", bid_count=None, time_left_text=None, has_best_offer=False,
+                   search_query=None):
     """One Listing with identity fully extracted. Returns None when no
-    watchlist player is in the title -- the caller records the reason."""
+    watchlist player is in the title or, failing that, in the saved search
+    the listing matched -- the caller records the reason."""
     matched = matcher.match_players(title, players)
+    from_search = False
+    if not matched and search_query:
+        # Measured 2026-09-23 over six real alerts: 64 of 79 search matches
+        # arrived with the player's surname cut off ("Pete Crow-A...") and
+        # were being dropped here, while eBay's recommendations -- full
+        # titles -- all got through. eBay matches a saved search against
+        # the full title, so a search naming exactly one watchlist player is
+        # as good as the name. Two players in one search proves nothing.
+        by_search = matcher.match_players(search_query, players)
+        if len(by_search) == 1:
+            matched, from_search = by_search, True
     if not matched:
         return None
 
@@ -170,6 +196,7 @@ def _build_listing(cfg, *, listing_id, source, title, price, url, players, shipp
         has_best_offer=has_best_offer,
         negative_signals=tuple(identity.negative_signals.value or ()),
         matched_players=tuple(matched),
+        player_from_search=from_search,
     )
 
 
@@ -284,6 +311,14 @@ def fetch_ebay_alert_active(cfg, stats) -> list:
             broken=True,
         )
 
+    if counters.get("recommendations") or counters.get("probable_opening_bids"):
+        logger.info(
+            "Alert listings: %d of %d were eBay recommendations rather than search matches; "
+            "%d unreadable-format listing(s) at $%.2f or less treated as opening bids",
+            counters.get("recommendations", 0), len(items),
+            counters.get("probable_opening_bids", 0), ebay_email_alerts.PROBABLE_OPENING_BID_MAX,
+        )
+
     listings = []
     for item in items:
         listing = _build_listing(
@@ -299,6 +334,7 @@ def fetch_ebay_alert_active(cfg, stats) -> list:
             bid_count=item.get("bid_count"),
             time_left_text=item.get("time_left_text"),
             has_best_offer=bool(item.get("has_best_offer")),
+            search_query=item.get("search_query"),
         )
         if listing is None:
             stats.rejections.record(reasons.Reason.NO_PLAYER_MATCH)
@@ -419,6 +455,12 @@ def record_observations(listings, history, today_str: str) -> int:
     recorded = 0
     for listing in listings:
         if listing.price is None or listing.is_auction:
+            continue
+        if listing.player_from_search:
+            # Thirty characters of title with the player's name cut off: the
+            # grade, set and parallel are mostly unreadable, and a "psa"
+            # search's match whose title lost "PSA" would be written into the
+            # RAW bucket at a slab's price. Shown in the report, never a comp.
             continue
         if listing.title_truncated and listing.grade is not None:
             # A grade read off a truncated title is probably wrong, and a
@@ -975,6 +1017,11 @@ def run(args: argparse.Namespace) -> None:
         recorded = record_observations(listings, history, today_str)
         logger.info("Recorded %d asking-price observation(s) (auctions and blocked listings excluded)", recorded)
         history = price_history.prune_old(history, cfg.ebay_alert_price_history_max_age_days, today)
+        history, opening_bids = price_history.drop_probable_opening_bids(
+            history, ebay_email_alerts.PROBABLE_OPENING_BID_MAX
+        )
+        if opening_bids:
+            logger.info("Dropped %d stored row(s) that were probably opening bids", opening_bids)
         # Read before this run records anything, so today is not counted as
         # one of the days that went unreported. See observed_dates: a gap in
         # the run marker means "no email went out", which is not the same as
@@ -1028,21 +1075,12 @@ def run(args: argparse.Namespace) -> None:
 
     evaluate_listings(listings, engine, cfg, stats)
 
-    unknown_type_pct = stats.unknown_listing_type_rate
-    if unknown_type_pct is not None and unknown_type_pct >= UNKNOWN_LISTING_TYPE_ALARM_PCT:
-        # See UNKNOWN_LISTING_TYPE_ALARM_PCT. Not marked broken=True: the
-        # run's other numbers are still sound, and an auction read as
-        # fixed-price is a corpus problem that shows up over weeks rather
-        # than a report that is wrong this morning.
-        stats.warn(
-            "{:.0f}% of listings arrived with an unreadable buying format (auction vs "
-            "Buy It Now). Those are recorded as asking prices, so any auction among "
-            "them has put a CURRENT BID into the comp corpus, where it will misvalue "
-            "that card for {} days. Run `python -m scripts.test_ebay_alerts --raw` to "
-            "check whether eBay changed the markup.".format(
-                unknown_type_pct, cfg.ebay_alert_price_history_max_age_days
-            )
-        )
+    format_warning = buying_format_warning(stats)
+    if format_warning:
+        # Not marked broken=True: the run's other numbers are still sound,
+        # and an auction read as fixed-price is a corpus problem that shows
+        # up over weeks rather than a report that is wrong this morning.
+        stats.warn(format_warning)
 
     seen = dedupe.load_seen(cfg.seen_listings_path)
     listings = apply_dedupe(listings, seen, today_str, stats)
@@ -1111,7 +1149,7 @@ def run(args: argparse.Namespace) -> None:
     dedupe.save_seen(cfg.seen_listings_path, seen)
     # Last, and only on the path where the email actually went out -- also
     # not to be merged with the corpus save above. The marker's one job is to
-    # answer "did today's scan complete", and the 17:00 backup run keys off
+    # answer "did today's scan complete", and the 19:00 backup run keys off
     # it via --skip-if-ran-today. Writing it before the send would let a
     # failed send record a run that never reached anybody, and the backup run
     # would then skip the one day it exists for.
