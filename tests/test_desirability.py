@@ -190,7 +190,7 @@ class TestSearchImplied:
         listing = Listing(
             id="1", source="ebay-alert", title=title, price=150.0, url="u",
             player="Caleb Williams", card_type="raw", card_identity=card_identity.extract_card_identity(title),
-            search_query="caleb williams (/99,/50,/25)",
+            search_query="caleb williams (/99,/50,/25)", title_truncated=True,
         )
         assert desirability.SERIAL_NUMBERED in desirability.attributes_of(listing)
         assert desirability.print_run_bound(listing) == 99
@@ -206,3 +206,33 @@ class TestSearchImplied:
             search_query="caleb williams (/99,/50,/25)",
         )
         assert desirability.print_run_bound(listing) == 10
+
+
+    def test_a_full_title_overrides_the_search(self):
+        """eBay matches "/99" as the number 99: a real "caleb williams /99"
+        page was 8% card #99. A full title is proof; the search is not."""
+        from src import card_identity
+        from src.models import Listing
+
+        title = "2025 Donruss Elite #99 Caleb Williams Chicago Bears"
+        listing = Listing(
+            id="1", source="ebay-alert", title=title, price=5.0, url="u",
+            player="Caleb Williams", card_type="raw",
+            card_identity=card_identity.extract_card_identity(title),
+            search_query="caleb williams /99", title_truncated=False,
+        )
+        assert desirability.print_run_bound(listing) is None
+        assert desirability.SERIAL_NUMBERED not in desirability.attributes_of(listing)
+
+    def test_a_full_title_auto_search_match_without_auto_is_not_an_auto(self):
+        from src import card_identity
+        from src.models import Listing
+
+        title = "2024 Topps Chrome Pete Crow-Armstrong #16 Refractor"
+        listing = Listing(
+            id="1", source="ebay-alert", title=title, price=5.0, url="u",
+            player="Pete Crow-Armstrong", card_type="raw",
+            card_identity=card_identity.extract_card_identity(title),
+            search_query="pete crow-armstrong auto",
+        )
+        assert desirability.AUTOGRAPH not in desirability.attributes_of(listing)

@@ -554,10 +554,11 @@ def _tags(deal: Listing) -> list:
         if attribute == desirability.SERIAL_NUMBERED and print_run is not None:
             tag += " /{}".format(print_run)
         elif attribute == desirability.SERIAL_NUMBERED and desirability.print_run_bound(deal):
-            # eBay cut the number off; the saved search guarantees the ceiling.
-            tag += " /{} OR LESS (PER SEARCH)".format(desirability.print_run_bound(deal))
+            # eBay cut the number off; the saved search makes it likely, not
+            # certain -- see desirability._search_evidence.
+            tag += " /{} OR LESS? (PER SEARCH)".format(desirability.print_run_bound(deal))
         elif attribute == desirability.AUTOGRAPH and not _title_says_autograph(deal):
-            tag += " (PER SEARCH)"
+            tag += "? (PER SEARCH)"
         tags.append(tag)
     return tags
 

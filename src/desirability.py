@@ -111,14 +111,29 @@ def search_implied(query: Optional[str]) -> tuple[bool, Optional[int]]:
     return autograph, (min(runs) if runs else None)
 
 
+def _search_evidence(listing) -> tuple[bool, Optional[int]]:
+    """search_implied, but only where the title cannot speak for itself.
+
+    eBay matches "/99" as the bare number 99, not as a print run. Measured
+    on a real "caleb williams /99" results page (229 listings, 2026-09-23):
+    80% numbered /99 or less, 8% card #99 (Donruss Elite), 5% "99/199" or
+    "/999", 7% no 99 in the title at all. So the search is strong evidence
+    and not proof. A full title is proof either way and wins outright; the
+    search is only consulted when eBay cut the title and the proof is gone.
+    """
+    if not getattr(listing, "title_truncated", False):
+        return False, None
+    return search_implied(getattr(listing, "search_query", None))
+
+
 def print_run_bound(listing) -> Optional[int]:
-    """The print run the title states, else the most the saved search
-    guarantees it can be, else None."""
+    """The print run the title states, else -- for a cut title only -- the
+    most its saved search says it probably is, else None."""
     identity = getattr(listing, "card_identity", None)
     stated = _print_run(identity) if identity is not None else None
     if stated is not None:
         return stated
-    return search_implied(getattr(listing, "search_query", None))[1]
+    return _search_evidence(listing)[1]
 
 
 def attributes_of(listing) -> tuple:
@@ -159,7 +174,7 @@ def attributes_of(listing) -> tuple:
         if identity.parallel.value is not None:
             found.append(PARALLEL)
 
-    search_auto, search_run = search_implied(getattr(listing, "search_query", None))
+    search_auto, search_run = _search_evidence(listing)
     if search_auto and AUTOGRAPH not in found:
         found.append(AUTOGRAPH)
     if search_run is not None and SERIAL_NUMBERED not in found:
