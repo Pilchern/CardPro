@@ -829,7 +829,7 @@ One-time setup:
    secret form, which is write-only (nobody, including repo admins, can
    read a secret's value back afterward).
 2. That's it -- the workflow is already in the repo. It runs daily at
-   15:00 UTC (~10am US Central, after eBay's ~14:00 UTC alert burst; drifts to ~9am in winter since
+   14:30 UTC, just after eBay's ~14:00 UTC alert burst (GitHub usually starts it 2-4 hours late; drifts an hour in winter since
    GitHub Actions cron doesn't follow DST -- not worth a second seasonal
    schedule to fix a one-hour drift).
 3. To trigger a run immediately instead of waiting for the schedule: repo
@@ -844,7 +844,7 @@ is a trade worth making, and a failure there means no report today and a red
 job you get told about.
 
 The job also has a `concurrency` group and a 15-minute timeout. The group
-stops a manual dispatch racing the 15:00 cron run: two jobs checked out at
+stops a manual dispatch racing the 14:30 cron run: two jobs checked out at
 the same commit means the second push is rejected, and by then the email has
 gone out and the day's observations exist only on a runner about to be
 deleted. `cancel-in-progress` stays `false` -- killing a run mid-flight is
