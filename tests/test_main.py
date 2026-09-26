@@ -941,7 +941,7 @@ class TestRunEndToEnd:
                                                                      monkeypatch, tmp_path):
         # If SMTP fails, nothing may be marked as reported-when-it-was-not:
         # the seen file would suppress these listings from tomorrow's email,
-        # and the marker would make the 19:00 backup run skip the day it
+        # and the marker would make the 18:30 backup run skip the day it
         # exists for. Both stay behind the send even though the comp corpus
         # (below) no longer does.
         def explode(*_args, **_kwargs):
