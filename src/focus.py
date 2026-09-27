@@ -123,6 +123,13 @@ class FocusRules:
     numbered_max_print_run: int = 0
     numbered_price_ceiling: float = 0.0
 
+    #: The most you will spend on one card, full stop. Every other ceiling
+    #: here is an opinion with an escape hatch -- an exceptional discount,
+    #: something scarce, a low print run -- and each hatch let dearer cards
+    #: through. This one has none: above it a card never reaches the email.
+    #: Only a target you priced yourself is exempt. 0 = no cap.
+    max_price: float = 0.0
+
 
 #: Focus disabled: every listing kept, no cap. The default for
 #: ``report.build_report`` so that callers written before focus existed --
@@ -229,6 +236,8 @@ def omission_reason(listing, rules: FocusRules) -> Optional[str]:
     if not _has_bidding_room(listing, rules):
         return NO_BIDDING_ROOM
     price = _price(listing, rules)
+    if price is not None and rules.max_price > 0 and price > rules.max_price:
+        return ABOVE_CEILING
     if price is None:
         # No price means no way to tell whether it is the kind of card you
         # shop for, and no valuation behind it either. It is counted, not
