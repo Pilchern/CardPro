@@ -2410,9 +2410,12 @@ def _focus_line(rules) -> str:
     if rules.max_listings > 0:
         parts.append("top {} listings".format(rules.max_listings))
     line = ", ".join(parts)
-    line += ". Anything dearer needed {:.0f}%+ off and {}+ saved to get in.".format(
-        rules.exceptional_min_discount_pct, _money(rules.exceptional_min_savings_dollars)
-    )
+    if rules.max_price > 0:
+        line += ". Nothing over {}, whatever the discount.".format(_money(rules.max_price))
+    else:
+        line += ". Anything dearer needed {:.0f}%+ off and {}+ saved to get in.".format(
+            rules.exceptional_min_discount_pct, _money(rules.exceptional_min_savings_dollars)
+        )
     return textwrap.fill(line, width=_WRAP_WIDTH)
 
 

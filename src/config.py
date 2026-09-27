@@ -251,6 +251,7 @@ def load_config() -> Config:
                 ),
                 numbered_max_print_run=int(focus_settings.get("numbered_max_print_run", 0)),
                 numbered_price_ceiling=float(focus_settings.get("numbered_price_ceiling", 0.0)),
+                max_price=float(focus_settings.get("max_price", 0.0)),
                 # Read from `economics`, not from `focus`: there is one
                 # sales-tax rate and it is a fact about you, not an
                 # editorial setting. Two copies of it would eventually

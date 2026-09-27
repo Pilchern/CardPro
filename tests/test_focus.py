@@ -621,3 +621,40 @@ def test_a_cut_title_from_a_numbered_search_uses_the_numbered_ceiling():
         numbered_max_print_run=99, numbered_price_ceiling=200.0,
     )
     assert focus.omission_reason(listing, rules) is None
+
+
+class TestMaxPrice:
+    """The owner's hard budget: every other ceiling has an escape hatch."""
+
+    RULES = focus.FocusRules(
+        price_ceiling=50.0, cool_cards_price_ceiling=50.0,
+        exceptional_min_discount_pct=50.0, exceptional_min_savings_dollars=100.0,
+        numbered_max_print_run=99, numbered_price_ceiling=200.0, max_price=50.0,
+    )
+
+    def test_an_exceptional_deal_over_the_cap_is_still_out(self):
+        listing = make_listing(price=120.0, pct_under_market=70.0, dollar_savings=280.0)
+        assert focus.is_exceptional(listing, self.RULES)
+        assert focus.omission_reason(listing, self.RULES) == focus.ABOVE_CEILING
+
+    def test_a_low_numbered_card_over_the_cap_is_still_out(self):
+        from src import card_identity
+
+        title = "2024 Prizm Caleb Williams Gold Prizm /10 #301"
+        listing = make_listing(price=150.0, comp_match=None)
+        listing.title = title
+        listing.card_identity = card_identity.extract_card_identity(title)
+        assert focus.omission_reason(listing, self.RULES) == focus.ABOVE_CEILING
+
+    def test_at_the_cap_is_in(self):
+        assert focus.omission_reason(make_listing(price=50.0), self.RULES) is None
+
+    def test_a_target_you_priced_yourself_is_exempt(self):
+        listing = make_listing(price=120.0, target_hit=object())
+        assert focus.omission_reason(listing, self.RULES) is None
+
+    def test_zero_means_no_cap(self):
+        rules = focus.FocusRules(price_ceiling=40.0, exceptional_min_discount_pct=50.0,
+                                 exceptional_min_savings_dollars=100.0)
+        listing = make_listing(price=120.0, pct_under_market=70.0, dollar_savings=280.0)
+        assert focus.omission_reason(listing, rules) is None

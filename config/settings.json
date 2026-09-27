@@ -66,16 +66,18 @@
   "focus": {
     "_comment": "What reaches the email, and how long it may be. Separate from the deal gate on purpose: the gate decides whether a card is underpriced, this decides whether it is what you shop for. price_ceiling is the cheap end you actually buy and bid at; a dearer card is not called bad, it just has to be exceptional (exceptional_min_discount_pct AND exceptional_min_savings_dollars, off a flag-eligible comp) to take a slot from the cheap ones. Cards on your target list ignore BOTH price rules -- the ceiling and the bidding-room rule -- because you named those cards and set their price yourself, and a target buy_zone normally sits well above the resale-margin ceiling max_rational_bid computes. Never seeing the card you asked for is an invisible failure; a slightly longer email is a visible one. The length cap still applies to targets. require_auction_bidding_room drops auctions already bid past your max rational bid: you cannot win those at a price that works, and they cost the same space as a live one (auctions with no market value have no ceiling to be past, so they stay). max_listings caps the whole email; max_per_section is the first-pass share each section gets before the leftovers are handed out, which is what stops a 40-opportunity morning from printing zero auctions. Nothing dropped here is dropped silently -- the counts and the setting that would bring each group back are printed in the report footer. cool_cards_price_ceiling is a HIGHER ceiling that applies only to cards with something genuinely scarce about them -- a signature or a patch or a serial number -- because \"is this the cheap end I shop at\" and \"is this a card worth looking at\" are different questions and a $60 auto fails the first while passing the second. Set enabled=false for the old everything-every-day report. price_ceiling is measured against what LEAVES YOUR ACCOUNT -- item price plus known shipping plus the economics.sales_tax_pct rate below -- so it means the same thing as the cost the deal gate and the profit figures are computed from. At the shipped sales_tax_pct of 0.0 that changes nothing; set a real rate and the ceiling follows it.",
     "enabled": true,
-    "price_ceiling": 40.0,
+    "price_ceiling": 50.0,
     "exceptional_min_discount_pct": 50,
     "exceptional_min_savings_dollars": 100,
     "require_auction_bidding_room": true,
     "max_listings": 40,
     "max_per_section": 10,
-    "cool_cards_price_ceiling": 100.0,
+    "cool_cards_price_ceiling": 50.0,
     "_numbered_comment": "Cards numbered at or under numbered_max_print_run and costing at or under numbered_price_ceiling (item + shipping + tax) always reach the email, whatever price_ceiling says. You collect /99-or-less; in the corpus those ask a median $100, so the $40 ceiling alone hid three quarters of them. $200 covers about two thirds. Set numbered_max_print_run to 0 to switch off.",
     "numbered_max_print_run": 99,
-    "numbered_price_ceiling": 200.0
+    "numbered_price_ceiling": 50.0,
+    "_max_price_comment": "Hard cap: nothing above this (item + shipping + tax) reaches the email, whatever discount, scarcity or print run it has. Set 2026-09-27: the owner buys at $50 or less per card and is hunting cheap sleepers. The ceilings above now equal it, so they only matter if you raise this. 0 = no cap.",
+    "max_price": 50.0
   },
   "cheap_cards": {
     "_comment": "Rules that apply only below price_ceiling. Cheap cards need their own gate because 48% of everything CardPro observes is under $10 and most of it is commodity -- base veterans, junk-wax commons, team cards. A 60%-off base common is still a base common. So a cheap card must clear a HIGHER percentage bar (min_discount_pct) and, if require_desirable_attribute is on, must actually have something that makes a copy scarce: rookie, autograph, patch/relic, serial numbering, a non-base parallel, or a grade. Anything cheap with none of those is rejected as common_card and counted in the report footer, not silently dropped. Set enabled=false to apply the ordinary rules at every price.",
