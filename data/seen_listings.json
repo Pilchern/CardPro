@@ -213,5 +213,10 @@
     "first_seen": "2026-09-13",
     "last_flagged": "2026-09-13",
     "price": 1.0
+  },
+  "https://www.ebay.com/itm/820186639579": {
+    "first_seen": "2026-09-30",
+    "last_flagged": "2026-09-30",
+    "price": 19.99
   }
 }
