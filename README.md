@@ -95,7 +95,7 @@ more than one that says "95% under market" about a common.
 6. Drops anything already emailed in a prior run, unless its price has
    dropped further.
 7. Applies your **focus**: the email is built around the cheap end you
-   actually buy and bid at (cards at or under `$40` by default, plus
+   actually buy and bid at (cards at or under `$50` by default, plus
    anything genuinely exceptional above it), auctions already bid past your
    max rational bid are dropped, and the whole thing is capped at a
    readable number of listings. Everything it leaves out is counted in the
