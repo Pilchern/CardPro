@@ -277,7 +277,7 @@ eBay saved-search alert email
                     that makes a copy scarce -- otherwise rejected as common_card
   → dedupe: new listings and genuine price drops only
   → focus: the email is the cheap end you actually bid at -- cards at or under
-      $40 all-in, plus anything exceptional above it (50%+ AND $100+ AND a
+      $50 all-in, plus anything exceptional above it (50%+ AND $100+ AND a
       flag-eligible comp); auctions already bid past your max rational bid are
       dropped; the rest is capped at 40 listings, 10 per section. Removes only,
       re-values nothing, and every group it removed is counted in the footer
