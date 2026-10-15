@@ -39,6 +39,9 @@ class Config:
     ebay_active_listing_limit: int
     ebay_sold_lookback_days: int
     ebay_min_comps_required: int
+    ebay_newest_pages_per_player: int  # pages of newest listings walked per player
+    ebay_auction_pages_per_player: int  # pages of soonest-ending auctions per player; 0 = none
+    ebay_marketplace_insights_enabled: bool  # sold-price API; off until eBay grants access
 
     craigslist_site: str
     craigslist_category: str
@@ -177,6 +180,9 @@ def load_config() -> Config:
         ebay_active_listing_limit=int(settings["ebay"]["active_listing_limit_per_player"]),
         ebay_sold_lookback_days=int(settings["ebay"]["sold_lookback_days"]),
         ebay_min_comps_required=int(settings["ebay"]["min_comps_required"]),
+        ebay_newest_pages_per_player=int(settings["ebay"].get("newest_pages_per_player", 1)),
+        ebay_auction_pages_per_player=int(settings["ebay"].get("auction_pages_per_player", 0)),
+        ebay_marketplace_insights_enabled=bool(settings["ebay"].get("marketplace_insights_enabled", False)),
         craigslist_site=settings["craigslist"]["site"],
         craigslist_category=settings["craigslist"]["category"],
         ebay_alerts_enabled=bool(settings["ebay_alerts"]["enabled"]),

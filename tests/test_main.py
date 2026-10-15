@@ -65,7 +65,7 @@ SETTINGS = {
 }
 
 
-def _make_project(tmp_path, monkeypatch, *, alerts_enabled: bool):
+def _make_project(tmp_path, monkeypatch, *, alerts_enabled: bool, api_enabled=None):
     settings = json.loads(json.dumps(SETTINGS))
     settings["ebay_alerts"]["enabled"] = alerts_enabled
 
@@ -73,7 +73,9 @@ def _make_project(tmp_path, monkeypatch, *, alerts_enabled: bool):
     (tmp_path / "config" / "watchlist.json").write_text(json.dumps({"players": ["Caleb Williams"]}))
     (tmp_path / "config" / "settings.json").write_text(json.dumps(settings))
 
-    if alerts_enabled:
+    if api_enabled is None:
+        api_enabled = not alerts_enabled
+    if not api_enabled:
         monkeypatch.delenv("EBAY_CLIENT_ID", raising=False)
         monkeypatch.delenv("EBAY_CLIENT_SECRET", raising=False)
     else:
@@ -107,22 +109,30 @@ def project_with_alerts_enabled(tmp_path, monkeypatch):
     return _make_project(tmp_path, monkeypatch, alerts_enabled=True)
 
 
-def fake_active(query, token, category_id, marketplace_id, limit=50):
+@pytest.fixture
+def project_with_both_sources(tmp_path, monkeypatch):
+    """Credentials AND alerts -> run() reads both and merges them."""
+    return _make_project(tmp_path, monkeypatch, alerts_enabled=True, api_enabled=True)
+
+
+def fake_active(query, token, category_id, marketplace_id, limit=50, **_search):
     if "Caleb Williams" not in query:
         return []
     return [
         {
-            "itemId": "e1",
+            "itemId": "v1|111111111111|0",
+            "legacyItemId": "111111111111",
             "title": IDENTIFIED_TITLE,
             "price": {"value": "200"},
-            "itemWebUrl": "http://ebay/e1",
+            "itemWebUrl": "https://www.ebay.com/itm/111111111111?hash=x",
             "buyingOptions": ["FIXED_PRICE"],
         },
         {
-            "itemId": "e2",
+            "itemId": "v1|222222222222|0",
+            "legacyItemId": "222222222222",
             "title": "2024 Panini Prizm Caleb Williams Silver #301 PSA 10 REPRINT",
             "price": {"value": "10"},
-            "itemWebUrl": "http://ebay/e2",
+            "itemWebUrl": "https://www.ebay.com/itm/222222222222",
             "buyingOptions": ["FIXED_PRICE"],
         },
     ]
@@ -625,40 +635,171 @@ class TestApplyDedupe:
         assert stats.duplicates_suppressed == 0
 
 
-class TestListingsAsObservations:
-    """The eBay API path has no persisted corpus, so today's active listings
-    become asking-basis observations. Same exclusions as the alerts path."""
+class TestBrowseFields:
+    """Browse API item dicts -> the fields the alert path already fills, so
+    the report reads both sources one way."""
 
-    def test_fixed_price_listings_become_asking_basis_observations(self):
-        listing = make_listing(EXACT_TITLE, 240.0, listing_id="F1", listing_type="fixed_price")
-        obs = main_module.listings_as_observations([listing], "2026-08-22")
-        assert len(obs) == 1
-        assert obs[0]["basis"] == comps.BASIS_ASKING
-        assert obs[0]["id"] == "F1"
-        assert obs[0]["grade"] == "10"
+    def test_an_auction_is_priced_at_its_current_bid(self):
+        item = {"buyingOptions": ["AUCTION"], "currentBidPrice": {"value": "3.50"}}
+        assert ebay_client.extract_listing_price(item) == 3.5
 
-    def test_auctions_are_excluded(self):
-        auction = make_listing(EXACT_TITLE, 40.0, listing_id="A1", listing_type="auction", bid_count=4)
-        assert main_module.listings_as_observations([auction], "2026-08-22") == []
+    def test_fixed_price_reads_price(self):
+        item = {"buyingOptions": ["FIXED_PRICE"], "price": {"value": "20"}}
+        assert ebay_client.extract_listing_price(item) == 20.0
 
-    def test_blocked_listings_are_excluded(self):
-        reprint = make_listing("2024 Panini Prizm Caleb Williams Silver #301 REPRINT", 12.0)
-        assert main_module.listings_as_observations([reprint], "2026-08-22") == []
+    def test_shipping_takes_the_cheapest_stated_cost(self):
+        item = {"shippingOptions": [{"shippingCost": {"value": "4.99"}}, {"shippingCost": {"value": "1.25"}}]}
+        assert ebay_client.extract_shipping(item) == 1.25
 
-    def test_sold_observations_take_priority_but_asking_still_counts(self):
-        # A bucket mixing both is reported as asking-basis, which caps its
-        # confidence -- honest, not a loss.
-        sold = [dict(observation(400.0, "s%d" % i), basis=comps.BASIS_SOLD) for i in range(3)]
-        asking = main_module.listings_as_observations(
-            [make_listing(EXACT_TITLE, 500.0, listing_id="a1", listing_type="fixed_price")], "2026-08-22"
+    def test_calculated_shipping_is_unknown_not_free(self):
+        assert ebay_client.extract_shipping({"shippingOptions": [{"shippingCostType": "CALCULATED"}]}) is None
+        assert ebay_client.extract_shipping({}) is None
+
+    def test_time_left_uses_the_alert_email_format(self):
+        now = datetime(2026, 10, 15, 12, 0, tzinfo=timezone.utc)
+        def left(end):
+            return ebay_client.time_left_text({"itemEndDate": end}, now)
+        assert left("2026-10-17T16:30:00.000Z") == "2d 04h"
+        assert left("2026-10-15T15:12:00.000Z") == "3h 12m"
+        assert left("2026-10-15T12:45:00.000Z") == "45m"
+        assert left("2026-10-15T11:00:00.000Z") is None  # already ended
+        assert left("garbage") is None
+        assert ebay_client.time_left_text({}, now) is None
+
+
+class TestBrowsePaging:
+    def _fake_get(self, pages, calls):
+        class Resp:
+            status_code = 200
+            def __init__(self, payload):
+                self._payload = payload
+                self.text = ""
+            def json(self):
+                return self._payload
+        def get(url, headers=None, params=None, timeout=None):
+            calls.append(dict(params))
+            index = int(params["offset"]) // int(params["limit"])
+            return Resp(pages[index])
+        return get
+
+    def test_walks_pages_until_max_pages_and_passes_sort(self, monkeypatch):
+        calls = []
+        pages = [
+            {"itemSummaries": [{"itemId": "a"}], "next": "more"},
+            {"itemSummaries": [{"itemId": "b"}], "next": "more"},
+            {"itemSummaries": [{"itemId": "c"}]},
+        ]
+        monkeypatch.setattr(ebay_client.requests, "get", self._fake_get(pages, calls))
+        items = ebay_client.search_active_listings(
+            "Caleb Williams", "t", "261328", "EBAY_US", limit=200, sort="newlyListed", max_pages=2,
         )
-        engine = engine_for(sold + asking)
-        match = engine.lookup(
-            player="Caleb Williams", card_type="graded", price=200.0, grader="PSA", grade="10",
-            year=2024, set_name="Prizm", parallel="Silver", card_number="301",
+        assert [i["itemId"] for i in items] == ["a", "b"]
+        assert [c["offset"] for c in calls] == ["0", "200"]
+        assert all(c["sort"] == "newlyListed" for c in calls)
+
+    def test_stops_when_ebay_says_there_is_no_next_page(self, monkeypatch):
+        calls = []
+        pages = [{"itemSummaries": [{"itemId": "a"}]}]
+        monkeypatch.setattr(ebay_client.requests, "get", self._fake_get(pages, calls))
+        items = ebay_client.search_active_listings(
+            "x", "t", "261328", "EBAY_US", limit=200, buying_options=("AUCTION",), max_pages=5,
         )
-        assert match.stats.basis == comps.BASIS_ASKING
-        assert match.confidence != "high"
+        assert len(items) == 1 and len(calls) == 1
+        assert calls[0]["filter"] == "buyingOptions:{AUCTION}"
+        assert "sort" not in calls[0]
+
+
+class TestCorpusSizeWarning:
+    def test_quiet_below_the_threshold_and_when_missing(self, tmp_path):
+        small = tmp_path / "c.json"
+        small.write_text("{}")
+        assert main_module.corpus_size_warning(small) is None
+        assert main_module.corpus_size_warning(tmp_path / "missing.json") is None
+
+    def test_warns_before_github_refuses_the_push(self, tmp_path, monkeypatch):
+        big = tmp_path / "c.json"
+        big.write_text("{}")
+        monkeypatch.setattr(main_module, "CORPUS_WARN_MB", 0)
+        assert "100MB" in main_module.corpus_size_warning(big)
+
+
+class TestBothSources:
+    """The API used to replace the alert path outright -- and with it the
+    comp corpus, which only the alert path read or wrote."""
+
+    def test_the_api_id_is_the_same_canonical_url_the_alerts_use(self, project):
+        item = {"itemId": "v1|336749665825|0", "legacyItemId": "336749665825",
+                "itemWebUrl": "https://www.ebay.com/itm/336749665825?hash=abc"}
+        assert project._browse_listing_id(item) == "https://www.ebay.com/itm/336749665825"
+
+    def test_an_item_both_sources_saw_keeps_the_api_copy(self):
+        api = make_listing(EXACT_TITLE, 200.0, listing_id="https://www.ebay.com/itm/1",
+                           source="ebay", listing_type="fixed_price")
+        alert_same = make_listing("2024 Panini Prizm Caleb Williams Silver #301 PSA 1...", 200.0,
+                                  listing_id="https://www.ebay.com/itm/1")
+        alert_only = make_listing(EXACT_TITLE, 150.0, listing_id="https://www.ebay.com/itm/2")
+        merged, summary = main_module.merge_sources([api], [alert_same, alert_only])
+        assert merged == [api, alert_only]
+        assert "1 from the eBay API, 2 from alert emails, 1 in both" in summary
+
+    def test_one_item_from_both_passes_is_one_listing(self, project, monkeypatch):
+        from src import config as config_module
+        cfg = config_module.load_config()
+        cfg.ebay_auction_pages_per_player = 1
+        monkeypatch.setattr(project.ebay_client, "search_active_listings", fake_active)
+        stats = observability.RunStats()
+        listings = project.fetch_ebay_active(cfg, ["Caleb Williams"], "t", stats)
+        assert [listing.id for listing in listings].count("https://www.ebay.com/itm/111111111111") == 1
+
+    def test_a_full_newest_walk_warns_that_listings_were_missed(self, project, monkeypatch):
+        from src import config as config_module
+        cfg = config_module.load_config()
+        cfg.ebay_active_listing_limit = 2
+        cfg.ebay_newest_pages_per_player = 1
+        monkeypatch.setattr(project.ebay_client, "search_active_listings", fake_active)
+        stats = observability.RunStats()
+        project.fetch_ebay_active(cfg, ["Caleb Williams"], "t", stats)
+        assert any("newest listings for 1 player(s) (Caleb Williams)" in w for w in stats.warnings)
+
+    def test_an_api_outage_falls_back_to_the_alerts(self, project_with_both_sources, monkeypatch):
+        main = project_with_both_sources
+        def down(*_args):
+            raise main.requests.ConnectionError("eBay down")
+        monkeypatch.setattr(main.ebay_client, "get_app_token", down)
+        monkeypatch.setattr(
+            main.ebay_email_alerts, "fetch_alert_listings",
+            lambda *a, counters=None, **k: [alert_item("https://www.ebay.com/itm/333333333333", 25.0)],
+        )
+        sent = []
+        monkeypatch.setattr(main.emailer, "send_email",
+                            lambda subject, body, *rest, html_body=None: sent.append((subject, body)))
+        main.run(argparse.Namespace(dry_run=False))
+        assert len(sent) == 1
+        assert "The eBay API failed this run (ConnectionError)" in sent[0][1]
+
+    def test_api_listings_land_in_the_same_corpus_as_alert_listings(
+        self, project_with_both_sources, monkeypatch, tmp_path
+    ):
+        main = project_with_both_sources
+        monkeypatch.setattr(main.ebay_client, "get_app_token", lambda *_: "t")
+        monkeypatch.setattr(main.ebay_client, "search_active_listings", fake_active)
+        monkeypatch.setattr(main.ebay_client, "search_sold_items",
+                            lambda *a, **k: pytest.fail("Insights is off by default"))
+        monkeypatch.setattr(
+            main.ebay_email_alerts, "fetch_alert_listings",
+            lambda *a, counters=None, **k: [alert_item("https://www.ebay.com/itm/333333333333", 25.0)],
+        )
+        sent = []
+        monkeypatch.setattr(main.emailer, "send_email",
+                            lambda subject, body, *rest, html_body=None: sent.append(body))
+        main.run(argparse.Namespace(dry_run=False))
+
+        corpus = json.loads((tmp_path / "data" / "ebay_alert_price_history.json").read_text())
+        ids = {o["id"] for rows in corpus.values() for o in rows}
+        assert "https://www.ebay.com/itm/111111111111" in ids  # from the API
+        assert "https://www.ebay.com/itm/333333333333" in ids  # from the alerts
+        assert "https://www.ebay.com/itm/222222222222" not in ids  # a reprint is never a comp
+        assert "Sources: 2 from the eBay API, 1 from alert emails, 0 in both" in sent[0]
 
 
 class TestFlagEligibilityOverride:

@@ -1,20 +1,15 @@
 """eBay API access: an OAuth app token, active-listing search (Browse API),
 and sold/completed comps (Marketplace Insights API).
 
-IMPORTANT LIMITATION -- read before relying on comps:
-The Browse API (buy.browse) only returns ACTIVE listings; eBay does not
-expose sold/completed items through it. Historical sold prices require the
-Marketplace Insights API (buy.marketplace.insights), which is a *limited
-release* -- a standard free developer account is not granted access to it
-by default, you have to apply for it in the eBay developer portal. If your
-app doesn't have that scope, calls below will fail with a 403 and this
-module logs a warning and returns an empty list rather than crashing.
+Browse is the live path: approved 2026-10-15, and main.py runs it alongside
+the alert emails into one comp corpus. It returns ACTIVE listings only.
 
-Practically: until/unless Marketplace Insights access is approved, comps.py
-falls back to using the median of *current active* listings as a rough
-proxy for market value (see comps.py docstring). Treat that fallback as
-weaker signal than real sold comps, and consider maintaining a manual
-comps override (not built in v1) if you want tighter numbers sooner.
+Marketplace Insights (sold prices) is a limited release that a standard
+developer account is not granted; on 2026-10-15 it returned 404 for this
+app. It is off by default (ebay.marketplace_insights_enabled) so a run does
+not make a wasted call per player. If enabled without access, the calls
+below log a warning and return an empty list rather than crashing. Real
+sold prices come from config/sold_comps.json, entered by hand.
 """
 from __future__ import annotations
 
@@ -62,32 +57,61 @@ def get_app_token(client_id: str, client_secret: str) -> str:
     return token
 
 
+# Browse caps a page at 200 items and an offset at 10,000.
+BROWSE_MAX_PAGE_SIZE = 200
+
+
 def search_active_listings(
     query: str,
     token: str,
     category_id: str,
     marketplace_id: str,
     limit: int = 50,
+    *,
+    sort: Optional[str] = None,
+    buying_options: tuple = ("FIXED_PRICE", "AUCTION"),
+    max_pages: int = 1,
 ) -> list[dict]:
-    """Active for-sale listings for `query`. Returns raw Browse API item dicts."""
-    resp = requests.get(
-        BROWSE_SEARCH_URL,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "X-EBAY-C-MARKETPLACE-ID": marketplace_id,
-        },
-        params={
-            "q": query,
-            "category_ids": category_id,
-            "limit": str(limit),
-            "filter": "buyingOptions:{FIXED_PRICE|AUCTION}",
-        },
-        timeout=30,
-    )
-    if resp.status_code != 200:
-        logger.warning("eBay Browse search failed for %r: %s %s", query, resp.status_code, resp.text[:300])
-        return []
-    return resp.json().get("itemSummaries", [])
+    """Active for-sale listings for `query`. Returns raw Browse API item dicts.
+
+    `limit` is the page size and `max_pages` how many pages to walk, so one
+    call returns at most limit * max_pages items. Measured 2026-10-15: every
+    watchlist player filled a 200-item page, so one page in eBay's default
+    best-match order is a slice of the market, not the market. `sort` is
+    Browse's own sort key -- "newlyListed" or "endingSoonest" -- and None
+    keeps best match.
+
+    A failed page ends the walk and keeps what earlier pages returned; a
+    failed first page is [] with a logged warning, same as before.
+    """
+    params = {
+        "q": query,
+        "category_ids": category_id,
+        "limit": str(min(limit, BROWSE_MAX_PAGE_SIZE)),
+        "filter": "buyingOptions:{%s}" % "|".join(buying_options),
+    }
+    if sort:
+        params["sort"] = sort
+    items: list[dict] = []
+    for page in range(max(max_pages, 1)):
+        params["offset"] = str(page * min(limit, BROWSE_MAX_PAGE_SIZE))
+        resp = requests.get(
+            BROWSE_SEARCH_URL,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "X-EBAY-C-MARKETPLACE-ID": marketplace_id,
+            },
+            params=params,
+            timeout=30,
+        )
+        if resp.status_code != 200:
+            logger.warning("eBay Browse search failed for %r: %s %s", query, resp.status_code, resp.text[:300])
+            break
+        payload = resp.json()
+        items.extend(payload.get("itemSummaries", []))
+        if not payload.get("next"):
+            break
+    return items
 
 
 def search_sold_items(
@@ -142,3 +166,55 @@ def extract_price(item: dict) -> Optional[float]:
         return float(price["value"])
     except (KeyError, TypeError, ValueError):
         return None
+
+
+def extract_listing_price(item: dict) -> Optional[float]:
+    """What a Browse listing costs right now: the current bid for an auction,
+    the asking price otherwise. Browse omits `price` on most auctions and
+    carries the bid in `currentBidPrice`; reading `price` alone would drop
+    every auction, which is the cheap-auction section's whole supply."""
+    if "AUCTION" in (item.get("buyingOptions") or []) and item.get("currentBidPrice"):
+        try:
+            return float(item["currentBidPrice"]["value"])
+        except (KeyError, TypeError, ValueError):
+            pass
+    return extract_price(item)
+
+
+def extract_shipping(item: dict) -> Optional[float]:
+    """Cheapest stated shipping cost, or None when eBay doesn't state one
+    (calculated shipping has no cost until a buyer's postcode is known).
+    None, never 0.0: an unknown cost assumed free is a deal that isn't."""
+    costs = []
+    for option in item.get("shippingOptions") or []:
+        cost = option.get("shippingCost")
+        if not cost:
+            continue
+        try:
+            costs.append(float(cost["value"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return min(costs) if costs else None
+
+
+def time_left_text(item: dict, now: Optional[datetime] = None) -> Optional[str]:
+    """itemEndDate as the countdown text the alert emails use ("2d 04h",
+    "3h 12m", "45m"), so the report reads both sources with one parser.
+    None when the end date is missing or unreadable -- unknown sorts last."""
+    end = item.get("itemEndDate")
+    if not end:
+        return None
+    try:
+        ends_at = datetime.fromisoformat(end.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    minutes = int(((ends_at - (now or datetime.now(timezone.utc))).total_seconds()) // 60)
+    if minutes < 0:
+        return None
+    days, rest = divmod(minutes, 24 * 60)
+    hours, mins = divmod(rest, 60)
+    if days:
+        return f"{days}d {hours:02d}h"
+    if hours:
+        return f"{hours}h {mins:02d}m"
+    return f"{mins}m"

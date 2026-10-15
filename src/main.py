@@ -43,6 +43,8 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
 
+import requests
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src import (
@@ -204,37 +206,130 @@ def _build_listing(cfg, *, listing_id, source, title, price, url, players, shipp
 def fetch_ebay_active(cfg, players, token, stats) -> list:
     """Active listings via the eBay Browse API (dormant unless credentials
     are set). Unlike the email path, Browse tells us the buying option
-    outright, so listing_type is known rather than inferred."""
+    outright, so listing_type is known rather than inferred, and its titles
+    are never truncated.
+
+    Two passes per player. Newest first, because a daily scan's job is what
+    appeared since yesterday and best match buries it: on 2026-10-15 every
+    player filled a 200-item best-match page, with as few as 3 auctions in
+    it. Then soonest-ending auctions, because those are what the auction
+    sections act on and newest-first reaches them only on the day they were
+    listed. The same item from both passes is one listing."""
     listings = []
+    seen_ids = set()
+    capped = []
+    now = datetime.now(timezone.utc)
+    passes = [
+        dict(sort="newlyListed", max_pages=cfg.ebay_newest_pages_per_player),
+        dict(sort="endingSoonest", buying_options=("AUCTION",), max_pages=cfg.ebay_auction_pages_per_player),
+    ]
     for player in players:
-        items = ebay_client.search_active_listings(
-            query=player,
-            token=token,
-            category_id=cfg.ebay_category_id,
-            marketplace_id=cfg.ebay_marketplace_id,
-            limit=cfg.ebay_active_listing_limit,
-        )
-        for item in items:
-            stats.listings_extracted += 1
-            title = item.get("title", "")
-            price = ebay_client.extract_price(item)
-            buying_options = item.get("buyingOptions") or []
-            listing = _build_listing(
-                cfg,
-                listing_id=item.get("itemId", item.get("itemWebUrl", title)),
-                source="ebay",
-                title=title,
-                price=price,
-                url=item.get("itemWebUrl", ""),
-                players=[player],
-                listing_type=_browse_listing_type(buying_options),
-                has_best_offer="BEST_OFFER" in buying_options,
-            )
-            if listing is None:
-                stats.rejections.record(reasons.Reason.NO_PLAYER_MATCH)
+        for search in passes:
+            if search["max_pages"] < 1:
                 continue
-            listings.append(listing)
+            items = ebay_client.search_active_listings(
+                query=player,
+                token=token,
+                category_id=cfg.ebay_category_id,
+                marketplace_id=cfg.ebay_marketplace_id,
+                limit=cfg.ebay_active_listing_limit,
+                **search,
+            )
+            if search["sort"] == "newlyListed" and len(items) >= cfg.ebay_active_listing_limit * search["max_pages"]:
+                capped.append(player)
+            for item in items:
+                listing_id = _browse_listing_id(item)
+                if listing_id in seen_ids:
+                    continue
+                seen_ids.add(listing_id)
+                stats.listings_extracted += 1
+                title = item.get("title", "")
+                buying_options = item.get("buyingOptions") or []
+                listing = _build_listing(
+                    cfg,
+                    listing_id=listing_id,
+                    source="ebay",
+                    title=title,
+                    price=ebay_client.extract_listing_price(item),
+                    url=listing_id if listing_id.startswith("http") else item.get("itemWebUrl", ""),
+                    players=[player],
+                    shipping_price=ebay_client.extract_shipping(item),
+                    listing_type=_browse_listing_type(buying_options),
+                    bid_count=item.get("bidCount"),
+                    time_left_text=ebay_client.time_left_text(item, now),
+                    has_best_offer="BEST_OFFER" in buying_options,
+                )
+                if listing is None:
+                    stats.rejections.record(reasons.Reason.NO_PLAYER_MATCH)
+                    continue
+                listings.append(listing)
+    if capped:
+        # Newest first, so a full walk means the oldest of today's new
+        # listings fell off the end -- the alert path's capped-search
+        # warning, for the API.
+        stats.warn(
+            "The eBay API returned its full {} newest listings for {} player(s) ({}), so some "
+            "of the past day's new listings were not reached. Raise ebay.newest_pages_per_player "
+            "in config/settings.json to see further back.".format(
+                cfg.ebay_active_listing_limit * cfg.ebay_newest_pages_per_player,
+                len(capped), ", ".join(capped[:5]) + (" and more" if len(capped) > 5 else ""),
+            )
+        )
     return listings
+
+
+def _browse_listing_id(item: dict) -> str:
+    """The same canonical item URL the alert path uses as its id, so one item
+    seen by both sources is one listing in dedupe and one row in the corpus.
+    Browse's own itemId ("v1|1234|0") would fork both."""
+    legacy = str(item.get("legacyItemId") or "")
+    if legacy.isdigit():
+        return ebay_email_alerts._item_url(legacy)
+    return (
+        ebay_email_alerts._find_item_url(item.get("itemWebUrl") or "")
+        or item.get("itemId")
+        or item.get("itemWebUrl")
+        or item.get("title", "")
+    )
+
+
+#: GitHub warns on a pushed file over 50MB and refuses one over 100MB. The
+#: corpus is committed after every run, so the warning fires well before
+#: either: a refused push means the day's observations are lost.
+CORPUS_WARN_MB = 40
+
+
+def corpus_size_warning(path: Path) -> Optional[str]:
+    """A footer warning when the committed corpus is getting too big for
+    GitHub, else None. The alert path alone grew it about 80KB a day; the
+    Browse API can add that many rows in one run."""
+    try:
+        size_mb = path.stat().st_size / 1_000_000
+    except OSError:
+        return None
+    if size_mb < CORPUS_WARN_MB:
+        return None
+    return (
+        "The comp corpus ({}) is {:.0f}MB. GitHub refuses a pushed file over 100MB, after which "
+        "the daily save fails and each day's observations are lost. Lower "
+        "ebay_alerts.price_history_max_age_days or ebay.newest_pages_per_player in "
+        "config/settings.json.".format(path.name, size_mb)
+    )
+
+
+def merge_sources(api_listings, alert_listings) -> tuple[list, str]:
+    """(one list with each item once, a footer line saying where they came
+    from). An item both sources saw keeps the API copy: its title is whole,
+    so its grade and set can be trusted, and its buying format is stated
+    rather than guessed from email markup."""
+    api_ids = {listing.id for listing in api_listings}
+    both = sum(1 for listing in alert_listings if listing.id in api_ids)
+    merged = list(api_listings) + [listing for listing in alert_listings if listing.id not in api_ids]
+    summary = (
+        "Sources: {} from the eBay API, {} from alert emails, {} in both "
+        "(the API copy is kept)".format(len(api_listings), len(alert_listings), both)
+    )
+    return merged, summary
 
 
 def _browse_listing_type(buying_options) -> str:
@@ -411,53 +506,6 @@ def fetch_ebay_sold_observations(cfg, players, token) -> list:
 # --------------------------------------------------------------------------
 # Observations
 # --------------------------------------------------------------------------
-
-
-def listings_as_observations(listings, today_str: str) -> list:
-    """Today's asking prices as comp observations, for a source that has no
-    persisted corpus of its own (the eBay API path).
-
-    Sold observations always win: a bucket's `basis` is only "sold" when every
-    point in it is a real transaction, so mixing these in downgrades the
-    bucket to asking-basis and caps its confidence -- which is the honest
-    outcome, not a loss. Auctions, hard-blocked listings, and listings with
-    an untrustworthy grade are excluded for the same reasons as
-    record_observations.
-    """
-    observations = []
-    for listing in listings:
-        if listing.price is None or listing.is_auction:
-            continue
-        if listing.title_truncated and listing.grade is not None:
-            # A grade read off a truncated title is probably wrong, and a
-            # wrong grade in the corpus is worse than a missing one: it sits
-            # there for the full retention window mis-valuing every genuine
-            # card at that grade (principle #6). The listing itself is
-            # already rejected as GRADE_UNCERTAIN; this keeps it from
-            # damaging everything else too.
-            continue
-        identity = listing.card_identity
-        if identity is not None and card_identity.is_excluded_from_deals(identity):
-            continue
-        grade_info = matcher.detect_grade_details(listing.title)
-        observations.append(
-            {
-                "price": listing.price,
-                "date": today_str,
-                "id": listing.id,
-                "player": listing.player,
-                "card_type": listing.card_type,
-                "year": identity.year.value if identity else None,
-                "set_name": identity.set_name.value if identity else None,
-                "parallel": identity.parallel.value if identity else None,
-                "card_number": identity.card_number.value if identity else None,
-                "grader": listing.grader,
-                "grade": listing.grade,
-                "qualifier": grade_info.qualifier,
-                "basis": comps.BASIS_ASKING,
-            }
-        )
-    return observations
 
 
 def record_observations(listings, history, today_str: str) -> int:
@@ -1010,30 +1058,54 @@ def run(args: argparse.Namespace) -> None:
     observations = []
     history = None
 
+    api_listings, alert_listings, api_sold = [], [], []
     if ebay_api_enabled:
-        token = ebay_client.get_app_token(cfg.ebay_client_id, cfg.ebay_client_secret)
-        logger.info("Fetching eBay active listings for %d players", len(cfg.players))
-        listings = fetch_ebay_active(cfg, cfg.players, token, stats)
-        logger.info("Fetching eBay sold comps for %d players", len(cfg.players))
-        observations = fetch_ebay_sold_observations(cfg, cfg.players, token)
-        logger.info("%d real sold observation(s) available", len(observations))
-        # Marketplace Insights access is normally declined, in which case the
-        # sold list is empty. Today's active listings still give the engine
-        # something to work with -- as asking-basis observations, which are
-        # capped at "medium" confidence and can only reach a flag-eligible
-        # level when the card is fully identified.
-        observations.extend(listings_as_observations(listings, today_str))
+        try:
+            token = ebay_client.get_app_token(cfg.ebay_client_id, cfg.ebay_client_secret)
+            logger.info("Fetching eBay active listings for %d players", len(cfg.players))
+            api_listings = fetch_ebay_active(cfg, cfg.players, token, stats)
+            logger.info("Matched %d listing(s) from the eBay API", len(api_listings))
+            if cfg.ebay_marketplace_insights_enabled:
+                logger.info("Fetching eBay sold comps for %d players", len(cfg.players))
+                api_sold = fetch_ebay_sold_observations(cfg, cfg.players, token)
+                logger.info("%d real sold observation(s) available", len(api_sold))
+        except requests.RequestException as exc:
+            # Running beside the alerts, an API outage must not take them
+            # down too: the run carries on with whatever the inbox holds.
+            if not cfg.ebay_alerts_enabled:
+                raise
+            logger.exception("eBay API failed; continuing with alert emails only")
+            api_listings, api_sold = [], []
+            stats.warn(
+                "The eBay API failed this run ({}), so today's listings come from the "
+                "alert emails alone.".format(exc.__class__.__name__),
+                broken=True,
+            )
 
-    elif cfg.ebay_alerts_enabled:
-        logger.info("eBay API unavailable -- using saved-search email alerts (IMAP) instead")
-        listings = fetch_ebay_alert_active(cfg, stats)
-        logger.info("Matched %d listing(s) from eBay alert emails", len(listings))
-
+    if cfg.ebay_alerts_enabled:
+        listings_from = "alongside the eBay API" if ebay_api_enabled else "(eBay API not configured)"
+        logger.info("Reading eBay saved-search alert emails (IMAP) %s", listings_from)
+        alert_listings = fetch_ebay_alert_active(cfg, stats)
+        logger.info("Matched %d listing(s) from eBay alert emails", len(alert_listings))
         # Flag truncated titles FIRST -- a grade we can't trust has to be
-        # known before valuation, not after.
-        mark_truncated_titles(listings)
+        # known before valuation, not after. Alert titles only: Browse
+        # titles are whole, and one that happens to end in "..." is not cut.
+        mark_truncated_titles(alert_listings)
 
+    if ebay_api_enabled and cfg.ebay_alerts_enabled:
+        listings, stats.source_summary = merge_sources(api_listings, alert_listings)
+        logger.info("%s", stats.source_summary)
+    else:
+        listings = api_listings or alert_listings
+
+    if ebay_data_available:
+        # One corpus for both sources. The API path used to value against
+        # today's listings alone and keep nothing, so turning it on would
+        # have thrown away the months of asking prices the alert path built.
         history = price_history.load(cfg.ebay_alert_price_history_path)
+        corpus_warning = corpus_size_warning(cfg.ebay_alert_price_history_path)
+        if corpus_warning:
+            stats.warn(corpus_warning)
         recorded = record_observations(listings, history, today_str)
         logger.info("Recorded %d asking-price observation(s) (auctions and blocked listings excluded)", recorded)
         history = price_history.prune_old(history, cfg.ebay_alert_price_history_max_age_days, today)
@@ -1049,7 +1121,7 @@ def run(args: argparse.Namespace) -> None:
         stats.scanned_but_unreported_days = _scanned_but_unreported(
             history, cfg.last_run_path, today_str
         )
-        observations = price_history.deduped_observations(history)
+        observations = price_history.deduped_observations(history) + api_sold
 
     else:
         logger.warning(

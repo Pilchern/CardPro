@@ -5,15 +5,19 @@ emailed to you as a decision-first, sectioned report -- plus ready-to-click
 Craigslist search links, since Craigslist can't be scraped automatically
 (see below).
 
-**Current status: eBay API access was declined; running on the
-email-alerts path instead.** eBay's developer account application was
-rejected outright (see "eBay account declined" below), so the eBay Browse
-API path in this README's step 1 isn't usable. Instead, eBay data comes
-from its own saved-search email alerts, read via IMAP -- see "eBay via
-saved-search email alerts" below. Validated against real alert emails
-(2026-08-18) and working. If the API appeal ever succeeds, the Browse API
-path takes over automatically with no config changes needed -- it's
-checked first.
+**Current status: eBay API approved (2026-10-15); it runs alongside the
+email alerts, not instead of them.** The developer account was first
+declined (see "eBay account declined" below) and later approved. Smoke
+test on 2026-10-15: OAuth works, Trading Card Singles is category 261328,
+every watchlist player fills a 200-item page, and Marketplace Insights
+(sold prices) returns 404 -- not granted. When `EBAY_CLIENT_ID` /
+`EBAY_CLIENT_SECRET` are set, each run reads the Browse API (newest
+listings plus soonest-ending auctions) AND the saved-search alert emails
+(see "eBay via saved-search email alerts" below), keeps an item both
+sources saw once (the API copy, whose title is never truncated), and
+records both into the same comp corpus. The email's SYSTEM HEALTH footer
+says how many listings came from each source. Retire the alerts only once
+those numbers show the API covers what they find.
 
 **Contents**
 

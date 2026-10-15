@@ -8,7 +8,8 @@ name: Daily Card Deal Scan
 # repository secrets (Settings -> Secrets and variables -> Actions -> New
 # repository secret), same names/values as your local .env:
 #   GMAIL_ADDRESS, GMAIL_APP_PASSWORD, EMAIL_TO
-#   EBAY_CLIENT_ID, EBAY_CLIENT_SECRET (optional -- only if you have eBay API access)
+#   EBAY_CLIENT_ID, EBAY_CLIENT_SECRET (optional -- adds the Browse API alongside
+#   the alert emails; both feed the same corpus)
 # Until those secrets exist, scheduled runs will fail at the "Run daily
 # scan" step with a clear "Missing required .env values" error -- nothing
 # silently no-ops.
