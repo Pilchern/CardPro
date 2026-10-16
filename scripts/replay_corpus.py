@@ -59,6 +59,7 @@ def replay_new(observations, min_comps, today):
             print_run=obs.get("print_run"),
             is_serial_numbered=obs.get("is_serial_numbered") or False,
             title_truncated=bool(obs.get("title_truncated")),
+            is_base=obs.get("is_base"),
             exclude_id=obs.get("id"),
         )
         if match is None:

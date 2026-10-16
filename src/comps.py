@@ -467,6 +467,11 @@ def printing_variant(
     return (bool(is_autograph), relic_value.lower() if relic_value else None, numbering)
 
 
+#: One parse per stored title per run, shared by the two readers below
+#: (it is the expensive part of building the engine).
+_parse_title = lru_cache(maxsize=16384)(card_identity.extract_card_identity)
+
+
 @lru_cache(maxsize=16384)
 def _variant_from_title(title: str) -> Optional[tuple]:
     """The variant re-read from a stored listing title.
@@ -477,7 +482,7 @@ def _variant_from_title(title: str) -> Optional[tuple]:
     it to age out. Cached because a run looks up hundreds of listings
     against a corpus of thousands of rows, and the same title is read once.
     """
-    return card_identity.printing_variant(card_identity.extract_card_identity(title), title)
+    return card_identity.printing_variant(_parse_title(title), title)
 
 
 @lru_cache(maxsize=16384)
@@ -489,7 +494,7 @@ def _identity_from_title(title: str) -> Optional[dict]:
     would refuse the listing outright (lot, reprint...), so the row stops
     being a comp. Callers copy the dict; the cache shares it.
     """
-    identity = card_identity.extract_card_identity(title)
+    identity = _parse_title(title)
     if card_identity.is_excluded_from_deals(identity):
         return None
     grade = matcher.detect_grade_details(title)
@@ -1122,6 +1127,10 @@ class CompEngine:
         if obs.get("title"):
             fresh = _identity_from_title(str(obs["title"]))
             if fresh is None:
+                return None
+            if obs.get("title_truncated") and fresh["grade"] is not None:
+                # A grade read off a cut title is probably wrong ("PSA 1..."),
+                # the same reason record_observations refuses to store one.
                 return None
             obs = {**obs, **fresh}
 

@@ -1280,6 +1280,11 @@ class TestPrintingVariant:
         lot = _ob(50.0, title="Lot of 5 Caleb Williams Prizm rookies", year=2024, set_name="Prizm")
         assert _engine([])._prepare(lot) is None
 
+    def test_a_truncated_row_with_a_reread_grade_stops_being_a_comp(self):
+        # Mirrors record_observations: "PSA 1..." is probably a PSA 10.
+        cut = _ob(50.0, title="2024 Panini Prizm Caleb Williams Silver #301 PSA 1", title_truncated=True)
+        assert _engine([])._prepare(cut) is None
+
     def test_a_row_without_a_title_keeps_its_stored_fields(self):
         sold = _ob(50.0, year=2024, set_name="Prizm", parallel="Silver", card_number="301")
         fields = _engine([])._prepare(sold)["_fields"]

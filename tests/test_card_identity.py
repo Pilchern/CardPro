@@ -944,6 +944,38 @@ class TestIsBase:
         # behind base-bucket outliers (identity audit, 2026-10-16).
         assert extract("2024 Topps Chrome Kyle Teel %s #16" % word).is_base.value is None
 
+    @pytest.mark.parametrize("title", [
+        # Paraphrased shapes from the contaminated base buckets.
+        "2026 Topps Update Kyle Teel RC #US259 Summer Holiday",
+        "Colson Montgomery 2026 Topps Update #US125 Jack O Lantern",
+        "Matas Buzelis 2024-25 Hoops Winter #16 Rookie",
+        "Connor Bedard 2023 Upper Deck Young Guns #451 Oversize",
+        "Kyle Teel 2026 Topps Update #US259 SandGlitter",
+        "Dick Butkus 2023 Panini Mosaic #37 Mosaic Prizm",
+        "Luther Burden III 2025 Panini Select Maroon #72",
+        "Connor Bedard 2023 O-Pee-Chee Retro #582",
+        "Pete Crow-Armstrong 2026 Bowman Chrome #ES-24 Miscut",
+        "Pete Crow-Armstrong 2024 Topps Chrome #16 Base Chrome + Paper",
+    ])
+    def test_review_outlier_shapes_block_the_assertion(self, title):
+        assert extract(title).is_base.value is None
+
+    def test_a_condition_plus_is_not_a_second_card(self):
+        assert card_identity._NOT_BASE_RE.search("1968 Topps Gale Sayers #75 VG-EX+") is None
+
+    @pytest.mark.parametrize("title", [
+        "1990 Hoops Michael Jordan #65 PSA NM-MT 8",
+        "2024 Bowman Chrome Pete Crow-Armstrong #85 GEM MINT PTA 10",
+        "1968 Topps Gale Sayers #75 SGC Graded 3",
+        "1985 Donruss Andre Dawson #421 NM-MT",
+    ])
+    def test_a_slab_or_condition_grade_read_as_raw_is_not_base(self, title):
+        assert extract(title).is_base.value is None
+
+    def test_a_slab_the_grade_parser_reads_keeps_its_base_call(self):
+        # Its grade keys it, so it is a real graded base copy.
+        assert extract("2024 Panini Prizm Caleb Williams #301 RC PSA 10").is_base.value is True
+
     def test_extra_not_base_words_do_not_widen_the_flagship_set(self):
         # They block "base" but must not become familiar words that let an
         # insert name read as flagship Topps.

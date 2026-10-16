@@ -47,6 +47,8 @@ import re
 from dataclasses import dataclass, field as dataclass_field
 from typing import Optional
 
+from src import matcher
+
 # Extend freely -- these are just data, matched case-insensitively as
 # whole-word/phrase keywords against the title.
 MANUFACTURERS = [
@@ -812,9 +814,30 @@ _NOT_BASE_EXTRA_TOKENS = [
     "x-fractors", "refractors", "refr", "stars", "flex", "laser", "lazer",
     "filigree", "filagree", "glitter", "diamante", "pulse", "platinum", "photo",
     "image",
+    # Second pass (review of the base buckets, 2026-10-16): holiday and
+    # seasonal variations (Topps Update Holiday, Hoops Winter), "Mosaic
+    # Prizm" (Mosaic's own parallel), Select Maroon, Retro subsets, miscuts.
+    # Each checked on the corpus: every base-read hit was not a base card.
+    "holiday", "halloween", "winter", "oversize", "mosaic prizm", "maroon", "retro",
+    "miscut",
 ]
 _NOT_BASE_RE = re.compile(
-    r"\b(" + "|".join(re.escape(t) for t in NOT_BASE_TOKENS + _NOT_BASE_EXTRA_TOKENS) + r")\b",
+    r"\b(" + "|".join(re.escape(t) for t in NOT_BASE_TOKENS + _NOT_BASE_EXTRA_TOKENS) + r")\b"
+    # Shapes a word list cannot say: "SandGlitter" (one word), "Jack
+    # O'Lantern" spelled any way, and " + " joining two cards in one
+    # listing ("Base Chrome + Paper"). The spaces matter: "NM+" and "EX+"
+    # are condition grades, not a second card.
+    r"|glitter|\bjack\s*o'?\s*-?\s*lantern\b|\s\+\s",
+    re.IGNORECASE,
+)
+# A grading word on a title the grade parser read as RAW is a slab or a
+# condition-graded card whose grade we could not read ("PSA NM-MT 8",
+# "GEM MINT PTA 10", "SGC Graded 3"). Either way it is not a raw base copy,
+# and keyed as one it drags a $1 bucket to $500 (1969 Sayers BVG 8).
+# Graded base cards the parser DID read keep is_base: their grade keys them.
+_GRADING_WORD_RE = re.compile(
+    r"\b(psa|bgs|sgc|cgc|csg|hga|bvg|isa|gma|pta|fcg|pxg|gmg|bccg|beckett|graded|"
+    r"gem\s*-?\s*mi?n?t|nm\s*-?\s*mt)\b",
     re.IGNORECASE,
 )
 
@@ -1245,6 +1268,8 @@ def _extract_is_base(
     if serial_number.value is not None or print_run.value is not None:
         return Field(value=None, confidence="none", source="title")
     if _NOT_BASE_RE.search(title):
+        return Field(value=None, confidence="none", source="title")
+    if _GRADING_WORD_RE.search(title) and matcher.detect_grade_details(title).card_type == "raw":
         return Field(value=None, confidence="none", source="title")
     return Field(value=True, confidence="medium", source="title")
 
