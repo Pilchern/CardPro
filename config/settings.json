@@ -48,14 +48,25 @@
     "min_comp_span_days": 7
   },
   "economics": {
-    "_comment": "Resale assumptions, not facts. Every one of these shows up in the report next to the profit figure so you can see what the number depends on. Tune them to how you actually sell. marketplace_fee_pct 13.6 + $0.30 is eBay's standard trading-card final value fee at time of writing -- verify against your own account. resale_haircut_pct is the gap between the median comp and what you'd realistically get selling it promptly.",
-    "marketplace_fee_pct": 13.6,
-    "marketplace_fixed_fee": 0.3,
+    "_comment": "Resale assumptions, not facts. Every one of these shows up in the report next to the profit figure so you can see what the number depends on. Tune them to how you actually sell. Rates checked 2026-10-16 against eBay help page id=4822.",
+    "_fees_comment": "eBay's final value fee for sports trading cards (no Store) is 13.25%, but it is charged on the order total INCLUDING the buyer's sales tax. marketplace_fee_pct folds that in: 13.25 x 1.0753 = 14.25, where 7.53% is a 2026 average combined US sales tax (ASSUMPTION; your buyers' real rate varies by state). Per-order fee: marketplace_fixed_fee $0.40 on an order over small_order_max ($10), small_order_fixed_fee $0.30 at or under it.",
+    "marketplace_fee_pct": 14.25,
+    "marketplace_fixed_fee": 0.4,
+    "small_order_fixed_fee": 0.3,
+    "small_order_max": 10.0,
     "payment_fee_pct": 0.0,
-    "outbound_shipping": 5.0,
-    "supplies": 1.0,
-    "sales_tax_pct": 0.0,
-    "resale_haircut_pct": 5.0
+    "_shipping_comment": "Ship-out by method. A RAW card selling under envelope_max_sale ($20) goes by eBay Standard Envelope at envelope_shipping $0.82; everything else (raw at $20+, any slab) goes in a tracked bubble mailer at outbound_shipping $6.00 (ASSUMPTION: typical eBay-label Ground Advantage, 4 oz). supplies is per raw card ($0.50), supplies_graded per slab ($1.00) (owner ASSUMPTION).",
+    "outbound_shipping": 6.0,
+    "envelope_shipping": 0.82,
+    "envelope_max_sale": 20.0,
+    "supplies": 0.5,
+    "supplies_graded": 1.0,
+    "_tax_comment": "sales_tax_pct is what YOU pay buying: 10.25% is Chicago's combined rate, inferred from craigslist.site=chicago (ASSUMPTION; set your own). assumed_inbound_shipping is put into the money math (profit, max bid) when a listing does not state its shipping; the card still reads as shipping-unknown. $4.50 is a typical seller-charged tracked shipment (ASSUMPTION). $0 made every such card look $4-5 better than it is.",
+    "sales_tax_pct": 10.25,
+    "assumed_inbound_shipping": 4.5,
+    "_haircut_comment": "The gap between the median comp and what you'd realistically get selling promptly, by what the comps are. resale_haircut_asking_pct 20 applies when the comps are ASKING prices -- every comp today -- because an ask is a ceiling on what sells: measured P25/median ask is 0.79 across 44 raw buckets, so selling at the cheap end of the asks means ~20% under the median (ASSUMPTION that sales land there). resale_haircut_pct 5 applies when the comps are SOLD prices.",
+    "resale_haircut_pct": 5.0,
+    "resale_haircut_asking_pct": 20.0
   },
   "auctions": {
     "_comment": "An auction's current bid is not a price. Auctions get their own report section and their own math: max rational bid is the highest you could bid and still keep required_margin_pct of margin against estimated market value, after fees and shipping. ending_soon_hours controls what counts as urgent -- only used for ordering the section, never for relaxing any quality gate.",

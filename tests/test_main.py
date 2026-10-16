@@ -193,6 +193,16 @@ def fake_cfg(**overrides):
         supplies_cost=1.0,
         sales_tax_pct=0.0,
         resale_haircut_pct=5.0,
+        # The refinements below are off (or equal to the flat figures) so the
+        # hand-worked numbers in these tests stay simple; the shipped values
+        # are tested in test_economics.py and by the targeted tests below.
+        resale_haircut_asking_pct=5.0,
+        fee_small_order_fixed=0.30,
+        fee_small_order_max=10.0,
+        outbound_shipping_envelope=None,
+        envelope_max_sale=20.0,
+        supplies_graded_cost=None,
+        assumed_inbound_shipping=None,
         auction_required_margin_pct=25.0,
         auction_ending_soon_hours=24,
         immediate_alert_min_savings_dollars=150.0,
@@ -1017,6 +1027,61 @@ class TestOneCardHasOneAcquisitionCost:
         with_tax = self._evaluated(8.0)
         without = self._evaluated(0.0)
         assert with_tax.dollar_savings < without.dollar_savings
+
+
+class TestFeeModelWiring:
+    """The pipeline's choices that the fee model cannot make on its own:
+    which haircut (by comp basis), what unknown inbound shipping costs, and
+    whether the card ships as a slab."""
+
+    def _evaluated(self, observations, title=EXACT_TITLE, price=200.0, **cfg_overrides):
+        listing = make_listing(title, price, listing_type="fixed_price")
+        main_module.evaluate_listings(
+            [listing], engine_for(observations), fake_cfg(**cfg_overrides), observability.RunStats()
+        )
+        return listing
+
+    def test_asking_comps_take_the_asking_haircut(self):
+        listing = self._evaluated(spread_observations(400.0), resale_haircut_asking_pct=20.0)
+        assert listing.economics.expected_sale_price == pytest.approx(320.0)
+
+    def test_sold_comps_take_the_sold_haircut(self):
+        sold = spread_observations(400.0, basis=comps.BASIS_SOLD)
+        listing = self._evaluated(sold, resale_haircut_asking_pct=20.0)
+        assert listing.economics.expected_sale_price == pytest.approx(380.0)
+
+    def test_unknown_inbound_shipping_is_assumed_not_zero(self):
+        listing = self._evaluated(spread_observations(400.0), assumed_inbound_shipping=4.50)
+        assert listing.economics.acquisition_cost == pytest.approx(204.50)
+        assert listing.economics.shipping_known is False
+        assert any("$4.50 is assumed" in a for a in listing.economics.assumptions)
+
+    def test_unknown_shipping_also_lowers_the_max_bid(self):
+        def max_bid(assumed):
+            listing = make_listing(EXACT_TITLE, 20.0, listing_type="auction", bid_count=1)
+            main_module.evaluate_listings(
+                [listing], engine_for(spread_observations(400.0)),
+                fake_cfg(assumed_inbound_shipping=assumed), observability.RunStats(),
+            )
+            return listing.max_rational_bid
+
+        assert max_bid(4.50) == pytest.approx(max_bid(None) - 4.50)
+
+    def test_a_slab_ships_as_a_slab(self):
+        listing = self._evaluated(
+            spread_observations(15.0), price=5.0,
+            outbound_shipping_envelope=0.82, supplies_graded_cost=1.0, supplies_cost=0.5,
+        )
+        # PSA 10 under $20: still a tracked mailer and slab supplies.
+        assert listing.economics.outbound_costs == pytest.approx(5.0 + 1.0)
+
+    def test_a_cheap_raw_card_goes_in_an_envelope(self):
+        raw = spread_observations(15.0, card_type="raw", grader=None, grade=None)
+        listing = self._evaluated(
+            raw, title="2024 Panini Prizm Caleb Williams Silver #301", price=5.0,
+            outbound_shipping_envelope=0.82, supplies_graded_cost=1.0, supplies_cost=0.5,
+        )
+        assert listing.economics.outbound_costs == pytest.approx(0.82 + 0.5)
 
 
 # ---------------------------------------------------------------------------

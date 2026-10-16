@@ -768,8 +768,9 @@ def _economics_text(deal: Listing) -> Optional[str]:
         # footer filters per-card assumptions out, so the one assumption
         # that can flip the sign of the profit was the one the reader never
         # saw. On a $22 card with a $3.44 expected profit, $5 of postage
-        # makes it a $1.56 loss.
-        tail = "before unknown inbound shipping, which could make it a loss " + tail
+        # makes it a $1.56 loss. The pipeline now books an assumed postage
+        # (economics.assumed_inbound_shipping), but it is still a guess.
+        tail = "with inbound shipping unknown and assumed, so the real figure may differ " + tail
     return (
         "sell ~{} -> fees {} + ship/supplies {} -> net {} -> profit {} ({} ROI) "
         "{}".format(
@@ -1058,13 +1059,13 @@ def _auction_card(index: int, deal: Listing, ending_soon_hours: float = DEFAULT_
             _money(deal.max_rational_bid)
         )
         if not getattr(deal, "max_rational_bid_shipping_known", True):
-            # Computed with shipping treated as $0 because it is unknown, so
-            # it is an upper bound that is too high by exactly the unknown
-            # shipping -- see economics.max_rational_bid. Printing it as a
-            # figure is how you overbid.
+            # Computed with an ASSUMED postage (economics.assumed_inbound_
+            # shipping) because the real one is unknown -- see
+            # economics.max_rational_bid. Printing it as a firm figure is how
+            # you overbid when the seller charges more.
             max_bid_text += (
-                " Shipping is unknown, so this assumes $0 postage and your real"
-                " ceiling is lower by whatever it turns out to be."
+                " Shipping is unknown, so this assumes typical postage and your real"
+                " ceiling is lower if the seller charges more."
             )
         fields.append(("Max bid", max_bid_text))
     else:

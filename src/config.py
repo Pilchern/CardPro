@@ -88,7 +88,18 @@ class Config:
     outbound_shipping: float
     supplies_cost: float
     sales_tax_pct: float
-    resale_haircut_pct: float
+    resale_haircut_pct: float  # applied when the comps are SOLD prices
+    # Applied when the comps are ASKING prices: an ask is a ceiling on what
+    # sells, so it needs a bigger haircut than a real sale.
+    resale_haircut_asking_pct: float
+    fee_small_order_fixed: float
+    fee_small_order_max: float
+    outbound_shipping_envelope: float
+    envelope_max_sale: float
+    supplies_graded_cost: float
+    # Used in the money math when a listing's shipping is unknown; the
+    # listing still reads as shipping-unknown everywhere.
+    assumed_inbound_shipping: float
 
     auction_required_margin_pct: float
     auction_ending_soon_hours: int
@@ -206,13 +217,22 @@ def load_config() -> Config:
             "last_run_path", "data/last_run.json"
         ),
         require_flag_eligible_comp=bool(valuation.get("require_flag_eligible_comp", True)),
-        fee_marketplace_pct=float(economics.get("marketplace_fee_pct", 13.6)),
-        fee_marketplace_fixed=float(economics.get("marketplace_fixed_fee", 0.30)),
+        # Defaults match economics.FeeModel.ebay_default() and the shipped
+        # settings.json, so a missing key cannot quietly change a number.
+        fee_marketplace_pct=float(economics.get("marketplace_fee_pct", 14.25)),
+        fee_marketplace_fixed=float(economics.get("marketplace_fixed_fee", 0.40)),
         fee_payment_pct=float(economics.get("payment_fee_pct", 0.0)),
-        outbound_shipping=float(economics.get("outbound_shipping", 5.0)),
-        supplies_cost=float(economics.get("supplies", 1.0)),
-        sales_tax_pct=float(economics.get("sales_tax_pct", 0.0)),
+        outbound_shipping=float(economics.get("outbound_shipping", 6.0)),
+        supplies_cost=float(economics.get("supplies", 0.5)),
+        sales_tax_pct=float(economics.get("sales_tax_pct", 10.25)),
         resale_haircut_pct=float(economics.get("resale_haircut_pct", 5.0)),
+        resale_haircut_asking_pct=float(economics.get("resale_haircut_asking_pct", 20.0)),
+        fee_small_order_fixed=float(economics.get("small_order_fixed_fee", 0.30)),
+        fee_small_order_max=float(economics.get("small_order_max", 10.0)),
+        outbound_shipping_envelope=float(economics.get("envelope_shipping", 0.82)),
+        envelope_max_sale=float(economics.get("envelope_max_sale", 20.0)),
+        supplies_graded_cost=float(economics.get("supplies_graded", 1.0)),
+        assumed_inbound_shipping=float(economics.get("assumed_inbound_shipping", 4.50)),
         auction_required_margin_pct=float(auctions.get("required_margin_pct", 25.0)),
         auction_ending_soon_hours=int(auctions.get("ending_soon_hours", 24)),
         immediate_alert_min_savings_dollars=float(alerts.get("immediate_alert_min_savings_dollars", 150.0)),
@@ -263,7 +283,7 @@ def load_config() -> Config:
                 # disagree, and the symptom would be a price ceiling that
                 # means something different from the deal gate underneath
                 # it -- see focus.FocusRules.sales_tax_pct.
-                sales_tax_pct=float(economics.get("sales_tax_pct", 0.0)),
+                sales_tax_pct=float(economics.get("sales_tax_pct", 10.25)),
             )
             if focus_settings
             else focus.OFF

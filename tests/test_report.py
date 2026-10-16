@@ -753,7 +753,7 @@ def test_economics_line_shown_with_assumptions_footer():
     assert "profit" in body
     assert "ROI)" in body
     assert "ECONOMICS ASSUMPTIONS" in body
-    assert "Selling fees assumed at 13.60%" in body
+    assert "Selling fees assumed at 14.25%" in body
 
 
 def test_economics_line_omitted_when_there_are_no_economics():
@@ -765,8 +765,12 @@ def test_economics_line_omitted_when_there_are_no_economics():
 def test_assumptions_are_deduped_across_cards():
     deals = [make_listing(id="a", economics=make_economics()),
              make_listing(id="b", economics=make_economics())]
-    body = body_of(deals)
-    assert body.count("Outbound shipping assumed $5.00 and supplies $1.00 per sale.") == 1
+    # flat(): the longer rule-shaped sentence wraps across report lines.
+    body = flat(body_of(deals))
+    assert body.count(
+        "Outbound shipping assumed $0.82 (eBay Standard Envelope, raw card selling under $20.00; "
+        "else $6.00 tracked) and supplies $0.50 raw / $1.00 slab per sale."
+    ) == 1
 
 
 def test_assumptions_footer_holds_no_per_card_dollar_specifics():
@@ -780,7 +784,7 @@ def test_assumptions_footer_holds_no_per_card_dollar_specifics():
     footer = flat(body_of(deals).split("ECONOMICS ASSUMPTIONS")[1])
     assert "Inbound shipping of $" not in footer
     assert "Inbound shipping is UNKNOWN" not in footer
-    assert "Selling fees assumed at 13.60%" in footer
+    assert "Selling fees assumed at 14.25%" in footer
     assert "Per-card figures" in footer
 
 

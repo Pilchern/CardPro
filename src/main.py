@@ -655,6 +655,11 @@ def _fee_model(cfg):
         outbound_shipping=cfg.outbound_shipping,
         supplies=cfg.supplies_cost,
         sales_tax_pct=cfg.sales_tax_pct,
+        small_order_fixed_fee=cfg.fee_small_order_fixed,
+        small_order_max=cfg.fee_small_order_max,
+        envelope_shipping=cfg.outbound_shipping_envelope,
+        envelope_max_sale=cfg.envelope_max_sale,
+        graded_supplies=cfg.supplies_graded_cost,
     )
 
 
@@ -844,13 +849,22 @@ def evaluate_listings(listings, engine, cfg, stats) -> None:
         listing.comp_is_fallback = match.stats.basis == comps.BASIS_ASKING
         listing.comp_level_matched = match.level
         listing.comp_confidence = match.confidence
+        # An asking-price median overstates what the card sells for, so it
+        # takes the bigger haircut; see settings.json economics._haircut_comment.
+        haircut_pct = cfg.resale_haircut_asking_pct if listing.comp_is_fallback else cfg.resale_haircut_pct
+        graded = listing.card_type == "graded"
         listing.economics = economics.evaluate(
             economics.Acquisition(
-                price=listing.price, shipping=listing.shipping_price, sales_tax_pct=cfg.sales_tax_pct
+                price=listing.price,
+                shipping=listing.shipping_price,
+                sales_tax_pct=cfg.sales_tax_pct,
+                # Unknown shipping costs something; $0 here inflated profit.
+                assumed_shipping=cfg.assumed_inbound_shipping,
             ),
             match.stats.median,
             fees,
-            resale_haircut_pct=cfg.resale_haircut_pct,
+            resale_haircut_pct=haircut_pct,
+            graded=graded,
         )
         # Take the discount from economics rather than recomputing it here.
         # The two used different acquisition costs -- this one excluded sales
@@ -885,12 +899,19 @@ def evaluate_listings(listings, engine, cfg, stats) -> None:
             listing.max_rational_bid = economics.max_rational_bid(
                 match.stats.median,
                 required_margin_pct=cfg.auction_required_margin_pct,
-                shipping_in=listing.shipping_price,
+                # The same assumed postage evaluate() uses: treating unknown
+                # as $0 overstates the ceiling by exactly that postage.
+                shipping_in=(
+                    listing.shipping_price
+                    if listing.shipping_price is not None
+                    else cfg.assumed_inbound_shipping
+                ),
                 fees=fees,
                 # The same haircut evaluate() applies. Without it the two
                 # disagree about the same card, and the ceiling comes out
                 # high -- which is the expensive direction to be wrong in.
-                resale_haircut_pct=cfg.resale_haircut_pct,
+                resale_haircut_pct=haircut_pct,
+                graded=graded,
             ) if match.flag_eligible else None
             # Unknown shipping makes the ceiling an upper bound, not a
             # figure. The report has to be able to say so; the bare float
