@@ -98,7 +98,8 @@ def search_active_listings(
         "filter": "buyingOptions:{%s}" % "|".join(buying_options),
     }
     if min_price is not None:
-        params["filter"] += ",price:[%s..],priceCurrency:USD" % format(min_price, "g")
+        # eBay's documented lower-bound form: "price:[20]" (no "..").
+        params["filter"] += ",price:[%s],priceCurrency:USD" % format(min_price, "g")
     if sort:
         params["sort"] = sort
     items: list[dict] = []

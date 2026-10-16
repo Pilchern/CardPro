@@ -761,7 +761,7 @@ class TestBrowsePaging:
         calls = []
         monkeypatch.setattr(ebay_client.requests, "get", self._fake_get([{"itemSummaries": []}], calls))
         ebay_client.search_active_listings("x", "t", "261328", "EBAY_US", sort="newlyListed", min_price=20.0)
-        assert calls[0]["filter"] == "buyingOptions:{FIXED_PRICE|AUCTION},price:[20..],priceCurrency:USD"
+        assert calls[0]["filter"] == "buyingOptions:{FIXED_PRICE|AUCTION},price:[20],priceCurrency:USD"
 
     def test_no_min_price_means_no_price_filter(self, monkeypatch):
         calls = []
@@ -802,8 +802,37 @@ class TestBrowsePaging:
         stats = observability.RunStats()
         project.fetch_ebay_active(cfg, ["Caleb Williams", "Kyle Teel"], "t", stats)
         warning = " ".join(stats.warnings)
-        assert "refused the search for 1 player(s) (Kyle Teel)" in warning
+        assert "for 1 player(s) (Kyle Teel)" in warning
+        assert "their listings are missing" in warning  # every Kyle Teel search failed
         assert "500 Internal Server Error" in warning
+        assert stats.breakage_warnings == []
+
+    def test_one_failed_pass_says_some_listings_may_be_missing(self, project, monkeypatch):
+        from src import config as config_module
+        cfg = config_module.load_config()
+        cfg.ebay_auction_pages_per_player = 1
+        def auction_pass_refused(query, failures=None, sort=None, **kwargs):
+            if sort == "endingSoonest":
+                failures.append("429 Too many requests")
+            return []
+        monkeypatch.setattr(project.ebay_client, "search_active_listings", auction_pass_refused)
+        stats = observability.RunStats()
+        project.fetch_ebay_active(cfg, ["Caleb Williams"], "t", stats)
+        warning = " ".join(stats.warnings)
+        assert "refused 1 of 2 searches" in warning
+        assert "some listings may be missing" in warning
+        assert stats.breakage_warnings == []
+
+    def test_every_search_refused_marks_the_run_broken(self, project, monkeypatch):
+        from src import config as config_module
+        cfg = config_module.load_config()
+        def refuse_all(query, failures=None, **kwargs):
+            failures.append("401 Unauthorized")
+            return []
+        monkeypatch.setattr(project.ebay_client, "search_active_listings", refuse_all)
+        stats = observability.RunStats()
+        project.fetch_ebay_active(cfg, ["Caleb Williams", "Kyle Teel"], "t", stats)
+        assert stats.breakage_warnings and "refused 2 of 2 searches" in stats.breakage_warnings[0]
 
     def test_no_warning_when_every_search_succeeds(self, project, monkeypatch):
         from src import config as config_module

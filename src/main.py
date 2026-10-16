@@ -222,6 +222,8 @@ def fetch_ebay_active(cfg, players, token, stats) -> list:
     seen_ids = set()
     capped = []
     failed = {}  # player -> first failure, for one warning in the email
+    searches = failed_searches = 0
+    searches_by_player, failures_by_player = {}, {}
     now = datetime.now(timezone.utc)
     passes = [
         # A floor on the newest pass only: measured 2026-10-16, 77% of a
@@ -247,7 +249,11 @@ def fetch_ebay_active(cfg, players, token, stats) -> list:
                 failures=failures,
                 **search,
             )
+            searches += 1
+            searches_by_player[player] = searches_by_player.get(player, 0) + 1
             if failures:
+                failed_searches += 1
+                failures_by_player[player] = failures_by_player.get(player, 0) + 1
                 failed.setdefault(player, failures[0])
             if search["sort"] == "newlyListed" and len(items) >= cfg.ebay_active_listing_limit * search["max_pages"]:
                 capped.append(player)
@@ -281,13 +287,18 @@ def fetch_ebay_active(cfg, players, token, stats) -> list:
     if failed:
         # A non-200 used to reach only the log, so a player whose search
         # failed looked exactly like a player with nothing new today.
+        # Every search refused is a 401/429 storm: the run did not work.
+        # One pass of several is a partial gap, and says only that.
+        whole = all(failures_by_player[p] == searches_by_player[p] for p in failed)
         stats.warn(
-            "The eBay API refused the search for {} player(s) ({}), so their listings are "
-            "missing from today's report. First error: {}".format(
-                len(failed),
+            "The eBay API refused {} of {} searches, for {} player(s) ({}), so {} from "
+            "today's report. First error: {}".format(
+                failed_searches, searches, len(failed),
                 ", ".join(list(failed)[:5]) + (" and more" if len(failed) > 5 else ""),
+                "their listings are missing" if whole else "some listings may be missing",
                 next(iter(failed.values())),
-            )
+            ),
+            broken=failed_searches == searches,
         )
     if capped:
         # Newest first, so a full walk means the oldest of today's new
