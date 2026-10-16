@@ -14,7 +14,7 @@ Score = (expected net-profit-per-flip gain x confidence) / (effort + complexity 
 | 6 | Compound parallels collapsed (Fast Break <color>, Red Seismic, Reactive Blue, multi-colour) and products read as parallels (Prizm Black, Chrome Black) -> mixed flag-eligible buckets | eval mismatches, ID-* | 3 | 4 | 2 | 6 | todo |
 | 7 | Card-number normalisation (BD-72 = BD72 = bd72) so buckets and sold comps don't fragment | PR-7 | 3 | 4 | 1 | 12 | todo |
 | 8 | Sold comps take over a bucket when >= 2 sold points exist (median + SOLD label from sold subset) | PR-3, PR-4 | 4 | 3 | 2 | 6 | todo |
-| 9 | Base-card keying (parallel "Base" from a guarded is_base) | PR-6, ID-* | 4 | 2 | 3 | 2.7 | pending identity audit |
+| 9 | Base-card keying at the EXACT level only (is_base guard + card # required + extended NOT_BASE tokens; pre-1980 raw excluded). Unlocks 2,168 rows (flag-eligible keys 30% -> 51%). Ships after 2, 21, 22, 23 | ID-1, ID-12, PR-6 | 5 | 3 | 3 | 5 | todo |
 | 10 | Browse API newest pass: min price filter so the 200-item page isn't 77% sub-$20 cards; also cuts corpus growth ~75% | DS-7, LR-5 | 3 | 3 | 1 | 9 | todo |
 | 11 | Browse API non-200 responses reach the email as a warning | LR-6 | 1 | 5 | 1 | 5 | todo |
 | 12 | Dedupe every printed card, not only opportunities | WF-2 | 2 | 4 | 1 | 8 | todo |
@@ -26,6 +26,22 @@ Score = (expected net-profit-per-flip gain x confidence) / (effort + complexity 
 | 18 | Sold-comp schema: auto / relic / print_run fields | PR-5 | 2 | 3 | 2 | 3 | todo |
 | 19 | comp_requests ranking by value x recency, exact identity | PR-11 | 2 | 3 | 2 | 3 | todo |
 | 20 | Grading config block (off) with current PSA/SGC/BGS/CGC prices; no grading branch | MR-8, PR-12, DS-12 | 1 | 4 | 1 | 4 | todo |
+
+### Identity items added from the identity audit (ranked into the order below)
+
+| Rank | Item | Sources | Gain | Conf | Effort+Cx | Score | Status |
+|---|---|---|---|---|---|---|---|
+| 21 | "Signature Class" set read as an autograph (45 rows; produces a false flag: $1.49 base vs $57.99 auto median) -> mask the phrase | ID-2 | 3 | 5 | 1 | 15 | todo |
+| 22 | Autograph words missed: Autographs, AUTOS, (AU), RPA (~160 rows, median ask $55) | ID-3 | 3 | 4 | 1 | 12 | todo |
+| 23 | Print runs missed: "#/50", "# /75", "/150 2025" (152 rows, median $50) | ID-4 | 3 | 4 | 1 | 12 | todo |
+| 24 | "Green Wave" Tulane mask deletes a real Prizm parallel (23 rows) | ID-6 | 2 | 5 | 1 | 10 | todo |
+| 25 | Slabs read as raw: SGC GEM 10, CGC 10GM, PSA-10, BVG, ISA, GMA, dual grades (31 fixed) | ID-5 | 3 | 4 | 2 | 6 | todo |
+| 26 | Set vocabulary: BBM, Fleer Ultra, Goodwin, Flair, Fleer Metal, Pro Debut; split Bowman University Chrome and OPC Platinum out of their parents | ID-7 | 2 | 4 | 2 | 4 | todo |
+| 27 | Parallel plurals/abbreviations (133 rows) | ID-8 | 1 | 3 | 1 | 3 | todo |
+| 28 | Multi-player autos with a non-watchlist co-player; quantity/card-set lot patterns | ID-9, ID-10 | 1 | 3 | 2 | 1.5 | todo |
+| 29 | Stored corpus variant fields go stale after parser fixes (variant_of_observation prefers stored fields; replay_corpus ignores variant) | ID-11 | 2 | 4 | 2 | 4 | todo |
+
+Execution order (money math first, then identity fixes that must precede base keying): 1, 2, 3, 5, 7, 21, 22, 23, 24, 6, 9, 4, 12, 10, 11, 25, 26, 8, 13, 14, 29, then the rest.
 
 ## Proposals only (not executable here)
 

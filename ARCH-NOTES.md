@@ -42,7 +42,7 @@ Longer narrative: `docs/PROJECT_STATUS.md`, `docs/AUDIT_2026_09.md`, `docs/CARDP
 ## Scheduling
 
 `.github/workflows/daily-scan.yml`: cron `0 15 * * *` + backup `0 19 * * *` (`--skip-if-ran-today`), timeout 15 min, pytest gate, state commit with rebase-retry. `tests.yml` runs CI on 3.9/3.12.
-Measured from state-commit timestamps (fact): last 30 days of commits land 3.2-7.8 h after 15:00 UTC; Sept 9-22 they landed 1-3.3 h late. Many late commits sit near 19:00, suggesting the 15:00 run is dropped or delayed and the backup does the work (inferred; confirm with run history).
+Measured from 100 GitHub runs (fact): the 15:00 cron fired 22/22 days (09-24..10-15), 3.2-7.3 h late (median 4.7 h); the 19:00 backup skipped 19/22 days and twice re-scanned after midnight UTC (second email). No dropped runs. Repo is public, so Actions minutes are unlimited.
 
 ## Hardcoded thresholds worth knowing
 
