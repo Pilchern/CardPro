@@ -34,10 +34,11 @@ CardPro 2.0 changed the shape of this file in three ways that matter:
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import logging
 import traceback
 import sys
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from datetime import date, datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -1416,8 +1417,15 @@ def run(args: argparse.Namespace) -> None:
             return
         if not subject.startswith(cfg.email_subject_prefix + " ACT NOW"):
             subject = "{} ACT NOW: {}".format(cfg.email_subject_prefix, model.subject)
-        emailer.send_email(subject, body, cfg.gmail_address, cfg.gmail_app_password,
-                           cfg.email_to, html_body=html_body)
+        # Only the ACT NOW section: everything else stays for the digest,
+        # which is the only place the browse sections get marked as seen.
+        alert_model = dataclasses.replace(
+            model, lede=None, focus_line=None,
+            sections=OrderedDict((key, cards) for key, cards in model.sections.items()
+                                 if key == report.SECTION_ACT_NOW),
+        )
+        emailer.send_email(subject, report.render_text(alert_model), cfg.gmail_address,
+                           cfg.gmail_app_password, cfg.email_to, html_body=report_html.render(alert_model))
         sent = dedupe.load_seen(cfg.seen_listings_path)
         record_shown(listings, model.act_now_ids, sent, today_str)
         dedupe.save_seen(cfg.seen_listings_path, sent)

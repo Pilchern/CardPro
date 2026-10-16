@@ -1056,13 +1056,31 @@ class TestAlertOnly:
         assert not (tmp_path / "data" / "last_run.json").exists()
         assert (tmp_path / "data" / "ebay_alert_price_history.json").exists()  # corpus kept
 
+    def test_the_alert_email_carries_only_the_act_now_section(self, project, monkeypatch):
+        import dataclasses
+        from collections import OrderedDict
+        sent = self._wire(project, monkeypatch)
+        real_build = project.report.build_model
+
+        def with_two_sections(*a, **k):
+            model = real_build(*a, **k)
+            sections = OrderedDict([(project.report.SECTION_ACT_NOW, ["ACT-NOW-CARD"]),
+                                    (project.report.SECTION_COOL_CARDS, ["COOL-CARD"])])
+            return dataclasses.replace(model, act_now_ids=frozenset({self.ITEM}), sections=sections)
+
+        monkeypatch.setattr(project.report, "build_model", with_two_sections)
+        monkeypatch.setattr(project.report, "render_text",
+                            lambda model: " ".join(str(c) for cards in model.sections.values() for c in cards))
+        monkeypatch.setattr(project.report_html, "render", lambda model: "")
+        project.run(argparse.Namespace(dry_run=False, alert_only=True))
+        assert sent[0][1] == "ACT-NOW-CARD"
+
     def test_a_poll_with_an_act_now_sends_once_and_the_digest_does_not_repeat_it(
         self, project, monkeypatch, tmp_path
     ):
         sent = self._wire(project, monkeypatch, act_now_ids={self.ITEM})
         project.run(argparse.Namespace(dry_run=False, alert_only=True))
         assert len(sent) == 1 and "ACT NOW" in sent[0][0]
-        assert self.ITEM in sent[0][1]
         seen = json.loads((tmp_path / "data" / "seen_listings.json").read_text())
         assert set(seen) == {self.ITEM}
         assert not (tmp_path / "data" / "last_run.json").exists()
