@@ -1205,10 +1205,44 @@ class TestPrintingVariant:
             {"title": "2026 Topps Chrome Colson Montgomery Logofractor RC Auto …"}
         ) is None
 
-    def test_explicit_fields_win_over_the_stored_title(self):
+    def test_the_stored_title_wins_over_stale_explicit_fields(self):
+        """Explicit fields used to win, so a parser fix (e.g. "Autographs"
+        read as an auto) reached a stored row only when it aged out, 90 days
+        later. The title is what the fields were parsed FROM."""
         assert comps.variant_of_observation(
-            {"title": "a title that says nothing", "is_autograph": True, "relic": "patch"}
+            {"title": "2024 Topps Chrome - Rookie Autographs Caleb Williams #RA-CWI",
+             "is_autograph": False, "relic": None}
+        ) == (True, None, ("unnumbered",))
+
+    def test_explicit_fields_are_used_when_there_is_no_title(self):
+        assert comps.variant_of_observation(
+            {"is_autograph": True, "relic": "patch"}
         ) == (True, "patch", ("unnumbered",))
+
+    def test_a_stored_truncation_flag_still_bars_the_row(self):
+        # eBay's alert marked it cut even where the text shows no ellipsis.
+        assert comps.variant_of_observation(
+            {"title": "2024 Topps Chrome Caleb Williams Refractor", "title_truncated": True}
+        ) is None
+
+    def test_engine_rereads_stored_identity_fields_from_the_title(self):
+        """Same reasoning for set and parallel: a row stored as Prizm /
+        "Black" before Prizm Black was known keys as today's parser reads it."""
+        stale = _ob(
+            50.0, title="2024-25 Panini Prizm Black Hyper Prizm Matas Buzelis #41",
+            year=2024, set_name="Prizm", parallel="Black Hyper", card_number="41",
+        )
+        fields = _engine([])._prepare(stale)["_fields"]
+        assert (fields["set_name"], fields["parallel"]) == ("Prizm Black", "Hyper")
+
+    def test_a_row_todays_parser_would_block_stops_being_a_comp(self):
+        lot = _ob(50.0, title="Lot of 5 Caleb Williams Prizm rookies", year=2024, set_name="Prizm")
+        assert _engine([])._prepare(lot) is None
+
+    def test_a_row_without_a_title_keeps_its_stored_fields(self):
+        sold = _ob(50.0, year=2024, set_name="Prizm", parallel="Silver", card_number="301")
+        fields = _engine([])._prepare(sold)["_fields"]
+        assert (fields["set_name"], fields["parallel"], fields["card_number"]) == ("Prizm", "Silver", "301")
 
     def test_row_with_neither_field_nor_title_is_taken_as_a_plain_card(self):
         """Refusing it would delete the older half of a six-month corpus

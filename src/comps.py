@@ -73,7 +73,7 @@ from datetime import datetime
 from functools import lru_cache
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
-from src import card_identity
+from src import card_identity, matcher
 
 # (label, min_inclusive, max_exclusive). Last tier's max is unbounded.
 PRICE_TIERS = [
@@ -456,15 +456,43 @@ def _variant_from_title(title: str) -> Optional[tuple]:
     return card_identity.printing_variant(card_identity.extract_card_identity(title), title)
 
 
+@lru_cache(maxsize=16384)
+def _identity_from_title(title: str) -> Optional[dict]:
+    """The bucket-key fields of a stored row, re-read from its title with
+    today's parser -- the same reasoning as ``_variant_from_title``, for the
+    fields the variant does not cover (a set or parallel fix reaches the
+    corpus on the next run, not 90 days later). None when today's parser
+    would refuse the listing outright (lot, reprint...), so the row stops
+    being a comp. Callers copy the dict; the cache shares it.
+    """
+    identity = card_identity.extract_card_identity(title)
+    if card_identity.is_excluded_from_deals(identity):
+        return None
+    grade = matcher.detect_grade_details(title)
+    return {
+        "year": identity.year.value, "set_name": identity.set_name.value,
+        "parallel": identity.parallel.value, "card_number": identity.card_number.value,
+        "card_type": grade.card_type, "grader": grade.grader, "grade": grade.grade,
+        "qualifier": grade.qualifier,
+    }
+
+
 def variant_of_observation(obs: dict) -> Optional[tuple]:
     """The printing variant of one stored observation.
 
-    Explicit fields win when they are there; a row recorded before they
-    existed is re-read from its stored title; a row with neither is taken at
-    face value as a plain card, because that is what every field it does
-    carry says and refusing it would delete the older half of the corpus
-    from the only levels that can flag a deal.
+    A stored title wins: it is re-read with today's parser, so a parser fix
+    reaches every stored row on the next run instead of only the rows
+    written after it (the explicit fields are what the parser said on the
+    day, and used to win -- 165 real autos kept reading as plain cards for
+    the 90 days the corpus keeps them). A row without a title falls back to
+    its explicit fields; a row with neither is taken at face value as a
+    plain card, because that is what every field it does carry says and
+    refusing it would delete the older half of the corpus from the only
+    levels that can flag a deal.
     """
+    title = obs.get("title")
+    if title:
+        return None if obs.get("title_truncated") else _variant_from_title(str(title))
     if "is_autograph" in obs or "relic" in obs:
         return printing_variant(
             is_autograph=obs.get("is_autograph"),
@@ -473,9 +501,6 @@ def variant_of_observation(obs: dict) -> Optional[tuple]:
             is_serial_numbered=obs.get("is_serial_numbered"),
             title_truncated=bool(obs.get("title_truncated")),
         )
-    title = obs.get("title")
-    if title:
-        return _variant_from_title(str(title))
     return printing_variant(print_run=obs.get("print_run"))
 
 
@@ -1064,6 +1089,11 @@ class CompEngine:
         parsed_date = _parse_date(obs.get("date"))
         if parsed_date is None:
             return None
+        if obs.get("title"):
+            fresh = _identity_from_title(str(obs["title"]))
+            if fresh is None:
+                return None
+            obs = {**obs, **fresh}
 
         card_type = _clean(obs.get("card_type"))
         fields = {
