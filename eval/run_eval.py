@@ -123,10 +123,19 @@ def key_resolution(listings) -> dict:
     return out
 
 
+#: Naming aliases that key consistently and so are not identity errors:
+#: "Silver Prizm" vs "Silver", "Topps Series 2" vs "Topps", "Holo Foil" vs
+#: "Holo". Only spelling is forgiven here -- a dropped colour or qualifier
+#: ("Fast Break" for "Fast Break Purple") still counts as wrong.
+_ALIAS_WORDS = {"panini", "prizm", "prizms", "foil", "series", "1", "2", "prospects", "chrome"}
+
+
 def _norm(value):
     if value is None:
         return None
-    return str(value).strip().lower().replace("panini ", "").replace("-", " ")
+    words = str(value).strip().lower().replace("-", " ").replace("&", " ").split()
+    kept = [w for w in words if w not in _ALIAS_WORDS]
+    return " ".join(kept or words)
 
 
 def _system_parallel(listing):
