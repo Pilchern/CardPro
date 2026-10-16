@@ -347,6 +347,11 @@ PATCH_KEYWORDS = ["patch", "patches", "rpa", "logoman", "laundry tag", "letter p
 
 YEAR_RE = re.compile(r"\b(19\d{2}|20\d{2})(?:-\d{2})?\b")
 SEASON_RE = re.compile(r"\b((?:19|20)\d{2})-(\d{2})\b")
+# "25-26 Topps Chrome ...": a season written with two-digit years. Used only
+# when no four-digit year is present, and only for consecutive years, so a
+# card number ("#25-26", "BD-72"), a print run ("/25-26") or a score is not
+# read as a season: the lookbehind bars "#", letters, "/", "." and "-".
+SHORT_SEASON_RE = re.compile(r"(?<![#\w/.-])(\d{2})-(\d{2})(?![\w/-])")
 CARD_NUMBER_RE = re.compile(r"#([A-Za-z0-9-]{1,10})\b")
 # "Card No. 150" / "card number 301" -- the same fact, spelled out.
 # Deliberately no "#" alternative here: the hashed form is CARD_NUMBER_RE's
@@ -1416,6 +1421,15 @@ def extract_card_identity(title: str) -> CardIdentity:
         if year_match
         else Field(value=None, confidence="none", source="title")
     )
+    short_season = None
+    if not year_match:
+        for match in SHORT_SEASON_RE.finditer(title):
+            first, second = int(match.group(1)), int(match.group(2))
+            if (first + 1) % 100 == second:
+                century = 2000 if first <= 50 else 1900
+                year_field = Field(value=century + first, confidence="medium", source="title")
+                short_season = "{}-{}".format(century + first, match.group(2))
+                break
     dated_product = None
     for name, first_year, pattern in _DATED_PRODUCT_RES:
         if year_field.value is not None and year_field.value >= first_year and pattern.search(masked):
@@ -1431,7 +1445,7 @@ def extract_card_identity(title: str) -> CardIdentity:
     season_field = (
         Field(value=f"{season_match.group(1)}-{season_match.group(2)}", confidence="high", source="title")
         if season_match
-        else Field(value=None, confidence="none", source="title")
+        else Field(value=short_season, confidence="medium" if short_season else "none", source="title")
     )
 
     serial_field, print_run_field = _extract_serial_and_print_run(title)

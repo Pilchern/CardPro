@@ -32,6 +32,44 @@ def test_unknown_fields_are_none_not_guessed():
     assert identity.serial_number.value is None
 
 
+@pytest.mark.parametrize(
+    "title, year, season",
+    [
+        # Paraphrased corpus shapes: a season written with two-digit years.
+        ("24-25 Upper Deck MVP Connor Bedard #98", 2024, "2024-25"),
+        ("Josh Giddey 25-26 Topps Chrome Black Ivory Auto /25", 2025, "2025-26"),
+        ("92-93 Upper Deck Michael Jordan #23", 1992, "1992-93"),
+    ],
+)
+def test_two_digit_season_sets_the_year(title, year, season):
+    identity = card_identity.extract_card_identity(title)
+    assert (identity.year.value, identity.season.value) == (year, season)
+    assert identity.year.confidence == "medium"
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Connor Bedard #25-26 Upper Deck",   # a card number
+        "Josh Giddey /25-26 Topps",          # not a season after a slash
+        "Bowman BD-72 Pete Crow-Armstrong",  # prefixed card number
+        "Score 24-21 Caleb Williams",        # not consecutive years
+    ],
+)
+def test_two_digit_lookalikes_are_not_seasons(title):
+    assert card_identity.extract_card_identity(title).year.value is None
+
+
+def test_a_four_digit_year_wins_over_a_short_season():
+    identity = card_identity.extract_card_identity("2024-25 Panini Prizm Matas Buzelis 23-24 insert")
+    assert identity.year.value == 2024 and identity.year.confidence == "high"
+
+
+def test_a_short_season_dates_a_black_product():
+    identity = card_identity.extract_card_identity("Josh Giddey 25-26 Topps Chrome Black Ivory Auto /25")
+    assert identity.set_name.value == "Topps Chrome Black"
+
+
 def test_autograph_keyword_detected():
     identity = card_identity.extract_card_identity("2024 Panini Contenders Caleb Williams Autograph RC")
     assert identity.is_autograph.value is True
