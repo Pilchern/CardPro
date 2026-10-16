@@ -433,8 +433,8 @@ def max_rational_bid(
     applied here too or the two disagree about the same card. It was missing,
     and the effect was not small: at the shipped 5% haircut and a 25% margin,
     the returned ceiling on a $60 card was $25.76, which actually realises
-    20.66% -- and the report prints that number under the words "the most you
-    can pay and still keep your margin. Above this, stop." The overstatement
+    20.66% -- and the report printed that number as the most you could pay
+    ("Above this, stop."). The overstatement
     scales with the card: $26 on a $600 one.
 
     The haircut applies to the SALE side only. ``required_profit`` stays a

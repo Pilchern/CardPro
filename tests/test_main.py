@@ -488,8 +488,8 @@ class TestEvaluateListings:
 
     def test_a_context_only_comp_never_produces_a_max_bid(self):
         """The max bid is the one number in the report that tells you to
-        spend money -- "the most you can pay and still keep your margin.
-        Above this, stop." On the live corpus it was being computed from
+        spend money -- "the most you can pay ... Above this, stop." On the
+        live corpus it was being computed from
         price-bracket medians, putting a $729.31 ceiling on a $125 card two
         lines under "Market: not established"."""
         observations = [observation(400.0, "o%d" % i) for i in range(6)]

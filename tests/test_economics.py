@@ -673,8 +673,8 @@ class TestMaxBidRoundTrip:
     def test_bidding_the_max_produces_the_margin_at_the_shipped_haircut(self):
         # The haircut was missing here while evaluate() applied it, so the
         # two disagreed about the same card: the ceiling on a $60 card came
-        # out $25.76 and actually realised 20.66%, under the words "the most
-        # you can pay and still keep your margin. Above this, stop."
+        # out $25.76 and actually realised 20.66%, printed as the most you
+        # could pay.
         _, result = self._round_trip(emv=60.0, margin=25.0, shipping=4.99, haircut=5.0)
         assert result.expected_profit == pytest.approx(15.0)
 

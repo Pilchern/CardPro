@@ -1159,7 +1159,7 @@ def _max_text(deal: Listing, verb: str) -> str:
     return text
 
 
-def _offer_card(index: int, deal: Listing, threshold_pct: float) -> str:
+def _offer_card(index: int, deal: Listing) -> str:
     if deal.is_auction:
         # An auction's number is a CURRENT BID. Rendering it under "Asking"
         # or "Cost" is how a $40 opening bid became a reported 60%-off deal
@@ -1357,8 +1357,8 @@ def _auction_block(index: int, deal: Listing,
     return _text_block(_auction_card(index, deal, ending_soon_hours))
 
 
-def _offer_block(index: int, deal: Listing, threshold_pct: float) -> str:
-    return _text_block(_offer_card(index, deal, threshold_pct))
+def _offer_block(index: int, deal: Listing) -> str:
+    return _text_block(_offer_card(index, deal))
 
 
 def _compact_block(index: int, deal: Listing, *, why: Optional[str] = None,
@@ -1859,7 +1859,7 @@ def section_cards(key: str, deals: list, threshold_pct: float, ending_soon_hours
         elif key in (SECTION_AUCTIONS, SECTION_CHEAP_AUCTIONS):
             cards.append(_auction_card(index, deal, ending_soon_hours))
         elif key == SECTION_OFFERS:
-            cards.append(_offer_card(index, deal, threshold_pct))
+            cards.append(_offer_card(index, deal))
         elif key == SECTION_NEEDS_REVIEW:
             cards.append(_review_card(index, deal, ending_soon_hours=ending_soon_hours))
         elif key in (SECTION_COOL_CARDS, SECTION_CHEAP_FINDS, SECTION_INVESTMENT):
