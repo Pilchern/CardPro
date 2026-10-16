@@ -2452,9 +2452,13 @@ def _focus_line(rules) -> str:
     if rules.max_listings > 0:
         parts.append("top {} listings".format(rules.max_listings))
     line = ", ".join(parts)
-    line += ". Anything dearer needed {:.0f}%+ off and {}+ saved to get in.".format(
+    line += ". Anything dearer needed {:.0f}%+ off and {}+ saved to get in".format(
         rules.exceptional_min_discount_pct, _money(rules.exceptional_min_savings_dollars)
     )
+    if rules.deal_capital_ceiling > 0:
+        line += ", except deals that clear your net-profit minimum, which get in up to {} " \
+                "all-in".format(_money(rules.deal_capital_ceiling))
+    line += "."
     return textwrap.fill(line, width=_WRAP_WIDTH)
 
 

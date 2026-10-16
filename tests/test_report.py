@@ -2777,3 +2777,10 @@ def test_the_model_names_every_printed_listing():
     deal = make_listing(id="shown")
     model = report.build_model([deal], 30, date(2026, 8, 10))
     assert model.shown_ids == frozenset({"shown"})
+
+
+def test_focus_line_names_the_deal_capital_ceiling():
+    rules = focus.FocusRules(price_ceiling=50.0, deal_capital_ceiling=150.0)
+    line = " ".join(report._focus_line(rules).split())
+    assert "deals that clear your net-profit minimum, which get in up to $150.00 all-in" in line
+    assert "up to $150" not in " ".join(report._focus_line(focus.FocusRules(price_ceiling=50.0)).split())

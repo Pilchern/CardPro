@@ -649,3 +649,13 @@ def test_a_non_opportunity_still_faces_the_cheap_ceiling():
 def test_capital_ceiling_off_by_default():
     deal = make_listing(price=120.0, pct_under_market=35.0, dollar_savings=65.0, is_opportunity=True)
     assert focus.omission_reason(deal, RULES) == focus.ABOVE_CEILING
+
+
+def test_unknown_shipping_counts_at_the_assumed_figure_for_the_capital_cap():
+    rules = focus.FocusRules(price_ceiling=40.0, deal_capital_ceiling=150.0, assumed_inbound_shipping=4.50)
+    near_cap = make_listing(price=148.0, shipping_price=None, pct_under_market=35.0, dollar_savings=80.0,
+                            is_opportunity=True)
+    assert focus.omission_reason(near_cap, rules) == focus.ABOVE_CEILING
+    free_ship = make_listing(price=148.0, shipping_price=0.0, pct_under_market=35.0, dollar_savings=80.0,
+                             is_opportunity=True)
+    assert focus.omission_reason(free_ship, rules) is None

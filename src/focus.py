@@ -128,6 +128,10 @@ class FocusRules:
     #: the only listings that make money, because fees and postage mean a
     #: $15 net almost never comes from a card under $50. 0 = off.
     deal_capital_ceiling: float = 0.0
+    #: economics.assumed_inbound_shipping, added (taxed) to the capital
+    #: check when a deal's shipping is unknown, so "$149 + ship?" cannot
+    #: slip under a $150 cap -- the same figure the deal's profit assumed.
+    assumed_inbound_shipping: float = 0.0
 
 
 #: Focus disabled: every listing kept, no cap. The default for
@@ -242,8 +246,12 @@ def omission_reason(listing, rules: FocusRules) -> Optional[str]:
         return PRICE_UNKNOWN
     if price <= rules.price_ceiling:
         return None
-    if getattr(listing, "is_opportunity", False) and price <= rules.deal_capital_ceiling:
-        return None
+    if getattr(listing, "is_opportunity", False):
+        all_in = price
+        if getattr(listing, "shipping_price", None) is None:
+            all_in += rules.assumed_inbound_shipping * (1.0 + rules.sales_tax_pct / 100.0)
+        if all_in <= rules.deal_capital_ceiling:
+            return None
     if is_exceptional(listing, rules):
         return None
     # A dearer card can also earn its place by being a genuinely scarce
