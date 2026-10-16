@@ -115,6 +115,14 @@ class Listing:
     # Net profit if it sells at the LOW end of the comps (the lowest kept
     # comp, same haircut) -- the other end of the range the summary shows.
     net_profit_low: Optional[float] = None
+
+    # How long it has been up: listed_at is Browse's itemCreationDate (ISO
+    # 8601) on API listings. age_days is days since then, or since the
+    # corpus first saw the listing (age_basis "first seen") when eBay did not
+    # say -- an alert email carries no listing date.
+    listed_at: Optional[str] = None
+    age_days: Optional[int] = None
+    age_basis: Optional[str] = None
     is_price_drop: bool = False  # seen before, and cheaper than last time
     previous_price: Optional[float] = None  # what it was last time we saw it, for price drops
 

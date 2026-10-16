@@ -853,6 +853,8 @@ def summary_line(deal: Listing) -> Optional[str]:
     ]
     if getattr(deal, "profit_per_hour", None) is not None:
         parts.append("{}/h".format(_whole_money(deal.profit_per_hour)))
+    if getattr(deal, "age_days", None) is not None:
+        parts.append("{} {}d ago".format(deal.age_basis or "listed", deal.age_days))
     parts.append("ID {}".format(_id_confidence(deal)))
     return " · ".join(parts)
 

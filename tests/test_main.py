@@ -14,7 +14,7 @@ import argparse
 import importlib
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from logging.handlers import RotatingFileHandler
 from types import SimpleNamespace
 from unittest import mock
@@ -812,6 +812,40 @@ class TestBrowsePaging:
         stats = observability.RunStats()
         project.fetch_ebay_active(cfg, ["Caleb Williams"], "t", stats)
         assert not any("refused" in w for w in stats.warnings)
+
+
+class TestListingAge:
+    TODAY = date(2026, 10, 16)
+
+    def test_an_api_listing_is_aged_from_ebays_creation_date(self):
+        listing = make_listing(EXACT_TITLE, 20.0, listing_id="A", listed_at="2026-10-14T08:00:00.000Z")
+        main_module.annotate_listing_age([listing], {}, self.TODAY)
+        assert (listing.age_days, listing.age_basis) == (2, "listed")
+
+    def test_an_alert_listing_is_aged_from_the_corpus_first_sighting(self):
+        listing = make_listing(EXACT_TITLE, 20.0, listing_id="B")
+        history = {"Caleb Williams|graded": [{"id": "B", "date": "2026-10-10", "price": 20.0}]}
+        main_module.annotate_listing_age([listing], history, self.TODAY)
+        assert (listing.age_days, listing.age_basis) == (6, "first seen")
+
+    def test_an_unreadable_creation_date_falls_back_and_nothing_known_is_none(self):
+        bad = make_listing(EXACT_TITLE, 20.0, listing_id="B", listed_at="yesterday")
+        unknown = make_listing(EXACT_TITLE, 20.0, listing_id="C")
+        history = {"x": [{"id": "B", "date": "2026-10-15"}]}
+        main_module.annotate_listing_age([bad, unknown], history, self.TODAY)
+        assert (bad.age_days, bad.age_basis) == (1, "first seen")
+        assert unknown.age_days is None
+
+    def test_browse_creation_date_reaches_the_listing(self, project, monkeypatch):
+        from src import config as config_module
+        cfg = config_module.load_config()
+        item = {"itemId": "v1|123456789012|0", "legacyItemId": "123456789012",
+                "itemWebUrl": "https://www.ebay.com/itm/123456789012", "title": EXACT_TITLE,
+                "price": {"value": "20.00"}, "buyingOptions": ["FIXED_PRICE"],
+                "itemCreationDate": "2026-10-15T10:00:00.000Z"}
+        monkeypatch.setattr(project.ebay_client, "search_active_listings", lambda query, **kw: [item])
+        [listing] = project.fetch_ebay_active(cfg, ["Caleb Williams"], "t", observability.RunStats())
+        assert listing.listed_at == "2026-10-15T10:00:00.000Z"
 
 
 class TestCorpusSizeWarning:

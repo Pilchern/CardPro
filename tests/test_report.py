@@ -2797,3 +2797,9 @@ def test_focus_line_names_the_deal_capital_ceiling():
     line = " ".join(report._focus_line(rules).split())
     assert "deals that clear your net-profit minimum, which get in up to $150.00 all-in" in line
     assert "up to $150" not in " ".join(report._focus_line(focus.FocusRules(price_ceiling=50.0)).split())
+
+
+def test_the_summary_says_how_long_the_listing_has_been_up():
+    assert "\u00b7 listed 2d ago \u00b7 ID" in report.summary_line(_tiered_deal(age_days=2, age_basis="listed"))
+    assert "first seen 6d ago" in report.summary_line(_tiered_deal(age_days=6, age_basis="first seen"))
+    assert "ago" not in report.summary_line(_tiered_deal())

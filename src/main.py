@@ -158,7 +158,7 @@ def setup_logging() -> None:
 
 def _build_listing(cfg, *, listing_id, source, title, price, url, players, shipping_price=None,
                    listing_type="unknown", bid_count=None, time_left_text=None, has_best_offer=False,
-                   search_query=None):
+                   search_query=None, listed_at=None):
     """One Listing with identity fully extracted. Returns None when no
     watchlist player is in the title or, failing that, in the saved search
     the listing matched -- the caller records the reason."""
@@ -197,6 +197,7 @@ def _build_listing(cfg, *, listing_id, source, title, price, url, players, shipp
         listing_type=listing_type,
         bid_count=bid_count,
         time_left_text=time_left_text,
+        listed_at=listed_at,
         has_best_offer=has_best_offer,
         negative_signals=tuple(identity.negative_signals.value or ()),
         matched_players=tuple(matched),
@@ -271,6 +272,7 @@ def fetch_ebay_active(cfg, players, token, stats) -> list:
                     bid_count=item.get("bidCount"),
                     time_left_text=ebay_client.time_left_text(item, now),
                     has_best_offer="BEST_OFFER" in buying_options,
+                    listed_at=item.get("itemCreationDate"),
                 )
                 if listing is None:
                     stats.rejections.record(reasons.Reason.NO_PLAYER_MATCH)
@@ -1078,6 +1080,32 @@ def apply_dedupe(listings, seen, today_str, stats) -> list:
     return kept
 
 
+def annotate_listing_age(listings, history, today) -> None:
+    """age_days on every listing that can have one. A deal that has sat for
+    three weeks is a different bet from one listed this morning: either
+    nobody wants it at that price or the comps are wrong. eBay's own
+    creation date when Browse gave one; otherwise the corpus's first-seen
+    date (a row keeps its first-sighting date), which is a floor on the age.
+    """
+    first_seen = {row.get("id"): row.get("date") for rows in history.values() for row in rows}
+    for listing in listings:
+        if listing.listed_at:
+            try:
+                created = datetime.fromisoformat(str(listing.listed_at).replace("Z", "+00:00")).date()
+            except ValueError:
+                created = None
+            if created is not None:
+                listing.age_days, listing.age_basis = max(0, (today - created).days), "listed"
+                continue
+        seen = first_seen.get(listing.id)
+        if seen:
+            try:
+                listing.age_days = max(0, (today - date.fromisoformat(seen)).days)
+                listing.age_basis = "first seen"
+            except ValueError:
+                pass
+
+
 def record_shown(listings, shown_ids, seen, today_str) -> None:
     """Mark every card the report actually printed as seen, at today's price."""
     for listing in listings:
@@ -1221,6 +1249,7 @@ def run(args: argparse.Namespace) -> None:
         if corpus_warning:
             stats.warn(corpus_warning)
         recorded = record_observations(listings, history, today_str)
+        annotate_listing_age(listings, history, today.date())
         logger.info("Recorded %d asking-price observation(s) (auctions and blocked listings excluded)", recorded)
         history = price_history.prune_old(history, cfg.ebay_alert_price_history_max_age_days, today)
         history, opening_bids = price_history.drop_probable_opening_bids(
