@@ -214,6 +214,7 @@ def fake_cfg(**overrides):
         # the gross gates. The shipped floor (SHIPPED_MIN_NET_PROFIT) is
         # asserted by TestNetProfitGate and the shipped-floor siblings below.
         min_net_profit=float("-inf"),
+        min_net_profit_pct_of_value=0.0,
         minutes_per_flip=25.0,
         auction_required_margin_pct=25.0,
         auction_ending_soon_hours=24,
@@ -1372,6 +1373,40 @@ class TestNetProfitGate:
         assert listing.economics.expected_profit >= 15
         assert listing.is_opportunity is True
         assert listing.rejection_reason is None
+
+
+class TestValueScaledProfitFloor:
+    """required net = max(min_net_profit, pct x estimated value)."""
+
+    def test_the_floor_is_the_larger_of_flat_and_share(self):
+        cfg = fake_cfg(min_net_profit=15.0, min_net_profit_pct_of_value=0.10)
+        assert main_module.required_net_profit(cfg, 60.0) == 15.0
+        assert main_module.required_net_profit(cfg, 1000.0) == pytest.approx(100.0)
+
+    def _evaluated(self, price, market, pct):
+        listing = make_listing(EXACT_TITLE, price, listing_type="fixed_price")
+        cfg = fake_cfg(min_net_profit=15.0, min_net_profit_pct_of_value=pct, resale_haircut_asking_pct=20.0)
+        main_module.evaluate_listings([listing], engine_for(spread_observations(market)), cfg,
+                                      observability.RunStats())
+        return listing
+
+    def test_a_dear_card_needs_a_proportionate_net(self):
+        # $1,000 asking median, 20% haircut, bought at $640: nets ~$48 -- over $15, under $100.
+        flat = self._evaluated(640.0, 1000.0, 0.0)
+        scaled = self._evaluated(640.0, 1000.0, 0.10)
+        assert 15.0 < flat.economics.expected_profit < 100.0
+        assert flat.is_opportunity is True
+        assert scaled.is_opportunity is False
+        assert scaled.rejection_reason == reasons.Reason.BELOW_MIN_NET_PROFIT
+
+    def test_the_max_is_solved_for_the_same_scaled_floor(self):
+        listing = self._evaluated(640.0, 1000.0, 0.10)
+        at_max = self._evaluated(listing.max_rational_bid, 1000.0, 0.10)
+        assert at_max.economics.expected_profit == pytest.approx(100.0)
+
+    def test_a_cheap_card_still_needs_the_flat_floor(self):
+        assert self._evaluated(20.0, 80.0, 0.10).max_rational_bid == pytest.approx(
+            self._evaluated(20.0, 80.0, 0.0).max_rational_bid)
 
 
 class TestMaxPriceOnEveryPricedListing:

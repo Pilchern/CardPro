@@ -72,6 +72,8 @@
     "resale_haircut_asking_pct": 20.0,
     "_min_net_profit_comment": "The deal gate's last check: an opportunity must ALSO net at least min_net_profit after every cost above (fees, postage, supplies, purchase tax, assumed inbound shipping, haircut). $15 is the owner's floor for a buy-and-resell flip, raw or slab (ASSUMPTION). The owner's $40 floor for grade-and-flip would apply only to a grading branch, and CardPro has none, so it is not used.",
     "min_net_profit": 15.0,
+    "_min_net_profit_pct_comment": "The floor also scales with the card: required net = max(min_net_profit, min_net_profit_pct_of_value x estimated market value). A flat $15 is fine on a $60 card and nothing on a $1,000 one, where a 1.5% margin is inside the error of any comp, so a $1,000 card needs $100 net. Applies to the deal gate and to every MAX price (owner ASSUMPTION).",
+    "min_net_profit_pct_of_value": 0.10,
     "_minutes_per_flip_comment": "Owner time per flip, for the $/h figure on each deal: 10 minutes to buy plus 15 to list, pack and ship (owner ASSUMPTION). Display only; nothing gates on it.",
     "minutes_per_flip": 25
   },

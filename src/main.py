@@ -687,6 +687,14 @@ def _relic_of(identity) -> Optional[str]:
     return None
 
 
+def required_net_profit(cfg, estimated_value: float) -> float:
+    """The owner's net-profit floor for one card: the flat minimum, or a
+    share of what the card is worth, whichever is more. $15 is a real margin
+    on a $60 card and noise on a $1,000 one."""
+    share = cfg.min_net_profit_pct_of_value
+    return max(cfg.min_net_profit, share * estimated_value) if share > 0 else cfg.min_net_profit
+
+
 def _fee_model(cfg):
     return economics.FeeModel(
         marketplace_fee_pct=cfg.fee_marketplace_pct,
@@ -948,7 +956,12 @@ def evaluate_listings(listings, engine, cfg, stats) -> None:
         # that none could be computed.
         listing.max_rational_bid = economics.max_rational_bid(
             match.stats.median,
-            required_margin_pct=cfg.auction_required_margin_pct if listing.is_auction else 0.0,
+            # The profit floor scales with the card (required_net_profit);
+            # an auction may add its own extra margin on top.
+            required_margin_pct=max(
+                cfg.min_net_profit_pct_of_value * 100.0,
+                cfg.auction_required_margin_pct if listing.is_auction else 0.0,
+            ),
             min_profit_dollars=cfg.min_net_profit,
             # The same assumed postage evaluate() uses: treating unknown
             # as $0 overstates the ceiling by exactly that postage.
@@ -1007,7 +1020,7 @@ def evaluate_listings(listings, engine, cfg, stats) -> None:
         # current fee model (measured 2026-10-16): 6 flags cleared them, 4 of
         # which netted under $15; with this check, 2 flags, 0 under. A
         # discount you cannot bank is not a deal.
-        if listing.economics.expected_profit < cfg.min_net_profit:
+        if listing.economics.expected_profit < required_net_profit(cfg, match.stats.median):
             listing.rejection_reason = reasons.Reason.BELOW_MIN_NET_PROFIT
             stats.rejections.record(reasons.Reason.BELOW_MIN_NET_PROFIT, listing.id)
             continue
@@ -1018,7 +1031,7 @@ def evaluate_listings(listings, engine, cfg, stats) -> None:
             basis=match.stats.basis,
             sample_size=match.stats.sample_size,
             expected_profit=listing.economics.expected_profit,
-            min_net_profit=cfg.min_net_profit,
+            min_net_profit=required_net_profit(cfg, match.stats.median),
         )
         listing.profit_per_hour = (
             listing.economics.expected_profit / (cfg.minutes_per_flip / 60.0)
@@ -1369,7 +1382,8 @@ def run(args: argparse.Namespace) -> None:
         comp_requests_list=comp_requests.build_requests(
             listings, sold, min_comps_required=cfg.valuation_min_comps_required,
             max_price=lambda median, graded: economics.max_rational_bid(
-                median, required_margin_pct=0.0, min_profit_dollars=cfg.min_net_profit,
+                median, required_margin_pct=cfg.min_net_profit_pct_of_value * 100.0,
+                min_profit_dollars=cfg.min_net_profit,
                 shipping_in=cfg.assumed_inbound_shipping, fees=_fee_model(cfg),
                 resale_haircut_pct=cfg.resale_haircut_asking_pct, graded=graded,
             ),
