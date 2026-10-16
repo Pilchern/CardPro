@@ -171,6 +171,13 @@ def alert_item(url, price, title=IDENTIFIED_TITLE, **extra):
 TODAY = datetime(2026, 8, 22, tzinfo=timezone.utc)
 
 
+# The deal gate's net-profit floor as shipped, read from the real settings so
+# these tests follow it rather than restating it.
+SHIPPED_MIN_NET_PROFIT = json.loads(
+    (main_module.ROOT_DIR / "config" / "settings.json").read_text()
+)["economics"]["min_net_profit"]
+
+
 def fake_cfg(**overrides):
     """A config object with only what evaluate_listings/record_observations
     actually read. Keeps these tests independent of the JSON config files."""
@@ -204,7 +211,8 @@ def fake_cfg(**overrides):
         supplies_graded_cost=None,
         assumed_inbound_shipping=None,
         # Off by default here so the gross-discount tests keep testing only
-        # the gross gates; TestNetProfitGate turns it on.
+        # the gross gates. The shipped floor (SHIPPED_MIN_NET_PROFIT) is
+        # asserted by TestNetProfitGate and the shipped-floor siblings below.
         min_net_profit=float("-inf"),
         auction_required_margin_pct=25.0,
         auction_ending_soon_hours=24,
@@ -844,11 +852,21 @@ class TestFlagEligibilityOverride:
         cfg = fake_cfg(require_flag_eligible_comp=False)
         main_module.evaluate_listings([listing], engine_for(observations), cfg, stats)
 
+        # Gross gates only (net floor off in fake_cfg): see the sibling below.
         assert listing.is_opportunity is True
         assert listing.comp_match.level == "price_tier"
         warning = " ".join(stats.warnings)
         assert "require_flag_eligible_comp is FALSE" in warning
         assert "cannot be evidence about price" in warning
+
+    def test_override_still_cannot_beat_the_shipped_net_floor(self):
+        # $25 against a $50 median nets a few dollars: under the shipped
+        # floor this is not an opportunity, override or not.
+        observations, listing = self._context_only_setup()
+        cfg = fake_cfg(require_flag_eligible_comp=False, min_net_profit=SHIPPED_MIN_NET_PROFIT)
+        main_module.evaluate_listings([listing], engine_for(observations), cfg, observability.RunStats())
+        assert listing.is_opportunity is False
+        assert listing.rejection_reason == reasons.Reason.BELOW_MIN_NET_PROFIT
 
     def test_override_does_not_warn_when_left_on(self):
         stats = observability.RunStats()
@@ -870,6 +888,8 @@ class TestCheapCards:
         return spread_observations(median, **fields)
 
     def test_a_cheap_card_with_a_real_attribute_can_now_be_an_opportunity(self):
+        # Gross cheap-card rules only (net floor off in fake_cfg); the shipped
+        # floor rejects this card -- see the shipped-floor test below.
         listing = make_listing(
             "2024 Panini Prizm Caleb Williams Silver #301 RC", 4.0,
             listing_id="CH1", listing_type="fixed_price",
@@ -933,6 +953,8 @@ class TestCheapCards:
         assert listing.is_cheap is False
 
     def test_cheap_buys_are_marked_as_uneconomic_to_flip(self):
+        # Gross cheap-card rules only (net floor off in fake_cfg); the shipped
+        # floor rejects this card -- see the shipped-floor test below.
         # Postage and fees eat the spread at this price. That is arithmetic,
         # not a warning -- the report says "collector buy" rather than showing
         # a scary ROI on a card nobody would flip.
@@ -955,6 +977,27 @@ class TestCheapCards:
         main_module.evaluate_listings([listing], engine_for(self._cheap_comps()), cfg, stats)
         assert listing.is_cheap is False
         assert listing.is_opportunity is True  # 67% off clears the ordinary 30% bar
+
+    # The three tests above that end in is_opportunity True test the GROSS
+    # cheap-card rules with the net floor off. Under the shipped floor no
+    # fixed-price cheap card or collector buy is an opportunity: a $12 card
+    # cannot net $15 at any purchase price.
+    @pytest.mark.parametrize(
+        "overrides",
+        [{}, {"cheap_cards_enabled": False, "min_savings_dollars": 3.0}],
+        ids=["cheap_rules_on", "cheap_rules_off"],
+    )
+    def test_at_the_shipped_net_floor_a_cheap_card_is_never_an_opportunity(self, overrides):
+        listing = make_listing(
+            "2024 Panini Prizm Caleb Williams Silver #301 RC", 4.0,
+            listing_id="CH9", listing_type="fixed_price",
+        )
+        cfg = fake_cfg(min_net_profit=SHIPPED_MIN_NET_PROFIT, **overrides)
+        main_module.evaluate_listings([listing], engine_for(self._cheap_comps()), cfg, observability.RunStats())
+        assert listing.pct_under_market >= 50  # clears every gross bar
+        assert listing.resale_uneconomic is True
+        assert listing.is_opportunity is False
+        assert listing.rejection_reason == reasons.Reason.BELOW_MIN_NET_PROFIT
 
 
 class TestSoldCompsWiring:

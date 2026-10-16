@@ -1610,6 +1610,23 @@ class TestWatchWhy:
         assert "$4.00" in why
         assert "$10.00" in why
 
+    def test_below_min_net_profit_states_the_net(self):
+        # Clears 30% gross; $40 + $5 shipping against a $60 market nets
+        # -$0.45 after $8.95 of fees and $6.50 of mailer and supplies.
+        deal = make_listing(
+            comp_match=make_match(),
+            market_value=60.0,
+            pct_under_market=32.0,
+            dollar_savings=19.0,
+            is_opportunity=False,
+            rejection_reason=reasons.Reason.BELOW_MIN_NET_PROFIT,
+            economics=make_economics(price=40.0, shipping=5.0, market=60.0),
+        )
+        why = report._watch_why(deal, 30.0, 10.0)
+        assert abs(deal.economics.expected_profit - (-0.45)) < 1e-9
+        assert "nets only {}".format(report._money(-0.45)) in why
+        assert "30%" in why
+
     def test_low_confidence_opportunity_says_so(self):
         deal = make_listing(
             comp_match=make_match(confidence="low"),
