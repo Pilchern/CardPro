@@ -52,6 +52,43 @@ def test_signature_class_is_a_set_not_an_autograph():
     assert identity.set_name.value == "Signature Class"
 
 
+@pytest.mark.parametrize(
+    "title",
+    [
+        # Corpus titles that read non-auto before.
+        "2024 Topps Chrome - Rookie Autographs Caleb Williams #RA-CWI (AU, RC)",
+        "2025 BOWMAN CHROME PROSPECT AUTOS BLUE REFRACTOR CALEB WILSON 87/150 PSA 8",
+        "2024 Panini Select Rookie Signatures Rome Odunze Green Prizm /5 PSA 10",
+        "2024 Panini-Obsidian Rome Odunze Black Refractor RPA #RJJ-ROE /299",
+        "2021-22 Panini Contenders - Rookie Ticket Josh Giddey #106 (AU, RC)",
+        "Colson Montgomery /275 AU Ro...",
+    ],
+)
+def test_autograph_plurals_abbreviations_and_the_au_tag(title):
+    assert card_identity.extract_card_identity(title).is_autograph.value is True
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        # A cut straight after "Au" is as often SP Authentic as an auto.
+        "Connor Bedard - 2023-24 Sp Au…",
+        "Image of COLSTON LOVELAND RC Au...",
+        "2024 Panini Prizm Gold Automatic Caleb Williams",
+    ],
+)
+def test_au_false_friends_are_not_autographs(title):
+    assert card_identity.extract_card_identity(title).is_autograph.value is False
+
+
+def test_an_autographs_insert_name_does_not_assert_the_flagship_set():
+    identity = card_identity.extract_card_identity(
+        "Caleb Williams Rookie Auto 2024 Topps Midnight - Horizon Signatures #RHS-CW RC"
+    )
+    assert identity.is_autograph.value is True
+    assert identity.set_name.value is None
+
+
 def test_a_signature_class_autograph_is_still_an_autograph():
     identity = card_identity.extract_card_identity(
         "2025 Topps Signature Class Colston Loveland Rookie Autograph #SC-CL"

@@ -277,7 +277,18 @@ TEAM_AND_PHRASE_MASKS = [
     "Your Choice",
 ]
 
-AUTOGRAPH_KEYWORDS = ["autograph", "autographed", "auto", "signed", "signature"]
+AUTOGRAPH_KEYWORDS = ["autograph", "autographed", "auto", "signed", "signature", "rpa"]
+# The plurals are how insert-set names spell it -- "Rookie Autographs",
+# "Prospect AUTOS", "Horizon Signatures" -- all autos in the corpus, and all
+# were keyed with the plain cards. Kept OUT of AUTOGRAPH_KEYWORDS because
+# that list is also "familiar words" for the flagship-set guard, and an
+# insert-set name must stop "Topps Midnight - Horizon Signatures" being
+# asserted as flagship Topps. "rpa" is rookie patch auto.
+AUTOGRAPH_SET_WORDS = ["autographs", "autos", "signatures"]
+# eBay's own item-specifics tag, "(AU, RC)", and the bare token "AU". Not a
+# keyword because a truncated title ending "Au..." is as often "Authentic"
+# (SP Authentic) as "Auto", so a cut straight after it proves nothing.
+AU_TOKEN_RE = re.compile(r"\bAU\b(?!\s*(?:\u2026|\.\.\.))", re.IGNORECASE)
 MEMORABILIA_KEYWORDS = ["patch", "relic", "jersey", "memorabilia", "swatch", "game-used", "game used"]
 # Patch is a strict subset of memorabilia and is worth materially more than
 # a plain jersey swatch, so it gets its own field rather than being pooled.
@@ -1349,7 +1360,14 @@ def extract_card_identity(title: str) -> CardIdentity:
         card_number=card_number_field,
         serial_number=serial_field,
         print_run=print_run_field,
-        is_autograph=Field(bool(_find_keyword(masked, AUTOGRAPH_KEYWORDS)), "high", "title"),
+        is_autograph=Field(
+            bool(
+                _find_keyword(masked, AUTOGRAPH_KEYWORDS + AUTOGRAPH_SET_WORDS)
+                or AU_TOKEN_RE.search(masked)
+            ),
+            "high",
+            "title",
+        ),
         is_memorabilia=Field(is_memorabilia, "high", "title"),
         is_patch=Field(is_patch, "high", "title"),
         is_lot=Field(is_lot, lot_confidence, "title"),
