@@ -68,7 +68,9 @@
     "resale_haircut_pct": 5.0,
     "resale_haircut_asking_pct": 20.0,
     "_min_net_profit_comment": "The deal gate's last check: an opportunity must ALSO net at least min_net_profit after every cost above (fees, postage, supplies, purchase tax, assumed inbound shipping, haircut). $15 is the owner's floor for a buy-and-resell flip, raw or slab (ASSUMPTION). The owner's $40 floor for grade-and-flip would apply only to a grading branch, and CardPro has none, so it is not used.",
-    "min_net_profit": 15.0
+    "min_net_profit": 15.0,
+    "_minutes_per_flip_comment": "Owner time per flip, for the $/h figure on each deal: 10 minutes to buy plus 15 to list, pack and ship (owner ASSUMPTION). Display only; nothing gates on it.",
+    "minutes_per_flip": 25
   },
   "auctions": {
     "_comment": "An auction's current bid is not a price. Auctions get their own report section and their own math: the max bid is the highest you could bid and still net economics.min_net_profit at the haircut sale price, after fees, postage, supplies, tax and inbound shipping -- the same number fixed-price listings show as their max offer/buy. required_margin_pct is an optional EXTRA floor for auctions only (profit of at least that % of market value, whichever is more); it was 25, which on top of the 20% asking haircut double-counted the safety margin and put the ceiling far below what the deal gate itself accepts (ASSUMPTION: the haircut is enough). ending_soon_hours controls what counts as urgent -- only used for ordering the section, never for relaxing any quality gate.",

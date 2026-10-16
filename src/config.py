@@ -102,6 +102,7 @@ class Config:
     assumed_inbound_shipping: float
     # The deal gate's floor on expected NET profit; see settings.json.
     min_net_profit: float
+    minutes_per_flip: float  # owner time per flip, for profit per hour
 
     auction_required_margin_pct: float
     auction_ending_soon_hours: int
@@ -236,6 +237,7 @@ def load_config() -> Config:
         supplies_graded_cost=float(economics.get("supplies_graded", 1.0)),
         assumed_inbound_shipping=float(economics.get("assumed_inbound_shipping", 4.50)),
         min_net_profit=float(economics.get("min_net_profit", 15.0)),
+        minutes_per_flip=float(economics.get("minutes_per_flip", 25.0)),
         auction_required_margin_pct=float(auctions.get("required_margin_pct", 0.0)),
         auction_ending_soon_hours=int(auctions.get("ending_soon_hours", 24)),
         immediate_alert_min_savings_dollars=float(alerts.get("immediate_alert_min_savings_dollars", 150.0)),

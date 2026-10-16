@@ -2712,3 +2712,62 @@ def test_a_search_implied_print_run_is_labelled_as_such():
     listing.card_identity = card_identity.extract_card_identity(title)
     listing.desirable_attributes = desirability.attributes_of(listing)
     assert "#'D /99 OR LESS? (PER SEARCH)" in " ".join(report._tags(listing)).upper()
+
+
+# ---------------------------------------------------------------------------
+# the phone summary line
+# ---------------------------------------------------------------------------
+
+
+def _tiered_deal(**overrides):
+    from src import economics
+
+    econ = economics.evaluate(
+        economics.Acquisition(100.0, None, 10.25, assumed_shipping=4.50), 200.0,
+        economics.FeeModel.ebay_default(), resale_haircut_pct=20.0,
+    )
+    fields = dict(
+        shipping_price=None, economics=econ, deal_tier="Maybe", max_rational_bid=127.4,
+        profit_per_hour=econ.expected_profit / (25 / 60),
+        card_identity=CardIdentity(
+            year=Field(1986, "high"), set_name=Field("Fleer", "high"),
+            parallel=Field(None, "none"), card_number=Field("57", "high"),
+            is_base=Field(True, "medium"),
+        ),
+    )
+    fields.update(overrides)
+    return make_listing(**fields)
+
+
+def test_summary_line_reads_as_one_decision():
+    # $100 + assumed $4.50 + 10.25% tax against a $200 asking median, 20%
+    # haircut: sells $144 (lowest comp $180) to $160, nets $15.09, $36/h.
+    assert report.summary_line(_tiered_deal()) == (
+        "MAYBE · $100.00+ship? · MAX $127 · sells $144-160 · ASKING n=7"
+        " · net +$15 · $36/h · ID med"
+    )
+
+
+def test_summary_line_states_known_and_free_shipping():
+    assert "$100.00+$4.99 ·" in report.summary_line(_tiered_deal(shipping_price=4.99))
+    assert "$100.00 free ship ·" in report.summary_line(_tiered_deal(shipping_price=0.0))
+
+
+def test_summary_id_confidence_is_the_weakest_key_field():
+    identity = CardIdentity(
+        year=Field(1986, "high"), set_name=Field("Fleer", "low"),
+        parallel=Field("Silver", "high"), card_number=Field(None, "none"),
+    )
+    assert report.summary_line(_tiered_deal(card_identity=identity)).endswith("ID ?")
+
+
+def test_no_summary_without_a_tier():
+    assert report.summary_line(_tiered_deal(deal_tier=None)) is None
+
+
+def test_the_summary_is_the_first_line_of_a_deal_card():
+    card = report._thesis_card(1, _tiered_deal())
+    labels = [label for label, _ in card.fields]
+    assert labels[0] == "Summary"
+    assert card.fields[0][1].startswith("MAYBE · $100.00+ship?")
+    assert "Cost" in labels  # the detailed block stays below it

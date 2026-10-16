@@ -214,6 +214,7 @@ def fake_cfg(**overrides):
         # the gross gates. The shipped floor (SHIPPED_MIN_NET_PROFIT) is
         # asserted by TestNetProfitGate and the shipped-floor siblings below.
         min_net_profit=float("-inf"),
+        minutes_per_flip=25.0,
         auction_required_margin_pct=25.0,
         auction_ending_soon_hours=24,
         immediate_alert_min_savings_dollars=150.0,
@@ -1142,6 +1143,34 @@ class TestMaxPriceOnEveryPricedListing:
         auction = self._evaluated(20.0, "auction", auction_required_margin_pct=25.0)
         fixed = self._evaluated(20.0, "fixed_price", auction_required_margin_pct=25.0)
         assert auction.max_rational_bid < fixed.max_rational_bid
+
+
+class TestDealTierWiring:
+    def test_an_asking_comp_opportunity_is_maybe_with_profit_per_hour(self):
+        listing = make_listing(EXACT_TITLE, 200.0, listing_type="fixed_price")
+        main_module.evaluate_listings(
+            [listing], engine_for(spread_observations(400.0)), fake_cfg(min_net_profit=15.0),
+            observability.RunStats(),
+        )
+        assert listing.is_opportunity is True
+        assert listing.deal_tier == "Maybe"
+        assert listing.profit_per_hour == pytest.approx(listing.economics.expected_profit / (25 / 60))
+
+    def test_a_sold_comp_opportunity_is_strong(self):
+        listing = make_listing(EXACT_TITLE, 200.0, listing_type="fixed_price")
+        sold = spread_observations(400.0, basis=comps.BASIS_SOLD)
+        main_module.evaluate_listings(
+            [listing], engine_for(sold), fake_cfg(min_net_profit=15.0), observability.RunStats()
+        )
+        assert listing.deal_tier == "Strong"
+
+    def test_a_rejected_listing_has_no_tier(self):
+        listing = make_listing(EXACT_TITLE, 390.0, listing_type="fixed_price")
+        main_module.evaluate_listings(
+            [listing], engine_for(spread_observations(400.0)), fake_cfg(), observability.RunStats()
+        )
+        assert listing.is_opportunity is False
+        assert listing.deal_tier is None
 
 
 class TestBaseCardsAtExact:

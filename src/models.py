@@ -108,6 +108,10 @@ class Listing:
     resale_uneconomic: bool = False  # fees + postage exceed the spread -- a collector buy, not a flip
 
     is_opportunity: bool = False
+    # Set on opportunities only: economics.deal_tier ("Strong" | "Maybe"),
+    # and net profit per hour of buying + selling time.
+    deal_tier: Optional[str] = None
+    profit_per_hour: Optional[float] = None
     is_price_drop: bool = False  # seen before, and cheaper than last time
     previous_price: Optional[float] = None  # what it was last time we saw it, for price drops
 

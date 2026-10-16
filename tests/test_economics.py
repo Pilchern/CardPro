@@ -206,6 +206,33 @@ def test_the_larger_of_margin_and_floor_wins():
     assert floor_only - margin_too == pytest.approx(85.0 / 1.1025)
 
 
+class TestDealTier:
+    BASE = dict(flag_eligible=True, basis="sold", sample_size=3, expected_profit=15.0, min_net_profit=15.0)
+
+    def _tier(self, **overrides):
+        from src.economics import deal_tier
+
+        return deal_tier(**dict(self.BASE, **overrides))
+
+    def test_strong_needs_sold_comps_three_deep_and_the_net_floor(self):
+        assert self._tier() == "Strong"
+
+    def test_asking_comps_cap_at_maybe_however_good(self):
+        assert self._tier(basis="asking", sample_size=40, expected_profit=500.0) == "Maybe"
+
+    def test_two_sold_comps_are_maybe(self):
+        assert self._tier(sample_size=2) == "Maybe"
+
+    def test_under_the_floor_is_no_tier(self):
+        assert self._tier(expected_profit=14.99) is None
+
+    def test_a_context_only_comp_is_no_tier(self):
+        assert self._tier(flag_eligible=False) is None
+
+    def test_no_economics_is_no_tier(self):
+        assert self._tier(expected_profit=None) is None
+
+
 def test_max_bid_uses_the_slab_outbound_cost():
     fees = FeeModel.ebay_default()
     raw = max_rational_bid(15.0, required_margin_pct=0.0, shipping_in=0.0, fees=fees)

@@ -775,6 +775,69 @@ def _economics_text(deal: Listing) -> Optional[str]:
     )
 
 
+#: ID confidence words for the summary line, lowest wins.
+_ID_CONFIDENCE_ORDER = ("none", "low", "medium", "high")
+_ID_CONFIDENCE_WORD = {"none": "?", "low": "low", "medium": "med", "high": "high"}
+
+
+def _id_confidence(deal: Listing) -> str:
+    """The weakest of year / set / parallel / card number, because the
+    identity is only as good as its least certain key field. A base card's
+    parallel counts at the confidence of the base call."""
+    identity = deal.card_identity
+    if identity is None:
+        return "?"
+    parallel = identity.parallel
+    if parallel.value is None and identity.is_base.value:
+        parallel = identity.is_base
+    levels = [
+        f.confidence if f.value is not None else "none"
+        for f in (identity.year, identity.set_name, parallel, identity.card_number)
+    ]
+    return _ID_CONFIDENCE_WORD[min(levels, key=_ID_CONFIDENCE_ORDER.index)]
+
+
+def _whole_money(value: float) -> str:
+    return "${:,.0f}".format(value)
+
+
+def summary_line(deal: Listing) -> Optional[str]:
+    """One line a phone can show without scrolling, for a tiered deal:
+    tier, price + shipping, MAX, expected sale range, comp basis and count,
+    net, $/h, identity confidence. None for anything without a tier.
+
+    The sale range is [lowest kept comp, median] after the same haircut the
+    profit uses -- selling anywhere from the cheap end of the comps up to
+    the median -- from spread stats the comp engine already keeps.
+    """
+    tier = getattr(deal, "deal_tier", None)
+    stats = _stats(deal)
+    econ = deal.economics
+    if tier is None or stats is None or econ is None or deal.price is None:
+        return None
+    if deal.shipping_price is None:
+        price = "{}+ship?".format(_money(deal.price))
+    elif deal.shipping_price == 0:
+        price = "{} free ship".format(_money(deal.price))
+    else:
+        price = "{}+{}".format(_money(deal.price), _money(deal.shipping_price))
+    factor = econ.expected_sale_price / econ.estimated_market_value if econ.estimated_market_value else 1.0
+    parts = [
+        tier.upper(),
+        price,
+        "MAX {}".format(_whole_money(deal.max_rational_bid)) if deal.max_rational_bid else "MAX none",
+        "sells {}-{}".format(
+            _whole_money(stats.minimum * factor), _whole_money(econ.expected_sale_price).lstrip("$")
+        ),
+        "{} n={}".format(str(stats.basis).upper(), stats.sample_size),
+        "net {}{}".format("+" if econ.expected_profit >= 0 else "-", _whole_money(abs(econ.expected_profit))),
+    ]
+    if getattr(deal, "profit_per_hour", None) is not None:
+        parts.append("{}/h".format(_whole_money(deal.profit_per_hour)))
+    parts.append("ID {}".format(_id_confidence(deal)))
+    return " · ".join(parts)
+
+
 #: Attributes whose label reads as an adjective ("serial numbered"), which
 #: must not take "a" in front of it. Purely an English rule about the labels
 #: desirability publishes -- it adds no attribute and hides none, and a name
@@ -964,6 +1027,11 @@ def _thesis_card(index: int, deal: Listing, ending_soon_hours: float = DEFAULT_E
         return _auction_card(index, deal, ending_soon_hours)
 
     fields = []
+    # First, so a phone shows the decision before the evidence. The reason
+    # is the Discount line below; the full block stays under it.
+    summary = summary_line(deal)
+    if summary:
+        fields.append(("Summary", summary))
     drop = _price_drop_line(deal)
     if drop:
         fields.append(("Price drop", drop))

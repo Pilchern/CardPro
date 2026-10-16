@@ -472,6 +472,30 @@ def max_rational_bid(
     return bid if bid > 0.0 else 0.0
 
 
+def deal_tier(
+    *,
+    flag_eligible: bool,
+    basis: Optional[str],
+    sample_size: int,
+    expected_profit: Optional[float],
+    min_net_profit: float,
+) -> Optional[str]:
+    """"Strong", "Maybe", or None (not a flag at all).
+
+    Strong needs evidence that a card SELLS at this value: a flag-eligible
+    comp built only from sold prices, at least three of them, and net profit
+    at the owner's floor. An asking-price comp is a seller's opinion, so it
+    caps at Maybe however good the numbers look -- an asking-only flag can
+    never reach the top tier. No comp, a context-only comp, or net under the
+    floor is no tier: those are not flags.
+    """
+    if not flag_eligible or expected_profit is None or expected_profit < min_net_profit:
+        return None
+    if basis == "sold" and sample_size >= 3:
+        return "Strong"
+    return "Maybe"
+
+
 def breakeven_grade_probability(
     raw_cost: float,
     grading_cost: float,

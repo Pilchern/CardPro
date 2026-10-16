@@ -973,6 +973,14 @@ def evaluate_listings(listings, engine, cfg, stats) -> None:
             continue
 
         listing.is_opportunity = True
+        listing.deal_tier = economics.deal_tier(
+            flag_eligible=match.flag_eligible,
+            basis=match.stats.basis,
+            sample_size=match.stats.sample_size,
+            expected_profit=listing.economics.expected_profit,
+            min_net_profit=cfg.min_net_profit,
+        )
+        listing.profit_per_hour = listing.economics.expected_profit / (cfg.minutes_per_flip / 60.0)
         stats.opportunities_reported += 1
 
 
