@@ -200,7 +200,7 @@ COMPOUND_PARALLELS = [
     # Refractor" came out as plain "Refractor" at high confidence, which is
     # the exact pooling the entry was added to prevent.
     "Aqua Vapor", "Rose Gold", "Press Proof", "Dragon Scale", "Logofractor",
-    "Rainbow Foil", "Speckle Refractor", "Snakeskin Refractor",
+    "Rainbow Foil", "Speckle Refractor", "Snakeskin Refractor", "Green Wave",
 ]
 
 UNAMBIGUOUS_PARALLELS = [
@@ -259,7 +259,9 @@ PARALLEL_KEYWORDS = COMPOUND_PARALLELS + UNAMBIGUOUS_PARALLELS + COLOR_PARALLEL_
 TEAM_AND_PHRASE_MASKS = [
     # Teams (colour-bearing)
     "White Sox", "Red Sox", "Red Wings", "Red Raiders", "Blue Jays", "Blue Jackets",
-    "Blue Devils", "Green Bay", "Green Wave", "Golden State", "Golden Knights",
+    # "Tulane Green Wave", not bare "Green Wave": that is also a Panini Prizm
+    # and Topps Chrome parallel, and every corpus hit (23) was the parallel.
+    "Blue Devils", "Green Bay", "Tulane Green Wave", "Golden State", "Golden Knights",
     "Golden Bears", "Black Knights", "Blackhawks", "Big Red", "Crimson Tide",
     "Scarlet Knights", "Syracuse Orange", "Reds", "Orioles", "Browns", "Cardinals",
     "Royals", "Blues", "Rangers",

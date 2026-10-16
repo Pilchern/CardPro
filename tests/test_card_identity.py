@@ -159,6 +159,27 @@ def test_team_name_is_not_a_parallel_red_sox():
     assert identity.is_autograph.value is True
 
 
+def test_tulane_green_wave_is_a_team_not_a_parallel():
+    identity = card_identity.extract_card_identity("2019 Panini Contenders Tulane Green Wave Auto")
+    assert identity.parallel.value is None
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        # Corpus titles: the bare-"Green Wave" team mask erased the parallel
+        # and put these in the #301 base bucket (median $8.25).
+        "2024 Panini Prizm Caleb Williams #301 Green Wave Prizm (RC) Chicago Bears Rookie",
+        "2025-26 Topps Chrome Update Josh Giddey #48 Green Wave Refractor /99 Bulls",
+        "2025 Topps Chrome Black Colston Loveland Green Wave 64/99 Bears RC #106",
+    ],
+)
+def test_green_wave_is_a_parallel(title):
+    identity = card_identity.extract_card_identity(title)
+    assert identity.parallel.value == "Green Wave"
+    assert identity.parallel.confidence == "high"
+
+
 def test_award_name_is_not_a_parallel_gold_glove():
     identity = card_identity.extract_card_identity("Michael Jordan Gold Glove Award unsigned photo card")
     assert identity.parallel.value is None
@@ -203,12 +224,14 @@ def test_unambiguous_single_word_parallel_is_high_confidence():
     assert identity.parallel.confidence == "high"
 
 
-def test_draft_pick_idiom_is_not_a_card_number_and_team_is_not_a_parallel():
+def test_draft_pick_idiom_is_not_a_card_number():
+    # "Green Wave /99" was asserted to be the Tulane team here; it is the
+    # numbered Green Wave parallel (a team is never numbered to 99).
     identity = card_identity.extract_card_identity(
         "Pete Crow-Armstrong 2025 Topps #1 Draft Pick Green Wave /99"
     )
     assert identity.card_number.value is None
-    assert identity.parallel.value is None
+    assert identity.parallel.value == "Green Wave"
     assert identity.print_run.value == 99
     assert identity.serial_number.value is None
 
