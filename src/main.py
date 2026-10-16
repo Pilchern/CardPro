@@ -1355,7 +1355,12 @@ def run(args: argparse.Namespace) -> None:
         ending_soon_hours=cfg.auction_ending_soon_hours,
         focus_rules=cfg.focus_rules,
         comp_requests_list=comp_requests.build_requests(
-            listings, sold, min_comps_required=cfg.valuation_min_comps_required
+            listings, sold, min_comps_required=cfg.valuation_min_comps_required,
+            max_price=lambda median, graded: economics.max_rational_bid(
+                median, required_margin_pct=0.0, min_profit_dollars=cfg.min_net_profit,
+                shipping_in=cfg.assumed_inbound_shipping, fees=_fee_model(cfg),
+                resale_haircut_pct=cfg.resale_haircut_asking_pct, graded=graded,
+            ),
         ),
         unidentified_listings=comp_requests.unidentified_count(listings),
         cheap_find_ceiling=cfg.cheap_find_ceiling,
