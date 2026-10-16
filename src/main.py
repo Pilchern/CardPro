@@ -883,43 +883,53 @@ def evaluate_listings(listings, engine, cfg, stats) -> None:
         # would ever flip.
         listing.resale_uneconomic = listing.economics.expected_profit <= 0
 
+        # The most you can pay for the ITEM and still net min_net_profit at the
+        # haircut sale price, after fees, postage, supplies, tax and inbound
+        # shipping. One number for every priced listing: the bid ceiling on
+        # an auction, the max offer/buy on fixed price. It is the deal gate's
+        # own floor solved for price, so a flagged card is always at or under
+        # it. (It replaced a 30%-gross offer "maximum" that lost money on raw
+        # cards, and a 25%-of-value auction margin; auctions.required_margin_pct
+        # survives as an optional extra floor, shipped at 0.)
+        #
+        # ONLY off a comp CardPro will stand behind. A max bid is the one
+        # number in this report that tells you to spend money -- "the most
+        # you can pay. Above this, stop." -- and it was being computed from
+        # whatever median was available, including a price-bracket bucket.
+        # On the live corpus that put a $729.31 ceiling on a $125 Ernie Banks
+        # card, two lines under a Market line reading "not established ...
+        # CardPro has no valuation for this card". A number nobody may act on
+        # must not come back wearing the one label that says act on it.
+        #
+        # It cuts the other way too: focus._has_bidding_room drops an
+        # auction whose current bid is over this ceiling, so a context-only
+        # median was silently removing real auctions from the email. With no
+        # ceiling there is nothing to be over, and the report says plainly
+        # that none could be computed.
+        listing.max_rational_bid = economics.max_rational_bid(
+            match.stats.median,
+            required_margin_pct=cfg.auction_required_margin_pct if listing.is_auction else 0.0,
+            min_profit_dollars=cfg.min_net_profit,
+            # The same assumed postage evaluate() uses: treating unknown
+            # as $0 overstates the ceiling by exactly that postage.
+            shipping_in=(
+                listing.shipping_price
+                if listing.shipping_price is not None
+                else cfg.assumed_inbound_shipping
+            ),
+            fees=fees,
+            # The same haircut evaluate() applies. Without it the two
+            # disagree about the same card, and the ceiling comes out
+            # high -- which is the expensive direction to be wrong in.
+            resale_haircut_pct=haircut_pct,
+            graded=graded,
+        ) if match.flag_eligible else None
+        # Unknown shipping makes the ceiling an upper bound, not a
+        # figure. The report has to be able to say so; the bare float
+        # cannot carry that.
+        listing.max_rational_bid_shipping_known = listing.shipping_price is not None
+
         if listing.is_auction:
-            # ONLY off a comp CardPro will stand behind. A max bid is the one
-            # number in this report that tells you to spend money -- "the most
-            # you can pay and still keep your margin. Above this, stop." --
-            # and it was being computed from whatever median was available,
-            # including a price-bracket bucket. On the live corpus that put a
-            # $729.31 ceiling on a $125 Ernie Banks card, two lines under a
-            # Market line reading "not established ... CardPro has no
-            # valuation for this card". A number nobody may act on must not
-            # come back wearing the one label that says act on it.
-            #
-            # It cuts the other way too: focus._has_bidding_room drops an
-            # auction whose current bid is over this ceiling, so a
-            # context-only median was silently removing real auctions from
-            # the email. With no ceiling there is nothing to be over, and the
-            # report says plainly that none could be computed.
-            listing.max_rational_bid = economics.max_rational_bid(
-                match.stats.median,
-                required_margin_pct=cfg.auction_required_margin_pct,
-                # The same assumed postage evaluate() uses: treating unknown
-                # as $0 overstates the ceiling by exactly that postage.
-                shipping_in=(
-                    listing.shipping_price
-                    if listing.shipping_price is not None
-                    else cfg.assumed_inbound_shipping
-                ),
-                fees=fees,
-                # The same haircut evaluate() applies. Without it the two
-                # disagree about the same card, and the ceiling comes out
-                # high -- which is the expensive direction to be wrong in.
-                resale_haircut_pct=haircut_pct,
-                graded=graded,
-            ) if match.flag_eligible else None
-            # Unknown shipping makes the ceiling an upper bound, not a
-            # figure. The report has to be able to say so; the bare float
-            # cannot carry that.
-            listing.max_rational_bid_shipping_known = listing.shipping_price is not None
             # A current bid is not a price, so an auction is never a
             # confirmed deal no matter how far under market it sits. It gets
             # its own report section and its own math instead.

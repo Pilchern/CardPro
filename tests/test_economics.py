@@ -184,6 +184,28 @@ def test_evaluate_ships_a_slab_as_a_slab():
     assert slab.outbound_costs == pytest.approx(6.00 + 1.00)
 
 
+def test_max_bid_solved_for_a_profit_floor_nets_exactly_that_floor():
+    # Round trip: buy at the max (plus shipping, plus tax) and the profit is
+    # the floor -- the max is the deal gate's own rule solved for price.
+    fees = FeeModel.ebay_default()
+    bid = max_rational_bid(
+        100.0, required_margin_pct=0.0, min_profit_dollars=15.0, shipping_in=4.50,
+        fees=fees, resale_haircut_pct=20.0,
+    )
+    at_max = evaluate(Acquisition(bid, 4.50, fees.sales_tax_pct), 100.0, fees, resale_haircut_pct=20.0)
+    assert at_max.expected_profit == pytest.approx(15.0)
+
+
+def test_the_larger_of_margin_and_floor_wins():
+    fees = FeeModel.ebay_default()
+    floor_only = max_rational_bid(400.0, required_margin_pct=0.0, min_profit_dollars=15.0,
+                                  shipping_in=0.0, fees=fees)
+    margin_too = max_rational_bid(400.0, required_margin_pct=25.0, min_profit_dollars=15.0,
+                                  shipping_in=0.0, fees=fees)
+    # $100 of margin is more than the $15 floor, so it sets the bid.
+    assert floor_only - margin_too == pytest.approx(85.0 / 1.1025)
+
+
 def test_max_bid_uses_the_slab_outbound_cost():
     fees = FeeModel.ebay_default()
     raw = max_rational_bid(15.0, required_margin_pct=0.0, shipping_in=0.0, fees=fees)

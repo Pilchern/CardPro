@@ -71,8 +71,8 @@
     "min_net_profit": 15.0
   },
   "auctions": {
-    "_comment": "An auction's current bid is not a price. Auctions get their own report section and their own math: max rational bid is the highest you could bid and still keep required_margin_pct of margin against estimated market value, after fees and shipping. ending_soon_hours controls what counts as urgent -- only used for ordering the section, never for relaxing any quality gate.",
-    "required_margin_pct": 25,
+    "_comment": "An auction's current bid is not a price. Auctions get their own report section and their own math: the max bid is the highest you could bid and still net economics.min_net_profit at the haircut sale price, after fees, postage, supplies, tax and inbound shipping -- the same number fixed-price listings show as their max offer/buy. required_margin_pct is an optional EXTRA floor for auctions only (profit of at least that % of market value, whichever is more); it was 25, which on top of the 20% asking haircut double-counted the safety margin and put the ceiling far below what the deal gate itself accepts (ASSUMPTION: the haircut is enough). ending_soon_hours controls what counts as urgent -- only used for ordering the section, never for relaxing any quality gate.",
+    "required_margin_pct": 0,
     "ending_soon_hours": 24
   },
   "alerts": {

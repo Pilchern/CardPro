@@ -394,7 +394,8 @@ def test_a_day_of_only_cheap_auctions_says_so_in_the_subject():
 
 
 def test_offer_section_requires_best_offer_no_opportunity_and_a_real_comp():
-    offerable = make_listing(id="offer", has_best_offer=True, is_opportunity=False, pct_under_market=5.0)
+    offerable = make_listing(id="offer", has_best_offer=True, is_opportunity=False, pct_under_market=5.0,
+                             max_rational_bid=120.0)
     no_comp = make_listing(
         id="nocomp", has_best_offer=True, is_opportunity=False, comp_match=None, market_value=None,
         pct_under_market=None, dollar_savings=None,
@@ -562,7 +563,8 @@ def test_each_section_renders_when_it_has_content():
                      card_identity=card_identity.extract_card_identity(
                          "2024 Panini Prizm Caleb Williams Silver Prizm #301"),
                      card_type="raw", grader=None, grade=None),
-        make_listing(id="offer", has_best_offer=True, is_opportunity=False, pct_under_market=5.0),
+        make_listing(id="offer", has_best_offer=True, is_opportunity=False, pct_under_market=5.0,
+                     max_rational_bid=120.0),
         # No comp: a card with one belongs in a section that prints it.
         make_listing(id="cool", is_opportunity=False, comp_match=None, market_value=None,
                      pct_under_market=None, dollar_savings=None,
@@ -1032,7 +1034,7 @@ def test_auction_block_shows_bids_time_left_and_max_rational_bid():
                            max_rational_bid=150.0, is_opportunity=False)
     body = body_of([listing])
     assert "7 bids, 0d 06h remaining" in flat(body)
-    assert "$150.00 -- the most you can pay and still keep your margin" in flat(body)
+    assert "$150.00 -- the most you can bid for the card and still net your profit minimum" in flat(body)
 
 
 def test_auction_discount_is_scoped_to_the_current_bid_and_warned_about():
@@ -1087,52 +1089,42 @@ def test_ending_soon_window_not_marked_for_a_distant_auction():
 # ---------------------------------------------------------------------------
 
 
-def test_offer_trio_anchors_on_the_threshold_ceiling():
-    aggressive, fair, maximum = report.offer_trio(300.0, 25.0)
-    assert maximum == 225.0  # market - the 25% discount threshold passed in
-    assert round(fair, 2) == 213.75  # 5% below the ceiling
-    assert round(aggressive, 2) == 191.25  # 15% below the ceiling
-
-
-def test_offer_trio_is_monotonic_at_every_threshold():
-    """The old market-anchored version produced a "fair" offer above the
-    "maximum" at a 30% threshold, which is nonsense dressed as arithmetic."""
-    for threshold in (0.0, 5.0, 20.0, 30.0, 50.0, 90.0):
-        aggressive, fair, maximum = report.offer_trio(349.0, threshold)
-        assert aggressive < fair < maximum, threshold
-
-
-def test_offer_maximum_still_clears_the_users_own_threshold():
-    market = 400.0
-    _, _, maximum = report.offer_trio(market, 30.0)
-    assert (market - maximum) / market * 100 == 30.0
-
-
-def test_offer_block_shows_the_trio_and_its_arithmetic():
+def test_offer_block_shows_one_max_offer_solved_for_the_profit_floor():
+    # Replaced the trio whose "maximum" was 30% under market GROSS -- a price
+    # that loses money on a raw card once fees and postage come out.
     listing = make_listing(has_best_offer=True, is_opportunity=False, price=280.0,
                            shipping_price=5.0, market_value=300.0, pct_under_market=5.0,
-                           dollar_savings=15.0, comp_match=make_match(median=300.0))
-    body = body_of([listing], threshold_pct=25)
-    offers = section_of(body, report.SECTION_OFFERS)
-    text = flat(offers)
-    assert "aggressive $191.25 | fair $213.75 | maximum $225.00" in text
-    assert "maximum is the highest price that still clears your 25% discount threshold" in text
-    assert "market estimate of $300.00" in text
-    assert "fair is 5% below it and aggressive 15% below it" in text
+                           dollar_savings=15.0, comp_match=make_match(median=300.0),
+                           max_rational_bid=187.5)
+    text = flat(section_of(body_of([listing], threshold_pct=25), report.SECTION_OFFERS))
+    assert "Max offer" in text
+    assert "$187.50 -- the most you can offer for the card and still net your profit minimum" in text
+    assert "aggressive" not in text
 
 
-def test_offer_block_notes_known_shipping_in_the_basis_line():
-    listing = make_listing(has_best_offer=True, is_opportunity=False, shipping_price=6.0,
-                           market_value=300.0, pct_under_market=5.0, dollar_savings=15.0)
-    body = body_of([listing])
-    assert "subtract the $6.00 known shipping from what you actually offer" in flat(body)
-
-
-def test_offer_block_treats_offers_as_ceilings_when_shipping_is_unknown():
+def test_max_offer_warns_when_shipping_was_assumed():
     listing = make_listing(has_best_offer=True, is_opportunity=False, shipping_price=None,
-                           market_value=300.0, pct_under_market=5.0, dollar_savings=15.0)
-    body = body_of([listing])
-    assert "shipping is unknown, so treat them as ceilings" in flat(body)
+                           market_value=300.0, pct_under_market=5.0, dollar_savings=15.0,
+                           max_rational_bid=150.0, max_rational_bid_shipping_known=False)
+    assert "Shipping is unknown, so this assumes typical postage" in flat(body_of([listing]))
+
+
+def test_no_offer_card_when_no_price_nets_the_floor():
+    listing = make_listing(has_best_offer=True, is_opportunity=False, pct_under_market=5.0,
+                           max_rational_bid=0.0)
+    sections = report.classify_sections([listing], threshold_pct=30)
+    assert sections[report.SECTION_OFFERS] == []
+
+
+def test_a_zero_max_says_walk_away():
+    listing = make_listing(listing_type="auction", is_opportunity=False, max_rational_bid=0.0)
+    assert "none -- no price nets your profit minimum" in flat(body_of([listing]))
+
+
+def test_deal_card_shows_the_max_buy():
+    deal = make_listing(max_rational_bid=210.0)
+    assert "Max buy" in flat(body_of([deal]))
+    assert "$210.00 -- the most you can pay for the card" in flat(body_of([deal]))
 
 
 # ---------------------------------------------------------------------------

@@ -153,7 +153,7 @@ REASON_LABELS: Dict[str, str] = {
     Reason.AUCTION_CURRENT_BID_NOT_A_PRICE:
         "current bid, not a sale price -- an auction's bid is not what it will close at",
     Reason.AUCTION_BID_EXCEEDS_MAX_RATIONAL_BID:
-        "the bid is already above the most you could pay and keep your margin",
+        "the bid is already above the most you could pay and still net your profit minimum",
     # policy
     Reason.LOT: "a lot of several cards, not one card",
     Reason.REPRINT: "a reprint, not the original card",

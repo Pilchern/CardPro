@@ -32,10 +32,8 @@ WHAT THIS MODULE REFUSES TO DO
   decision is yours and the report's job is to hand you the evidence.
 * **No arithmetic the caller did not supply.** Market values, discounts,
   economics and max rational bids arrive already computed on the
-  ``Listing``. This module classifies and renders them. The only numbers
-  it derives are the Best Offer trio, which are flat percentages off the
-  market value and are printed with their arithmetic stated on the line
-  below (see ``_offer_block``).
+  ``Listing``. This module classifies and renders them; it derives none
+  (the max offer/bid is economics.max_rational_bid, solved in main).
 * **No number the data does not support.** No comp means the Market line
   says so in English and the Discount line does not exist. Unknown
   shipping is never $0; it is "shipping unknown -- actual cost may be
@@ -196,7 +194,8 @@ SECTION_SUBTITLES = {
     ),
     SECTION_OFFERS: (
         "Not deals at the asking price -- but they accept offers, and a negotiated price "
-        "could get there. Offer figures are flat percentages off market, stated on each card."
+        "could get there. The max offer on each card is the highest price that still nets "
+        "your profit minimum after fees, postage and tax."
     ),
     SECTION_COOL_CARDS: (
         "No valuation claim here at all -- CardPro cannot tell you what these are worth, and "
@@ -253,16 +252,6 @@ DEFAULT_CHEAP_AUCTION_CEILING = 10.0
 #: a WATCH slot. 0.75 means "within a quarter of the way off" -- close
 #: enough to be worth an eye, far enough that WATCH doesn't become a dump.
 WATCH_CLOSE_FRACTION = 0.75
-
-#: Best Offer suggestions. The ceiling is derived from YOUR discount
-#: threshold -- the most you can pay and still clear your own gate -- and
-#: the other two step down from it, so aggressive < fair < maximum always.
-#: (Anchoring each figure independently to market value produced the
-#: incoherent "fair $279 | maximum $244" at a 30% threshold.) Not modelled,
-#: not negotiation advice: arithmetic you would do yourself, shown with its
-#: basis on the next line.
-OFFER_FAIR_BELOW_MAX_PCT = 5.0
-OFFER_AGGRESSIVE_BELOW_MAX_PCT = 15.0
 
 #: Sample size below which a comp is called thin in the report. Matches the
 #: threshold comps.assess_comp_match uses to downgrade confidence, so the
@@ -988,6 +977,8 @@ def _thesis_card(index: int, deal: Listing, ending_soon_hours: float = DEFAULT_E
     econ = _economics_text(deal)
     if econ:
         fields.append(("Economics", econ))
+    if deal.max_rational_bid is not None and _is_real_comp(deal):
+        fields.append(("Max buy", _max_text(deal, "pay")))
     cheap = _cheap_find_text(deal)
     if cheap:
         fields.append(("Cheap find", cheap))
@@ -1056,19 +1047,7 @@ def _auction_card(index: int, deal: Listing, ending_soon_hours: float = DEFAULT_
         fields.append(("Context", CONTEXT_ONLY_TEXT))
 
     if deal.max_rational_bid is not None:
-        max_bid_text = "{} -- the most you can pay and still keep your margin. Above this, stop.".format(
-            _money(deal.max_rational_bid)
-        )
-        if not getattr(deal, "max_rational_bid_shipping_known", True):
-            # Computed with an ASSUMED postage (economics.assumed_inbound_
-            # shipping) because the real one is unknown -- see
-            # economics.max_rational_bid. Printing it as a firm figure is how
-            # you overbid when the seller charges more.
-            max_bid_text += (
-                " Shipping is unknown, so this assumes typical postage and your real"
-                " ceiling is lower if the seller charges more."
-            )
-        fields.append(("Max bid", max_bid_text))
+        fields.append(("Max bid", _max_text(deal, "bid")))
     else:
         fields.append(
             ("Max bid",
@@ -1089,27 +1068,27 @@ def _auction_card(index: int, deal: Listing, ending_soon_hours: float = DEFAULT_
     return _card(index, deal, fields)
 
 
-def offer_trio(market_value: float, threshold_pct: float) -> tuple:
-    """(aggressive, fair, maximum) offer prices for a Best Offer listing.
-
-    ``maximum`` is the anchor: the highest price that still clears the
-    discount threshold you configured, so an accepted offer at that number
-    is, by your own definition, still a deal. ``fair`` and ``aggressive``
-    step down from it by fixed percentages.
-
-    Deriving all three from the ceiling is what makes the trio monotonic by
-    construction -- aggressive < fair < maximum at every threshold. Pegging
-    each one independently to market value did not: at a 30% threshold it
-    produced a "fair" offer higher than the "maximum", which is nonsense
-    dressed up as arithmetic.
-
-    Nothing here is modelled or learned. It is the sum you would do
-    yourself, done once, with the basis printed next to it.
-    """
-    maximum = market_value * (1.0 - threshold_pct / 100.0)
-    fair = maximum * (1.0 - OFFER_FAIR_BELOW_MAX_PCT / 100.0)
-    aggressive = maximum * (1.0 - OFFER_AGGRESSIVE_BELOW_MAX_PCT / 100.0)
-    return aggressive, fair, maximum
+def _max_text(deal: Listing, verb: str) -> str:
+    """The one MAX line: what you may pay for the item ("bid", "offer",
+    "pay") and still net your profit minimum. It replaced a Best Offer
+    "maximum" set at 30% under market gross, which on a raw card is a price
+    that loses money after fees and postage."""
+    if deal.max_rational_bid <= 0:
+        return "none -- no price nets your profit minimum against this market value. Walk away."
+    text = (
+        "{} -- the most you can {} for the card and still net your profit minimum after "
+        "fees, postage and tax. Above this, stop.".format(_money(deal.max_rational_bid), verb)
+    )
+    if not getattr(deal, "max_rational_bid_shipping_known", True):
+        # Computed with an ASSUMED postage (economics.assumed_inbound_
+        # shipping) because the real one is unknown -- see
+        # economics.max_rational_bid. Printing it as a firm figure is how
+        # you overpay when the seller charges more.
+        text += (
+            " Shipping is unknown, so this assumes typical postage and your real"
+            " ceiling is lower if the seller charges more."
+        )
+    return text
 
 
 def _offer_card(index: int, deal: Listing, threshold_pct: float) -> str:
@@ -1131,30 +1110,8 @@ def _offer_card(index: int, deal: Listing, threshold_pct: float) -> str:
     if discount:
         fields.append(("Discount", "{} at the asking price".format(discount)))
 
-    aggressive, fair, maximum = offer_trio(deal.market_value, threshold_pct)
-    fields.append(
-        ("Offer",
-         "aggressive {} | fair {} | maximum {}".format(
-             _money(aggressive), _money(fair), _money(maximum)
-         ))
-    )
-    basis = (
-        "maximum is the highest price that still clears your {:.0f}% discount threshold "
-        "against a market estimate of {}; fair is {:.0f}% below it and aggressive {:.0f}% "
-        "below it. These are total-cost figures".format(
-            threshold_pct,
-            _money(deal.market_value),
-            OFFER_FAIR_BELOW_MAX_PCT,
-            OFFER_AGGRESSIVE_BELOW_MAX_PCT,
-        )
-    )
-    if deal.shipping_price:
-        basis += "; subtract the {} known shipping from what you actually offer".format(
-            _money(deal.shipping_price)
-        )
-    elif deal.shipping_price is None:
-        basis += "; shipping is unknown, so treat them as ceilings"
-    fields.append(("Basis", basis))
+    if deal.max_rational_bid is not None:
+        fields.append(("Max offer", _max_text(deal, "offer")))
     fields.append(("Confidence", _confidence_text(deal)))
     risks = _risks(deal)
     if risks:
@@ -1572,7 +1529,12 @@ def classify_sections(
     for deal in ranked:
         if deal.id in claimed:
             continue
-        if deal.has_best_offer and not deal.is_opportunity and _is_real_comp(deal):
+        # Only when some offer still nets your profit minimum: an offer card
+        # whose answer is "no price works" is noise in a section about offers.
+        if (
+            deal.has_best_offer and not deal.is_opportunity and _is_real_comp(deal)
+            and (deal.max_rational_bid or 0.0) > 0.0
+        ):
             take(SECTION_OFFERS, deal)
 
     # COOL CARDS and CHEAP FINDS sit above WATCH and NEEDS REVIEW on purpose.

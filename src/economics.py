@@ -405,8 +405,15 @@ def max_rational_bid(
     buyer_premium_pct: float = 0.0,
     resale_haircut_pct: float = 0.0,
     graded: bool = False,
+    min_profit_dollars: float = 0.0,
 ) -> float:
-    """The highest bid that still leaves you ``required_margin_pct`` of margin.
+    """The highest bid that still leaves you ``required_margin_pct`` of margin
+    and at least ``min_profit_dollars`` of profit, whichever needs more.
+
+    The pipeline solves it for the deal gate's net-profit floor
+    (``economics.min_net_profit``) on every priced listing -- the bid
+    ceiling on an auction, the max offer/buy on fixed price -- so a card the
+    gate passes is always at or under its own max.
 
     This is the number that makes auctions safe to act on. An auction's
     current bid is not a price (see ``reasons.AUCTION_CURRENT_BID_NOT_A_PRICE``)
@@ -451,7 +458,7 @@ def max_rational_bid(
     asked for, so the correct bid is not to bid. 0.0 is never returned as
     "bid a penny"; it means "walk away". The result is never negative.
     """
-    required_profit = estimated_market_value * (required_margin_pct / 100.0)
+    required_profit = max(estimated_market_value * (required_margin_pct / 100.0), min_profit_dollars)
     expected_sale_price = estimated_market_value * (1.0 - resale_haircut_pct / 100.0)
     net_proceeds = fees.net_proceeds_on(expected_sale_price, graded=graded)
 

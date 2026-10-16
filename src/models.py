@@ -80,7 +80,9 @@ class Listing:
     # Deal economics (economics.DealEconomics): acquisition cost, fees,
     # expected net proceeds, profit, ROI, and the assumptions behind them.
     economics: Optional[object] = None
-    max_rational_bid: Optional[float] = None  # auctions only -- highest bid that still keeps your margin
+    # Highest item price (bid or offer) that still nets economics.min_net_profit;
+    # any priced listing with a flag-eligible comp, auction or fixed price.
+    max_rational_bid: Optional[float] = None
     # False when max_rational_bid was computed with shipping unknown, which
     # makes it an upper bound that is too high by exactly the unknown
     # shipping. The report must say so rather than printing a ceiling as

@@ -1105,6 +1105,45 @@ class TestNetProfitGate:
         assert listing.rejection_reason is None
 
 
+class TestMaxPriceOnEveryPricedListing:
+    """One MAX per listing with a flag-eligible comp: the highest item price
+    that still nets min_net_profit. Fixed price too, not only auctions."""
+
+    def _evaluated(self, price, listing_type, **cfg_overrides):
+        listing = make_listing(EXACT_TITLE, price, listing_type=listing_type, bid_count=1)
+        cfg = fake_cfg(**dict(
+            dict(min_net_profit=SHIPPED_MIN_NET_PROFIT, auction_required_margin_pct=0.0), **cfg_overrides
+        ))
+        main_module.evaluate_listings(
+            [listing], engine_for(spread_observations(400.0)), cfg, observability.RunStats()
+        )
+        return listing
+
+    def test_a_fixed_price_listing_gets_a_max(self):
+        listing = self._evaluated(390.0, "fixed_price")
+        assert listing.max_rational_bid is not None and listing.max_rational_bid > 0
+
+    def test_a_flagged_deal_is_always_at_or_under_its_max(self):
+        listing = self._evaluated(200.0, "fixed_price")
+        assert listing.is_opportunity is True
+        assert listing.price <= listing.max_rational_bid
+
+    def test_buying_at_the_max_nets_the_floor(self):
+        max_price = self._evaluated(390.0, "fixed_price").max_rational_bid
+        at_max = self._evaluated(max_price, "fixed_price")
+        assert at_max.economics.expected_profit == pytest.approx(SHIPPED_MIN_NET_PROFIT)
+
+    def test_auctions_and_fixed_price_share_one_rule(self):
+        auction = self._evaluated(20.0, "auction")
+        fixed = self._evaluated(20.0, "fixed_price")
+        assert auction.max_rational_bid == pytest.approx(fixed.max_rational_bid)
+
+    def test_the_auction_margin_is_an_extra_floor_only_for_auctions(self):
+        auction = self._evaluated(20.0, "auction", auction_required_margin_pct=25.0)
+        fixed = self._evaluated(20.0, "fixed_price", auction_required_margin_pct=25.0)
+        assert auction.max_rational_bid < fixed.max_rational_bid
+
+
 class TestBaseCardsAtExact:
     def test_a_base_card_is_valued_against_base_copies_of_its_number(self):
         title = "2024 Panini Prizm Caleb Williams #301 RC"
