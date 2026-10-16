@@ -1066,7 +1066,8 @@ def apply_dedupe(listings, seen, today_str, stats) -> list:
             continue
 
         prior = seen.get(listing.id)
-        if prior is None:
+        if not dedupe.was_reported_as_deal(prior):
+            # Never seen, or only ever shown as a browse card: a new deal.
             dedupe.record_flagged(listing.id, listing.price, seen, today_str)
             kept.append(listing)
             continue
@@ -1118,10 +1119,14 @@ def annotate_listing_age(listings, history, today) -> None:
 
 
 def record_shown(listings, shown_ids, seen, today_str) -> None:
-    """Mark every card the report actually printed as seen, at today's price."""
+    """Mark every card the report actually printed as seen, at today's price.
+    A card that was not a deal is marked shown-only, so it can still be
+    reported as a deal later -- see dedupe.record_flagged."""
     for listing in listings:
         if listing.id in shown_ids and listing.price is not None:
-            dedupe.record_flagged(listing.id, listing.price, seen, today_str)
+            dedupe.record_flagged(
+                listing.id, listing.price, seen, today_str, shown_only=not listing.is_opportunity
+            )
 
 
 def build_craigslist_links(cfg, players) -> dict:

@@ -676,6 +676,45 @@ class TestApplyDedupe:
         kept = main_module.apply_dedupe([hit], dict(self.SEEN), "2026-08-22", observability.RunStats())
         assert kept == [hit]
 
+    def test_a_browse_card_that_becomes_a_deal_at_the_same_price_is_reported(self):
+        # Review probe: printed in WATCH on day 1, a deal on day 2 at $40.
+        seen = {}
+        browse = self._card(40.0)
+        main_module.record_shown([browse], frozenset({"C1"}), seen, "2026-10-15")
+        assert seen["C1"]["shown_only"] is True
+        deal = self._card(40.0)
+        deal.is_opportunity = True
+        stats = observability.RunStats()
+        assert main_module.apply_dedupe([deal], seen, "2026-10-16", stats) == [deal]
+        assert deal.is_opportunity is True and stats.duplicates_suppressed == 0
+        assert "shown_only" not in seen["C1"]  # now it has been a deal
+
+    def test_once_a_deal_always_a_deal(self):
+        seen = {}
+        deal = self._card(40.0)
+        deal.is_opportunity = True
+        main_module.apply_dedupe([deal], seen, "2026-10-15", observability.RunStats())
+        main_module.record_shown([self._card(40.0)], frozenset({"C1"}), seen, "2026-10-16")
+        again = self._card(40.0)
+        again.is_opportunity = True
+        stats = observability.RunStats()
+        main_module.apply_dedupe([again], seen, "2026-10-17", stats)
+        assert again.is_opportunity is False and stats.duplicates_suppressed == 1
+
+    def test_a_seen_row_from_before_the_flag_counts_as_a_deal(self):
+        deal = self._card(100.0)
+        deal.is_opportunity = True
+        stats = observability.RunStats()
+        main_module.apply_dedupe([deal], dict(self.SEEN), "2026-08-22", stats)
+        assert stats.duplicates_suppressed == 1
+
+    def test_an_alert_only_act_now_is_recorded_as_a_deal(self):
+        seen = {}
+        act_now = self._card(40.0)
+        act_now.is_opportunity = True
+        main_module.record_shown([act_now], frozenset({"C1"}), seen, "2026-10-15")
+        assert "shown_only" not in seen["C1"]
+
     def test_only_printed_cards_are_recorded_as_seen(self):
         seen = {}
         shown, hidden = self._card(50.0), make_listing(EXACT_TITLE, 60.0, listing_id="C2")
