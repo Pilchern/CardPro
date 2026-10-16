@@ -1017,13 +1017,21 @@ class TestIsBase:
         assert card_identity._NOT_BASE_RE.search("1968 Topps Gale Sayers #75 VG-EX+") is None
 
     @pytest.mark.parametrize("title", [
-        "1990 Hoops Michael Jordan #65 PSA NM-MT 8",
-        "2024 Bowman Chrome Pete Crow-Armstrong #85 GEM MINT PTA 10",
-        "1968 Topps Gale Sayers #75 SGC Graded 3",
         "1985 Donruss Andre Dawson #421 NM-MT",
+        "1991 Upper Deck Ryne Sandberg #132 graded BCCG",
     ])
     def test_a_slab_or_condition_grade_read_as_raw_is_not_base(self, title):
         assert extract(title).is_base.value is None
+
+    @pytest.mark.parametrize("title", [
+        # Read as raw (and refused) until the grade parser learned these
+        # forms (ID-5); now graded, so the grade keys them.
+        "1990 Hoops Michael Jordan #65 PSA NM-MT 8",
+        "2024 Bowman Chrome Pete Crow-Armstrong #85 GEM MINT PTA 10",
+        "1968 Topps Gale Sayers #75 SGC Graded 3",
+    ])
+    def test_a_slab_the_parser_now_reads_keeps_its_base_call(self, title):
+        assert extract(title).is_base.value is True
 
     def test_a_slab_the_grade_parser_reads_keeps_its_base_call(self):
         # Its grade keys it, so it is a real graded base copy.
