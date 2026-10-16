@@ -1075,6 +1075,45 @@ def test_year_matches_across_int_and_string_representations():
     assert match.level == "exact"
 
 
+def test_card_number_spellings_key_one_exact_bucket():
+    """BD-72, BD72 and #bd-72 are one printed number; three spellings used
+    to be three exact buckets (corpus: Crow-Armstrong 2020 Bowman Draft
+    Refractor held "BD-72" and "BD72" apart)."""
+    ident = dict(year=2020, set_name="Bowman Draft", parallel="Refractor")
+    obs = [
+        _ob(95.0, days_ago=14, card_number="BD-72", **ident),
+        _ob(100.0, days_ago=7, card_number="BD72", **ident),
+        _ob(105.0, days_ago=0, card_number="#bd-72", **ident),
+    ]
+    match = _engine(obs).lookup(
+        player="Caleb Williams", card_type="raw", price=40.0, card_number="bd 72", **ident
+    )
+    assert match.level == "exact"
+    assert match.stats.sample_size == 3
+    assert match.flag_eligible is True
+    assert "mixed_card_numbers" not in match.blocked_reasons
+
+
+def test_a_sold_comp_typed_without_the_hyphen_matches_the_listing():
+    from src import sold_comps
+
+    ident = dict(player="Caleb Williams", year=2020, set_name="Bowman Draft", parallel="Refractor")
+    sales = [
+        sold_comps.to_observation(dict(ident, card_number="BD72", price=p, date=_days_ago(d), source="130point"))
+        for p, d in ((95.0, 14), (100.0, 7), (105.0, 0))
+    ]
+    match = _engine(sales).lookup(
+        card_type="raw", price=40.0, card_number="BD-72", **ident
+    )
+    assert match.level == "exact"
+    assert match.stats.basis == comps.BASIS_SOLD
+
+
+def test_card_number_normalisation_keeps_different_numbers_apart():
+    assert comps._clean_card_number("BD-72") != comps._clean_card_number("BD-27")
+    assert comps._clean_card_number(" # ") is None
+
+
 def test_unparseable_year_is_unknown_not_coerced():
     assert comps._clean_year("2023-24 season") is None
 

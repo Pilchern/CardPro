@@ -66,6 +66,7 @@ never a guessed match.
 from __future__ import annotations
 
 import math
+import re
 import statistics
 from dataclasses import dataclass
 from datetime import datetime
@@ -343,6 +344,19 @@ def _clean_upper(value) -> Optional[str]:
     """
     text = _clean(value)
     return text.upper() if text is not None else None
+
+
+def _clean_card_number(value) -> Optional[str]:
+    """A card number as a bucket key: "#BD-72", "BD72" and "bd 72" are one
+    card. Sellers punctuate the printed number however they like, and every
+    spelling was its own exact bucket -- splitting a card's comps three ways
+    and leaving a hand-entered sold comp unmatched by a hyphen. Applied to
+    stored rows and to the listing alike, so old rows need no migration.
+    """
+    text = _clean(value)
+    if text is None:
+        return None
+    return re.sub(r"[\s#-]+", "", text).upper() or None
 
 
 def _clean_year(value) -> Optional[int]:
@@ -835,9 +849,9 @@ def compute_comp_stats(
     card_numbers = set()
     for point in kept:
         number = point.get("_fields", {}).get("card_number") or point.get("card_number")
-        cleaned = _clean(number)
+        cleaned = _clean_card_number(number)
         if cleaned is not None:
-            card_numbers.add(cleaned.upper())
+            card_numbers.add(cleaned)
     distinct_card_numbers = len(card_numbers)
 
     distinct_dates = len({p["_date"].date() for p in kept})
@@ -903,8 +917,7 @@ def assess_comp_match(
     # removes itself, the remaining points are all the base card, and the
     # bucket then looks perfectly clean to the one listing it is about to
     # misvalue.
-    listing_number = _clean(card_number)
-    listing_number = listing_number.upper() if listing_number else None
+    listing_number = _clean_card_number(card_number)
     wrong_card = stats.is_mixed_card_numbers or bool(
         listing_number is not None
         and stats.card_numbers
@@ -1060,7 +1073,7 @@ class CompEngine:
             "year": _clean_year(obs.get("year")),
             "set_name": _clean(obs.get("set_name")),
             "parallel": _clean(obs.get("parallel")),
-            "card_number": _clean(obs.get("card_number")),
+            "card_number": _clean_card_number(obs.get("card_number")),
             "market": market_key(card_type, obs.get("grader"), obs.get("grade"), obs.get("qualifier")),
             # An autograph, a patch and a /50 print run are three different
             # cards wearing one set of identity fields -- see
@@ -1119,7 +1132,7 @@ class CompEngine:
             "year": _clean_year(year),
             "set_name": _clean(set_name),
             "parallel": _clean(parallel),
-            "card_number": _clean(card_number),
+            "card_number": _clean_card_number(card_number),
             "market": market_key(card_type, grader, grade, qualifier),
             "variant": printing_variant(
                 is_autograph=is_autograph,
