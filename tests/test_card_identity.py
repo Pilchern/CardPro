@@ -180,6 +180,40 @@ def test_green_wave_is_a_parallel(title):
     assert identity.parallel.confidence == "high"
 
 
+@pytest.mark.parametrize(
+    "title, parallel",
+    [
+        # Corpus titles whose named parallel was collapsed to a shorter one.
+        ("2021-22 Panini Prizm Josh Giddey RC Rookie /75 Fast Break Purple #301 PSA 9 Mint",
+         "Fast Break Purple"),
+        ("Panini 2024-25 Donruss Optic Josh Giddey Bulls #120 Red Seismic /149", "Red Seismic"),
+        ("2020 Mosaic Football Dick Butkus #42 Prizm Reactive Blue", "Reactive Blue"),
+        ("Josh Giddey RC - 2021-22 Select Concourse Green White & Purple Prizm Rookie #58",
+         "Green White Purple"),
+        ("2026 Topps Allen & Ginter Frank Thomas Silver Portrait White Sox #231", "Silver Portrait"),
+    ],
+)
+def test_compound_parallels_are_not_collapsed(title, parallel):
+    assert card_identity.extract_card_identity(title).parallel.value == parallel
+
+
+@pytest.mark.parametrize(
+    "title, set_name, parallel",
+    [
+        ("2024 Prizm Black 2024 Private Signings #PS-BUZ Matas Buzelis Auto", "Prizm Black", None),
+        ("2025 Topps Chrome Black Colston Loveland #106 RC Bears", "Topps Chrome Black", None),
+        ("2024-25 Panini Prizm Black Hyper Prizm Matas Buzelis #41 PSA 8", "Prizm Black", "Hyper"),
+        # The Black PARALLEL of ordinary products is untouched.
+        ("2024 Panini Prizm Caleb Williams Black Prizm 1/1", "Prizm", "Black Prizm"),
+        ("2023 Bowman Chrome Kyle Teel Black Refractor /10", "Bowman Chrome", "Black Refractor"),
+    ],
+)
+def test_products_named_black_are_sets_not_the_black_parallel(title, set_name, parallel):
+    identity = card_identity.extract_card_identity(title)
+    assert identity.set_name.value == set_name
+    assert identity.parallel.value == parallel
+
+
 def test_award_name_is_not_a_parallel_gold_glove():
     identity = card_identity.extract_card_identity("Michael Jordan Gold Glove Award unsigned photo card")
     assert identity.parallel.value is None

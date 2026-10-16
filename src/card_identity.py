@@ -136,6 +136,11 @@ SET_KEYWORDS = [
     # bucket on purpose, since an insert is a different market from the
     # base card it inserts into.
     "Game Dated Moments", "Greatest Hits", "Silhouette",
+    # Products whose name ends in a colour. Read as "Prizm" / "Topps Chrome"
+    # with parallel "Black", they pooled a whole product with the Black
+    # parallel of another. Also masked for parallel lookup (see
+    # TEAM_AND_PHRASE_MASKS). Every corpus hit (16 + 34) was the product.
+    "Prizm Black", "Topps Chrome Black",
 ]
 
 #: Spellings that mean the same product. Two names for one set means two comp
@@ -201,6 +206,14 @@ COMPOUND_PARALLELS = [
     # the exact pooling the entry was added to prevent.
     "Aqua Vapor", "Rose Gold", "Press Proof", "Dragon Scale", "Logofractor",
     "Rainbow Foil", "Speckle Refractor", "Snakeskin Refractor", "Green Wave",
+    # Named parallels that were collapsed to a shorter one ("Fast Break
+    # Purple" -> "Fast Break", "Reactive Blue" -> "Blue", "Silver Portrait"
+    # -> "Silver"), pooling a scarcer card with a commoner one. Longest-first
+    # matching lets these beat their prefix.
+    "Fast Break Bronze", "Fast Break Blue", "Fast Break Red", "Fast Break Purple",
+    "Fast Break Pink", "Fast Break Neon Green", "Fast Break Gold", "Fast Break Black",
+    "Reactive Blue", "Reactive Yellow", "Reactive Purple", "Reactive Orange",
+    "Green White Purple", "Silver Portrait",
 ]
 
 UNAMBIGUOUS_PARALLELS = [
@@ -246,6 +259,8 @@ COLOR_PARALLEL_WORDS = [
 PARALLEL_QUALIFIER_WORDS = [
     "Cracked Ice", "Refractor", "Sparkle", "Shimmer", "Pulsar", "Prizm",
     "Holo", "Foil", "Wave", "Mojo", "Ice",
+    # Optic's Seismic family: "Red Seismic" was read as plain "Red".
+    "Seismic",
 ]
 
 # Kept as the single flat vocabulary for anything that just wants "all the
@@ -268,7 +283,7 @@ TEAM_AND_PHRASE_MASKS = [
     # Awards / honours
     "Silver Slugger", "Gold Glove", "Golden Spikes", "Green Jacket",
     # Set names containing a parallel word
-    "Collector's Choice", "Collectors Choice",
+    "Collector's Choice", "Collectors Choice", "Prizm Black", "Topps Chrome Black",
     # Set name containing an autograph word: every base card of Topps
     # Signature Class read as an auto and was keyed with the autos. Still
     # found as a set -- set lookup skips masks that are SET_KEYWORDS.
