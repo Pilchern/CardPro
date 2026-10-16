@@ -170,6 +170,8 @@ def score(items, labels) -> dict:
                 ident = listing.card_identity
                 resolved = all(getattr(ident, f).value is not None for f in KEY_FIELDS)
                 res["singles_resolved"] += int(resolved)
+                # Version-true: what the engine itself valued at exact/same_card.
+                res["singles_valued_flag_level"] += int(listing.comp_level_matched in ("exact", "same_card"))
                 lid = label["identity"]
                 if resolved:
                     checks = {
@@ -198,6 +200,7 @@ def score(items, labels) -> dict:
 
     out = dict(res)
     out["key_resolution_singles"] = res["singles_resolved"] / max(1, res["singles"])
+    out["valued_at_flag_level_singles"] = res["singles_valued_flag_level"] / max(1, res["singles"])
     out["identity_accuracy_resolved"] = res["resolved_fully_correct"] / max(1, res["singles_resolved"])
     out["field_accuracy"] = {f: round(field_hits[f] / field_total[f], 3) for f in field_total}
     out["noise_rejection_rate"] = res["noise_rejected"] / max(1, res["noise"])
@@ -243,6 +246,8 @@ def corpus_flags(cfg, engine, listings) -> dict:
     profits = [l.economics.expected_profit for l in flagged if l.economics is not None]
     return {
         "listings": len(fixed),
+        "valued_at_flag_level": round(
+            sum(1 for l in fixed if l.comp_level_matched in ("exact", "same_card")) / max(1, len(fixed)), 4),
         "tiers": dict(tiers),
         "flags_total": len(flagged),
         "flags_net_profit_lt_15": sum(1 for p in profits if p < 15),
