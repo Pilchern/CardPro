@@ -203,6 +203,9 @@ def fake_cfg(**overrides):
         envelope_max_sale=20.0,
         supplies_graded_cost=None,
         assumed_inbound_shipping=None,
+        # Off by default here so the gross-discount tests keep testing only
+        # the gross gates; TestNetProfitGate turns it on.
+        min_net_profit=float("-inf"),
         auction_required_margin_pct=25.0,
         auction_ending_soon_hours=24,
         immediate_alert_min_savings_dollars=150.0,
@@ -1027,6 +1030,36 @@ class TestOneCardHasOneAcquisitionCost:
         with_tax = self._evaluated(8.0)
         without = self._evaluated(0.0)
         assert with_tax.dollar_savings < without.dollar_savings
+
+
+class TestNetProfitGate:
+    """The gross-discount gates ignore what fees, postage and supplies take
+    out of a flip; most corpus flags that cleared them netted under $15."""
+
+    def _evaluated(self, market, price):
+        listing = make_listing(EXACT_TITLE, price, listing_type="fixed_price")
+        stats = observability.RunStats()
+        main_module.evaluate_listings(
+            [listing], engine_for(spread_observations(market)), fake_cfg(min_net_profit=15.0), stats
+        )
+        return listing, stats
+
+    def test_a_big_gross_discount_that_nets_under_the_floor_is_rejected(self):
+        # 33% off and $20 saved clear both gross gates; selling at $57 after
+        # the haircut, ~$7.85 fees and $6 out leave ~$3.15 profit.
+        listing, stats = self._evaluated(60.0, 40.0)
+        assert listing.pct_under_market >= 30
+        assert listing.dollar_savings >= 10
+        assert listing.economics.expected_profit < 15
+        assert listing.is_opportunity is False
+        assert listing.rejection_reason == reasons.Reason.BELOW_MIN_NET_PROFIT
+        assert stats.rejections.counts() == {reasons.Reason.BELOW_MIN_NET_PROFIT: 1}
+
+    def test_a_deal_that_nets_the_floor_passes(self):
+        listing, _ = self._evaluated(400.0, 200.0)
+        assert listing.economics.expected_profit >= 15
+        assert listing.is_opportunity is True
+        assert listing.rejection_reason is None
 
 
 class TestFeeModelWiring:

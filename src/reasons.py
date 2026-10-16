@@ -67,6 +67,7 @@ class Reason:
     # -- economics: we know the card and its value, the math says no ------
     BELOW_DISCOUNT_THRESHOLD = "below_discount_threshold"
     BELOW_MIN_SAVINGS = "below_min_savings"
+    BELOW_MIN_NET_PROFIT = "below_min_net_profit"
 
     # -- auction: a bid is not a price ------------------------------------
     AUCTION_CURRENT_BID_NOT_A_PRICE = "auction_current_bid_not_a_price"
@@ -144,6 +145,10 @@ REASON_LABELS: Dict[str, str] = {
     # economics
     Reason.BELOW_DISCOUNT_THRESHOLD: "discount is below your threshold",
     Reason.BELOW_MIN_SAVINGS: "dollar savings is below your minimum",
+    Reason.BELOW_MIN_NET_PROFIT: (
+        "under market, but the expected profit after fees, shipping, supplies and tax "
+        "is below your minimum"
+    ),
     # auction
     Reason.AUCTION_CURRENT_BID_NOT_A_PRICE:
         "current bid, not a sale price -- an auction's bid is not what it will close at",
@@ -190,6 +195,7 @@ REASON_CATEGORIES: Dict[str, str] = {
     # economics
     Reason.BELOW_DISCOUNT_THRESHOLD: CATEGORY_ECONOMICS,
     Reason.BELOW_MIN_SAVINGS: CATEGORY_ECONOMICS,
+    Reason.BELOW_MIN_NET_PROFIT: CATEGORY_ECONOMICS,
     # auction
     Reason.AUCTION_CURRENT_BID_NOT_A_PRICE: CATEGORY_AUCTION,
     Reason.AUCTION_BID_EXCEEDS_MAX_RATIONAL_BID: CATEGORY_AUCTION,

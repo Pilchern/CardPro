@@ -66,7 +66,9 @@
     "assumed_inbound_shipping": 4.5,
     "_haircut_comment": "The gap between the median comp and what you'd realistically get selling promptly, by what the comps are. resale_haircut_asking_pct 20 applies when the comps are ASKING prices -- every comp today -- because an ask is a ceiling on what sells: measured P25/median ask is 0.79 across 44 raw buckets, so selling at the cheap end of the asks means ~20% under the median (ASSUMPTION that sales land there). resale_haircut_pct 5 applies when the comps are SOLD prices.",
     "resale_haircut_pct": 5.0,
-    "resale_haircut_asking_pct": 20.0
+    "resale_haircut_asking_pct": 20.0,
+    "_min_net_profit_comment": "The deal gate's last check: an opportunity must ALSO net at least min_net_profit after every cost above (fees, postage, supplies, purchase tax, assumed inbound shipping, haircut). $15 is the owner's floor for a buy-and-resell flip, raw or slab (ASSUMPTION). The owner's $40 floor for grade-and-flip would apply only to a grading branch, and CardPro has none, so it is not used.",
+    "min_net_profit": 15.0
   },
   "auctions": {
     "_comment": "An auction's current bid is not a price. Auctions get their own report section and their own math: max rational bid is the highest you could bid and still keep required_margin_pct of margin against estimated market value, after fees and shipping. ending_soon_hours controls what counts as urgent -- only used for ordering the section, never for relaxing any quality gate.",
@@ -74,7 +76,7 @@
     "ending_soon_hours": 24
   },
   "alerts": {
-    "_comment": "Immediate-alert tier. Deliberately conservative: too many alerts destroy the product. An opportunity must clear BOTH of these AND have a flag-eligible comp to earn an out-of-band alert; everything else waits for the morning digest. The dollar figure is 25, not the 150 it was: with focus.price_ceiling at $40 a card cannot save $150 without being worth $190, so a $150 bar meant ACT NOW could never fire on the cards this report is now built around, and an alert tier that cannot fire is not conservative, it is off. Retune this whenever you move focus.price_ceiling -- the two numbers only make sense together.",
+    "_comment": "Immediate-alert tier. Deliberately conservative: too many alerts destroy the product. An opportunity must clear BOTH of these AND have a flag-eligible comp to earn an out-of-band alert -- and the dollar figure must be met by expected NET profit too, not just by the gross saving, since the gross saving ignores fees and postage; everything else waits for the morning digest. The dollar figure is 25, not the 150 it was: with focus.price_ceiling at $40 a card cannot save $150 without being worth $190, so a $150 bar meant ACT NOW could never fire on the cards this report is now built around, and an alert tier that cannot fire is not conservative, it is off. Retune this whenever you move focus.price_ceiling -- the two numbers only make sense together.",
     "immediate_alert_min_savings_dollars": 25,
     "immediate_alert_min_discount_pct": 40
   },

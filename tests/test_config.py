@@ -229,6 +229,7 @@ def test_missing_new_sections_fall_back_to_safe_defaults(tmp_path, monkeypatch):
     assert cfg.valuation_stale_after_days == 45
     assert cfg.require_flag_eligible_comp is True
     assert cfg.resale_haircut_pct == 5.0
+    assert cfg.min_net_profit == 15.0
     assert cfg.auction_ending_soon_hours == 24
 
 

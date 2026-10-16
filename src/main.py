@@ -949,6 +949,14 @@ def evaluate_listings(listings, engine, cfg, stats) -> None:
             listing.rejection_reason = reasons.Reason.BELOW_MIN_SAVINGS
             stats.rejections.record(reasons.Reason.BELOW_MIN_SAVINGS, listing.id)
             continue
+        # The gates above are on GROSS discount, which ignores the ~$6-12 that
+        # fees, postage and supplies take out of a flip. Measured on the
+        # corpus, 16 of 22 flags that cleared them netted under $15 -- a
+        # discount you cannot bank is not a deal.
+        if listing.economics.expected_profit < cfg.min_net_profit:
+            listing.rejection_reason = reasons.Reason.BELOW_MIN_NET_PROFIT
+            stats.rejections.record(reasons.Reason.BELOW_MIN_NET_PROFIT, listing.id)
+            continue
 
         listing.is_opportunity = True
         stats.opportunities_reported += 1

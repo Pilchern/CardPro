@@ -1440,6 +1440,12 @@ def _savings(deal: Listing) -> float:
 def _clears_immediate(deal: Listing, min_savings: float, min_discount_pct: float) -> bool:
     if deal.dollar_savings is None or deal.pct_under_market is None:
         return False
+    # The dollar bar applies to NET profit as well: a $25 gross saving on a
+    # $40 card nets a few dollars after fees and postage, which is not worth
+    # an interruption. No economics (not computed) leaves the gross test.
+    econ = deal.economics
+    if econ is not None and econ.expected_profit < min_savings:
+        return False
     return deal.dollar_savings >= min_savings and deal.pct_under_market >= min_discount_pct
 
 
@@ -1859,6 +1865,10 @@ def _watch_why(deal: Listing, threshold_pct: float, min_savings_dollars: float =
     if reason == reasons.Reason.BELOW_MIN_SAVINGS and deal.dollar_savings is not None:
         return "clears {:.0f}% but saves only {}, under your {} minimum".format(
             threshold_pct, _money(deal.dollar_savings), _money(min_savings_dollars)
+        )
+    if reason == reasons.Reason.BELOW_MIN_NET_PROFIT and deal.economics is not None:
+        return "clears {:.0f}% but nets only {} after fees and shipping, under your profit minimum".format(
+            threshold_pct, _money(deal.economics.expected_profit)
         )
     if _confidence(deal) == "low":
         return "the comp behind this is low confidence -- watch it, don't act on it"
@@ -2620,7 +2630,7 @@ def build_model(
     )
     thresholds = (
         "Thresholds: an opportunity needs {:.0f}%+ under market AND at least {} saved; "
-        "ACT NOW additionally needs {} saved and {:.0f}%+ off.".format(
+        "ACT NOW additionally needs {} saved and netted, and {:.0f}%+ off.".format(
             threshold_pct,
             _money(min_savings_dollars),
             _money(immediate_min_savings),

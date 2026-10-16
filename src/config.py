@@ -100,6 +100,8 @@ class Config:
     # Used in the money math when a listing's shipping is unknown; the
     # listing still reads as shipping-unknown everywhere.
     assumed_inbound_shipping: float
+    # The deal gate's floor on expected NET profit; see settings.json.
+    min_net_profit: float
 
     auction_required_margin_pct: float
     auction_ending_soon_hours: int
@@ -233,6 +235,7 @@ def load_config() -> Config:
         envelope_max_sale=float(economics.get("envelope_max_sale", 20.0)),
         supplies_graded_cost=float(economics.get("supplies_graded", 1.0)),
         assumed_inbound_shipping=float(economics.get("assumed_inbound_shipping", 4.50)),
+        min_net_profit=float(economics.get("min_net_profit", 15.0)),
         auction_required_margin_pct=float(auctions.get("required_margin_pct", 25.0)),
         auction_ending_soon_hours=int(auctions.get("ending_soon_hours", 24)),
         immediate_alert_min_savings_dollars=float(alerts.get("immediate_alert_min_savings_dollars", 150.0)),

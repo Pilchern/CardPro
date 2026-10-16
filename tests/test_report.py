@@ -204,6 +204,22 @@ def test_act_now_not_triggered_below_the_dollar_threshold():
     assert sections[report.SECTION_TOP_OPPORTUNITIES] == [deal]
 
 
+def test_act_now_needs_the_dollar_bar_in_net_profit_too():
+    # $300 gross on a $200 market card nets ~$49 after fees, postage and tax.
+    thin = make_listing(dollar_savings=300.0, pct_under_market=55.0, economics=make_economics())
+    sections = report.classify_sections(
+        [thin], threshold_pct=30, immediate_min_savings=150.0, immediate_min_discount_pct=40.0
+    )
+    assert sections[report.SECTION_ACT_NOW] == []
+    assert sections[report.SECTION_TOP_OPPORTUNITIES] == [thin]
+
+    rich = make_listing(dollar_savings=300.0, pct_under_market=55.0, economics=make_economics(market=1000.0))
+    sections = report.classify_sections(
+        [rich], threshold_pct=30, immediate_min_savings=150.0, immediate_min_discount_pct=40.0
+    )
+    assert sections[report.SECTION_ACT_NOW] == [rich]
+
+
 def test_act_now_not_triggered_below_the_discount_threshold():
     deal = make_listing(dollar_savings=300.0, pct_under_market=35.0)
     sections = report.classify_sections(
@@ -1330,7 +1346,7 @@ def test_thresholds_footer_shows_both_thresholds():
     body = body_of([make_listing()], min_savings_dollars=15)
     text = flat(body)
     assert "30%+ under market AND at least $15.00 saved" in text
-    assert "ACT NOW additionally needs $150.00 saved and 40%+ off" in text
+    assert "ACT NOW additionally needs $150.00 saved and netted, and 40%+ off" in text
 
 
 # ---------------------------------------------------------------------------
