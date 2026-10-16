@@ -24,7 +24,8 @@
     "_mailbox_comment": "Searches All Mail, not just Inbox, so you're free to archive alert emails (or filter them straight out of your inbox) without CardPro losing sight of them -- only actually deleting a message (emptying Trash) makes it disappear. Change only if your Gmail account uses a non-English locale where this folder has a different IMAP name.",
     "mailbox": "[Gmail]/All Mail",
     "price_history_path": "data/ebay_alert_price_history.json",
-    "price_history_max_age_days": 90
+    "_max_age_comment": "Corpus retention, in days. 45 matches valuation.stale_after_days: a bucket whose newest comp is older than that cannot declare a deal anyway, and at half_life_days 30 a 45-day-old ask already counts about a third of a fresh one. It was 90; with the Browse API recording ~3,000 rows a day the corpus would cross GitHub's 100 MB file limit (warned at 40 MB) well before then. Stored titles mean a parser fix still reaches every kept row (comps re-reads them on load).",
+    "price_history_max_age_days": 45
   },
   "craigslist": {
     "_comment": "Craigslist blocks automated scraping outright (confirmed against both headless and headed browser automation), so these just build ready-to-click search links included in the daily email instead of being fetched automatically.",

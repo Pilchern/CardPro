@@ -490,7 +490,7 @@ def _identity_from_title(title: str) -> Optional[dict]:
     """The bucket-key fields of a stored row, re-read from its title with
     today's parser -- the same reasoning as ``_variant_from_title``, for the
     fields the variant does not cover (a set or parallel fix reaches the
-    corpus on the next run, not 90 days later). None when today's parser
+    corpus on the next run, not when the row ages out). None when today's parser
     would refuse the listing outright (lot, reprint...), so the row stops
     being a comp. Callers copy the dict; the cache shares it.
     """
@@ -513,7 +513,7 @@ def variant_of_observation(obs: dict) -> Optional[tuple]:
     reaches every stored row on the next run instead of only the rows
     written after it (the explicit fields are what the parser said on the
     day, and used to win -- 165 real autos kept reading as plain cards for
-    the 90 days the corpus keeps them). A row without a title falls back to
+    as long as the corpus kept them). A row without a title falls back to
     its explicit fields; a row with neither is taken at face value as a
     plain card, because that is what every field it does carry says and
     refusing it would delete the older half of the corpus from the only
