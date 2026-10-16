@@ -425,6 +425,21 @@ def test_print_run_before_a_year_and_after_a_hash(title, serial, print_run):
     assert identity.print_run.value == print_run
 
 
+def test_a_one_of_one_before_a_year_is_not_a_date():
+    identity = card_identity.extract_card_identity("Superfractor 1/1 2024 Topps Chrome Caleb Williams")
+    assert (identity.serial_number.value, identity.print_run.value) == ("1/1", 1)
+
+
+def test_a_rejected_date_or_grade_does_not_leave_its_denominator_behind():
+    identity = card_identity.extract_card_identity("Caleb Williams PSA 9 / 10 2024 Prizm")
+    assert identity.print_run.value is None
+
+
+def test_a_card_number_running_into_the_run_still_gives_the_bare_run():
+    identity = card_identity.extract_card_identity("Caleb Williams Blue Wave Prizm #301 /230")
+    assert identity.print_run.value == 230
+
+
 def test_hash_print_run_does_not_disturb_the_card_number():
     identity = card_identity.extract_card_identity("2024 Bowman Chrome Kyle Teel #BCP-48 #/1")
     assert identity.card_number.value == "BCP-48"

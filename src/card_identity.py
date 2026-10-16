@@ -1349,14 +1349,26 @@ def _extract_serial_and_print_run(title: str):
     """
     unknown = Field(value=None, confidence="none", source="title")
 
+    # Spans the serial pass rejected as a DATE: the bare-run pass below must
+    # not then read the same "/10" on its own ("PSA 9 / 10 2024"). Not the
+    # numerator > denominator case: that is a card number running into a
+    # real run ("#301 /230"), and the bare "/230" is the right answer.
+    rejected = []
     for match in SERIAL_NUMBER_RE.finditer(title):
         numerator, denominator = int(match.group(1)), int(match.group(2))
         if not _valid_print_run(denominator) or numerator > denominator:
             continue
         if 1900 <= denominator <= 2099 and numerator <= 31:
+            rejected.append(match.span())
             continue  # "12/2024" is a date, not a serial
-        if numerator <= 12 and denominator <= 31 and _DATE_YEAR_AFTER_RE.match(title, match.end()):
-            continue  # "7/14 2024" is a date too
+        if (
+            numerator <= 12 and denominator <= 31 and (numerator, denominator) != (1, 1)
+            and _DATE_YEAR_AFTER_RE.match(title, match.end())
+        ):
+            # "7/14 2024" is a date too. "1/1 2024" is not: New Year's Day
+            # never appears in a card title, a one-of-one does all the time.
+            rejected.append(match.span())
+            continue
         serial = Field(value=f"{numerator}/{denominator}", confidence="high", source="title")
         return serial, Field(value=denominator, confidence="high", source="title")
 
@@ -1365,6 +1377,8 @@ def _extract_serial_and_print_run(title: str):
         if not _valid_print_run(denominator):
             continue
         if _DATE_CHAIN_BEFORE_RE.search(title[: match.start()]):
+            continue
+        if any(start <= match.start() < end for start, end in rejected):
             continue
         return unknown, Field(value=denominator, confidence="high", source="title")
 
