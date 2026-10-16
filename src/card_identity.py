@@ -136,11 +136,6 @@ SET_KEYWORDS = [
     # bucket on purpose, since an insert is a different market from the
     # base card it inserts into.
     "Game Dated Moments", "Greatest Hits", "Silhouette",
-    # Products whose name ends in a colour. Read as "Prizm" / "Topps Chrome"
-    # with parallel "Black", they pooled a whole product with the Black
-    # parallel of another. Also masked for parallel lookup (see
-    # TEAM_AND_PHRASE_MASKS). Every corpus hit (16 + 34) was the product.
-    "Prizm Black", "Topps Chrome Black",
 ]
 
 #: Spellings that mean the same product. Two names for one set means two comp
@@ -283,7 +278,7 @@ TEAM_AND_PHRASE_MASKS = [
     # Awards / honours
     "Silver Slugger", "Gold Glove", "Golden Spikes", "Green Jacket",
     # Set names containing a parallel word
-    "Collector's Choice", "Collectors Choice", "Prizm Black", "Topps Chrome Black",
+    "Collector's Choice", "Collectors Choice",
     # Set name containing an autograph word: every base card of Topps
     # Signature Class read as an auto and was keyed with the autos. Still
     # found as a set -- set lookup skips masks that are SET_KEYWORDS.
@@ -292,6 +287,19 @@ TEAM_AND_PHRASE_MASKS = [
     "Orange Bowl", "Rose Bowl", "White House", "Red Zone", "Blue Line",
     # Listing boilerplate that would otherwise read as a parallel
     "Your Choice",
+]
+
+#: Products named "<line> Black", first issued in 2024. Read as "Prizm" /
+#: "Topps Chrome" with parallel "Black", they pooled a whole product with
+#: another product's Black parallel (every 2024+ corpus hit, 16 + 34, was the
+#: product). Before 2024 the same words in the same order are how sellers
+#: write the scarce Black PARALLEL ("2020 Panini Prizm Black 1/1"), so the
+#: phrase is read as the product only when the title's year is on or after
+#: the first issue; no year keeps the parallel reading.
+DATED_PRODUCTS = {"Prizm Black": 2024, "Topps Chrome Black": 2024}
+_DATED_PRODUCT_RES = [
+    (name, first_year, re.compile(rf"\b{re.escape(name)}\b", re.IGNORECASE))
+    for name, first_year in DATED_PRODUCTS.items()
 ]
 
 AUTOGRAPH_KEYWORDS = ["autograph", "autographed", "auto", "signed", "signature", "rpa"]
@@ -1345,6 +1353,12 @@ def extract_card_identity(title: str) -> CardIdentity:
         if year_match
         else Field(value=None, confidence="none", source="title")
     )
+    dated_product = None
+    for name, first_year, pattern in _DATED_PRODUCT_RES:
+        if year_field.value is not None and year_field.value >= first_year and pattern.search(masked):
+            dated_product = name
+            masked = pattern.sub(lambda match: " " * len(match.group(0)), masked)
+            break
 
     # "2023-24 Upper Deck" is one hockey/basketball season, and flattening it
     # to 2023 loses the distinction between the 2023-24 and 2022-23 issues.
@@ -1373,6 +1387,8 @@ def extract_card_identity(title: str) -> CardIdentity:
     card_number_field = _extract_card_number(title)
     set_masked = mask_for_set_lookup(title)
     set_field = _canonical_set(_keyword_field(set_masked, SET_KEYWORDS), set_masked)
+    if dated_product is not None:
+        set_field = Field(value=dated_product, confidence="high", source="title")
     if set_field.value is None:
         # ONLY here, with the ordinary vocabulary lookup already empty, so
         # the flagship can never outrank a named product. See

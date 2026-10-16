@@ -183,14 +183,14 @@ def test_green_wave_is_a_parallel(title):
 @pytest.mark.parametrize(
     "title, parallel",
     [
-        # Corpus titles whose named parallel was collapsed to a shorter one.
-        ("2021-22 Panini Prizm Josh Giddey RC Rookie /75 Fast Break Purple #301 PSA 9 Mint",
-         "Fast Break Purple"),
-        ("Panini 2024-25 Donruss Optic Josh Giddey Bulls #120 Red Seismic /149", "Red Seismic"),
-        ("2020 Mosaic Football Dick Butkus #42 Prizm Reactive Blue", "Reactive Blue"),
-        ("Josh Giddey RC - 2021-22 Select Concourse Green White & Purple Prizm Rookie #58",
+        # Paraphrased corpus shapes (not eval-set titles) whose named
+        # parallel was collapsed to a shorter one.
+        ("2021 Prizm Josh Giddey Fast Break Purple Rookie #301 /75", "Fast Break Purple"),
+        ("Donruss Optic 2024-25 Josh Giddey #120 Red Seismic Bulls /149", "Red Seismic"),
+        ("Dick Butkus 2020 Panini Mosaic Reactive Blue Prizm #42", "Reactive Blue"),
+        ("2021-22 Panini Select Concourse Josh Giddey #58 Green, White & Purple Prizm RC",
          "Green White Purple"),
-        ("2026 Topps Allen & Ginter Frank Thomas Silver Portrait White Sox #231", "Silver Portrait"),
+        ("Frank Thomas 2026 Allen & Ginter #231 Silver Portrait", "Silver Portrait"),
     ],
 )
 def test_compound_parallels_are_not_collapsed(title, parallel):
@@ -200,10 +200,16 @@ def test_compound_parallels_are_not_collapsed(title, parallel):
 @pytest.mark.parametrize(
     "title, set_name, parallel",
     [
-        ("2024 Prizm Black 2024 Private Signings #PS-BUZ Matas Buzelis Auto", "Prizm Black", None),
-        ("2025 Topps Chrome Black Colston Loveland #106 RC Bears", "Topps Chrome Black", None),
+        # The products (first issued 2024); paraphrased, not eval titles.
+        ("2024-25 Panini Prizm Black Matas Buzelis Private Signings Auto #PS-BUZ", "Prizm Black", None),
+        ("2025 Topps Chrome Black Colston Loveland Rookie #106", "Topps Chrome Black", None),
         ("2024-25 Panini Prizm Black Hyper Prizm Matas Buzelis #41 PSA 8", "Prizm Black", "Hyper"),
-        # The Black PARALLEL of ordinary products is untouched.
+        # Before 2024 the same words, same order, are the scarce Black PARALLEL.
+        ("2022 Topps Chrome Black /10 Julio Rodriguez", "Topps Chrome", "Black"),
+        ("2020 Panini Prizm Black 1/1 Joe Burrow", "Prizm", "Black"),
+        # No year: keep the parallel reading rather than assert a product.
+        ("Panini Prizm Black 1/1 Joe Burrow", "Prizm", "Black"),
+        # The Black parallel of ordinary products is untouched.
         ("2024 Panini Prizm Caleb Williams Black Prizm 1/1", "Prizm", "Black Prizm"),
         ("2023 Bowman Chrome Kyle Teel Black Refractor /10", "Bowman Chrome", "Black Refractor"),
     ],
