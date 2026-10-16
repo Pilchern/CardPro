@@ -116,8 +116,27 @@ def save(path: Path, history: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_suffix(".json.tmp")
     with open(tmp_path, "w") as f:
-        json.dump(history, f, indent=2, sort_keys=True)
+        f.write(_dumps(history))
     tmp_path.replace(path)
+
+
+def _dumps(history: dict) -> str:
+    """The corpus as JSON with one observation per line.
+
+    indent=2 spent 23 lines and ~550 bytes on each row, so a re-sighting
+    that changed one price showed up as a 23-line diff, and the Browse API's
+    first run grew the file by 2MB. A row per line is the same document to
+    json.load, about 27% smaller on disk, and a changed row is a one-line
+    diff in the daily commit.
+    """
+    buckets = []
+    for key in sorted(history):
+        rows = ",\n".join(
+            "  " + json.dumps(obs, sort_keys=True, separators=(",", ":"))
+            for obs in history[key]
+        )
+        buckets.append("{}:[\n{}\n]".format(json.dumps(key), rows) if rows else "{}:[]".format(json.dumps(key)))
+    return "{\n" + ",\n".join(buckets) + "\n}\n"
 
 
 def _drop_from_other_card_types(
