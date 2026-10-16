@@ -167,6 +167,25 @@ def test_save_and_load_round_trip(tmp_path):
     assert loaded == history
 
 
+def test_save_writes_one_observation_per_line(tmp_path):
+    # A re-sighting that changes one price should be a one-line diff in the
+    # daily commit, not a 23-line one.
+    path = tmp_path / "history.json"
+    history = {
+        "Michael Jordan|graded": [
+            {"price": 100.0, "date": "2026-08-10", "id": "a", "title": "1986 Fleer #57"},
+            {"price": 120.0, "date": "2026-08-11", "id": "b", "title": None},
+        ],
+        "Michael Jordan|raw": [],
+        "Kyle Teel|raw": [{"price": 5.0, "date": "2026-08-12", "id": "c"}],
+    }
+    price_history.save(path, history)
+    lines = path.read_text().splitlines()
+    for listing_id in ("a", "b", "c"):
+        assert sum('"id":"{}"'.format(listing_id) in line for line in lines) == 1
+    assert price_history.load(path) == history
+
+
 def test_load_missing_file_returns_empty_dict(tmp_path):
     assert price_history.load(tmp_path / "does_not_exist.json") == {}
 
