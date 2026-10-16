@@ -970,6 +970,52 @@ class TestBothSources:
         assert "Sources: 2 from the eBay API, 1 from alert emails, 0 in both" in sent[0]
 
 
+class TestAlertOnly:
+    """--alert-only: an intra-day poll that emails only an ACT NOW, marks
+    only what it sent, and leaves the digest's run marker alone."""
+
+    ITEM = "https://www.ebay.com/itm/111111111111"
+
+    def _wire(self, main, monkeypatch, act_now_ids=frozenset()):
+        import dataclasses
+        monkeypatch.setattr(main.ebay_client, "get_app_token", lambda *_: "t")
+        monkeypatch.setattr(main.ebay_client, "search_active_listings", fake_active)
+        real_build = main.report.build_model
+        monkeypatch.setattr(
+            main.report, "build_model",
+            lambda *a, **k: dataclasses.replace(real_build(*a, **k), act_now_ids=frozenset(act_now_ids)),
+        )
+        sent = []
+        monkeypatch.setattr(main.emailer, "send_email",
+                            lambda subject, body, *rest, html_body=None: sent.append((subject, body)))
+        return sent
+
+    def test_a_poll_with_no_act_now_sends_nothing_and_touches_no_state(self, project, monkeypatch, tmp_path):
+        sent = self._wire(project, monkeypatch)
+        project.run(argparse.Namespace(dry_run=False, alert_only=True))
+        assert sent == []
+        assert not (tmp_path / "data" / "seen_listings.json").exists()
+        assert not (tmp_path / "data" / "last_run.json").exists()
+        assert (tmp_path / "data" / "ebay_alert_price_history.json").exists()  # corpus kept
+
+    def test_a_poll_with_an_act_now_sends_once_and_the_digest_does_not_repeat_it(
+        self, project, monkeypatch, tmp_path
+    ):
+        sent = self._wire(project, monkeypatch, act_now_ids={self.ITEM})
+        project.run(argparse.Namespace(dry_run=False, alert_only=True))
+        assert len(sent) == 1 and "ACT NOW" in sent[0][0]
+        assert self.ITEM in sent[0][1]
+        seen = json.loads((tmp_path / "data" / "seen_listings.json").read_text())
+        assert set(seen) == {self.ITEM}
+        assert not (tmp_path / "data" / "last_run.json").exists()
+
+        digest = self._wire(project, monkeypatch)
+        project.run(argparse.Namespace(dry_run=False))
+        assert len(digest) == 1
+        assert self.ITEM not in digest[0][1]
+        assert (tmp_path / "data" / "last_run.json").exists()
+
+
 class TestFlagEligibilityOverride:
     """`valuation.require_flag_eligible_comp` was loaded from config but
     never read -- setting it to false silently did nothing. It is a real

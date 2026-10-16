@@ -1362,7 +1362,9 @@ def run(args: argparse.Namespace) -> None:
         cheap_auction_floor=cfg.cheap_auction_floor,
         cheap_auction_ceiling=cfg.cheap_auction_ceiling,
     )
-    record_shown(listings, model.shown_ids, seen, today_str)
+    alert_only = getattr(args, "alert_only", False)
+    if not alert_only:
+        record_shown(listings, model.shown_ids, seen, today_str)
     body = report.render_text(model)
     html_body = report_html.render(model)
     subject = f"{cfg.email_subject_prefix} {model.subject}"
@@ -1387,6 +1389,25 @@ def run(args: argparse.Namespace) -> None:
     # the run later fails.
     if history is not None:
         price_history.save(cfg.ebay_alert_price_history_path, history)
+
+    if alert_only:
+        # An intra-day poll: the corpus above is always kept, but email goes
+        # out only for an ACT NOW, and only the ACT NOW cards are marked seen
+        # -- read fresh, because apply_dedupe has already marked every new
+        # opportunity in `seen`, and those were not sent. No run marker: the
+        # daily digest and its --skip-if-ran-today backup key off it.
+        if not model.act_now_ids:
+            logger.info("Alert-only poll: nothing in ACT NOW -- no email")
+            return
+        if not subject.startswith(cfg.email_subject_prefix + " ACT NOW"):
+            subject = "{} ACT NOW: {}".format(cfg.email_subject_prefix, model.subject)
+        emailer.send_email(subject, body, cfg.gmail_address, cfg.gmail_app_password,
+                           cfg.email_to, html_body=html_body)
+        sent = dedupe.load_seen(cfg.seen_listings_path)
+        record_shown(listings, model.act_now_ids, sent, today_str)
+        dedupe.save_seen(cfg.seen_listings_path, sent)
+        logger.info("Alert-only poll: emailed %d ACT NOW card(s)", len(model.act_now_ids))
+        return
 
     emailer.send_email(subject, body, cfg.gmail_address, cfg.gmail_app_password,
                        cfg.email_to, html_body=html_body)
@@ -1451,6 +1472,12 @@ def main() -> None:
         help="Exit without doing anything if a scan already completed today. For the "
         "backup scheduled run -- GitHub drops scheduled workflows under load, and a "
         "dropped run is the one failure nothing else here can see.",
+    )
+    parser.add_argument(
+        "--alert-only",
+        action="store_true",
+        help="Intra-day poll: save the corpus, email only if ACT NOW is non-empty, mark only "
+        "those cards seen, and leave the run marker alone so the daily digest still runs.",
     )
     args = parser.parse_args()
 

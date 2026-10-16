@@ -2582,6 +2582,8 @@ class ReportModel:
     not_configured: Optional[str] = None
     #: Ids of every listing printed in a section, for the seen file.
     shown_ids: frozenset = frozenset()
+    #: Ids in ACT NOW -- what an --alert-only poll emails and marks seen.
+    act_now_ids: frozenset = frozenset()
 
 
 def build_model(
@@ -2724,6 +2726,7 @@ def build_model(
         assumptions=_assumptions_footer(sections),
         footer=footer,
         shown_ids=frozenset(shown),
+        act_now_ids=frozenset(deal.id for deal in sections[SECTION_ACT_NOW]),
     )
 
 
