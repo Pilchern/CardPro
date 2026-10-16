@@ -105,6 +105,9 @@ class Config:
     min_net_profit: float
     min_net_profit_pct_of_value: float  # floor also scales with the card's value
     minutes_per_flip: float  # owner time per flip, for profit per hour
+    # settings.json "grading": costs for a future grade-and-flip branch.
+    # Loaded so it is validated JSON in one place; nothing reads it yet.
+    grading: dict
 
     auction_required_margin_pct: float
     auction_ending_soon_hours: int
@@ -245,6 +248,7 @@ def load_config() -> Config:
         min_net_profit=float(economics.get("min_net_profit", 15.0)),
         min_net_profit_pct_of_value=float(economics.get("min_net_profit_pct_of_value", 0.10)),
         minutes_per_flip=float(economics.get("minutes_per_flip", 25.0)),
+        grading=dict(_section(settings, "grading")),
         auction_required_margin_pct=float(auctions.get("required_margin_pct", 0.0)),
         auction_ending_soon_hours=int(auctions.get("ending_soon_hours", 24)),
         immediate_alert_min_savings_dollars=float(alerts.get("immediate_alert_min_savings_dollars", 150.0)),

@@ -77,6 +77,16 @@
     "_minutes_per_flip_comment": "Owner time per flip, for the $/h figure on each deal: 10 minutes to buy plus 15 to list, pack and ship (owner ASSUMPTION). Display only; nothing gates on it.",
     "minutes_per_flip": 25
   },
+  "grading": {
+    "_comment": "Grading costs for a FUTURE grade-and-flip branch. Nothing reads these yet beyond config loading, and there is no grading branch: enabled stays false. Prices as seen 2026-10-16 (phase1-research.md, MR-8; secondary sources, the graders' own pages returned 403 = UNVERIFIED-official). psa_standard: PSA Standard (new 2026-09-14) $59.99 up to $1,000 declared value (PSA Value tiers paused since 2026-06-02). sgc: SGC Standard $50 up to $1,500 (raised from $15-$20 on 2026-09-02). bgs_express: Beckett Express (BGS Base/Standard paused 2026-09-26; express price not in the research table, UNVERIFIED). cgc_bulk: CGC Bulk $17, 25-card minimum, ~150 working days. shipping_per_card: return shipping + insurance allowance per card (hypothesis; returns run ~$15-$30 per order). The owner's grade-and-flip floor is $40 net and a grade is never assumed to be a 10.",
+    "enabled": false,
+    "psa_standard": 59.99,
+    "psa_standard_max_value": 1000,
+    "sgc": 50,
+    "bgs_express": 79.95,
+    "cgc_bulk": 17,
+    "shipping_per_card": 10
+  },
   "auctions": {
     "_comment": "An auction's current bid is not a price. Auctions get their own report section and their own math: the max bid is the highest you could bid and still net economics.min_net_profit at the haircut sale price, after fees, postage, supplies, tax and inbound shipping -- the same number fixed-price listings show as their max offer/buy. required_margin_pct is an optional EXTRA floor for auctions only (profit of at least that % of market value, whichever is more); it was 25, which on top of the 20% asking haircut double-counted the safety margin and put the ceiling far below what the deal gate itself accepts (ASSUMPTION: the haircut is enough). ending_soon_hours controls what counts as urgent -- only used for ordering the section, never for relaxing any quality gate.",
     "required_margin_pct": 0,
