@@ -209,6 +209,30 @@ COMPOUND_PARALLELS = [
     "Fast Break Pink", "Fast Break Neon Green", "Fast Break Gold", "Fast Break Black",
     "Reactive Blue", "Reactive Yellow", "Reactive Purple", "Reactive Orange",
     "Green White Purple", "Silver Portrait",
+    # Named refractors whose modifier is ordinary English on its own (so it
+    # cannot go in UNAMBIGUOUS_PARALLELS -- see the note there) but only
+    # ever a parallel in front of "Refractor". Each was collapsing to plain
+    # "Refractor" and pooling with it: "Prism Refractor" sat in the plain
+    # #16 Refractor bucket behind a "93% under" flag.
+    "Prism Refractor", "Leather Refractor", "Surge Refractor", "Pulse Refractor",
+    "Reflash Refractor", "Mini-Diamond Refractor",
+]
+
+#: Plurals, abbreviations and spellings sellers write for a named parallel,
+#: folded onto its one name before parallel extraction so they key one
+#: bucket. "Logofractors" read as no parallel at all, "Blue Ref" as a bare
+#: colour, "Blue Prism Refractors" as "Blue". Single words first, so a
+#: plural is folded before the phrases are matched. Not added to the
+#: vocabulary lists: those are also the flagship guard's familiar words, and
+#: "X" there let "Topps X Steve Aoki" read as flagship Topps.
+PARALLEL_ALIASES = {
+    "Refractors": "Refractor", "Refr": "Refractor", "Ref": "Refractor",
+    "X-Fractors": "X-Fractor", "Logofractors": "Logofractor",
+    "X Fractor": "X-Fractor", "Logo Refractor": "Logofractor",
+}
+_PARALLEL_ALIAS_RES = [
+    (re.compile(r"\b" + r"[\s-]+".join(re.escape(w) for w in alias.split()) + r"\b", re.IGNORECASE), name)
+    for alias, name in PARALLEL_ALIASES.items()
 ]
 
 UNAMBIGUOUS_PARALLELS = [
@@ -551,6 +575,9 @@ def _parallel_run(masked_title: str):
         else:
             if not adjacent:
                 current, current_specific = [], False
+            if current and current[-1] == canonical:
+                previous_end = match.end()
+                continue  # "Refractors refractor": one word said twice
             current.append(canonical)
             current_specific = current_specific or word in _UNAMBIGUOUS_LOWER
             # Longer run wins; on a tie, the specific one does. Without the
@@ -564,6 +591,9 @@ def _parallel_run(masked_title: str):
     return (" ".join(best_words), best_specific) if best_words else (None, False)
 
 _COLOR_LOOKUP = {word.lower(): word for word in COLOR_PARALLEL_WORDS}
+_COLOR_BEFORE_RE = re.compile(
+    r"\b(" + "|".join(re.escape(c) for c in COLOR_PARALLEL_WORDS) + r")[\s-]+$", re.IGNORECASE
+)
 _QUALIFIER_LOOKUP = {word.lower(): word for word in PARALLEL_QUALIFIER_WORDS}
 _COLOR_QUALIFIER_RE = re.compile(
     r"\b(" + "|".join(re.escape(c) for c in sorted(COLOR_PARALLEL_WORDS, key=len, reverse=True)) + r")"
@@ -689,8 +719,16 @@ def _extract_parallel(masked_title: str) -> Field:
     jersey colour, a border, or a word from the player's team.
     """
     # 1. Named compound parallels ("Orange Ice", "Cracked Ice"), longest first.
+    #    A colour directly in front of a named refractor is part of its name:
+    #    "Magenta Speckle Refractor" is not "Speckle Refractor".
+    for alias, name in _PARALLEL_ALIAS_RES:
+        masked_title = alias.sub(name, masked_title)
     for name, pattern in _COMPOUND_PARALLEL_PATTERNS:
-        if pattern.search(masked_title):
+        match = pattern.search(masked_title)
+        if match:
+            colour = _COLOR_BEFORE_RE.search(masked_title, 0, match.start())
+            if colour and name.lower().endswith("fractor") and name.split()[0].lower() not in _COLOR_LOOKUP:
+                name = "{} {}".format(_COLOR_LOOKUP[colour.group(1).lower()], name)
             return Field(value=name, confidence="high", source="title")
 
     # 2. Colour immediately next to a parallel qualifier ("Green Prizm",

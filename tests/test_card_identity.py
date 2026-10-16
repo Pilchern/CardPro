@@ -220,6 +220,41 @@ def test_products_named_black_are_sets_not_the_black_parallel(title, set_name, p
     assert identity.parallel.value == parallel
 
 
+@pytest.mark.parametrize(
+    "title, parallel",
+    [
+        # Paraphrased corpus shapes. A named refractor must never collapse to
+        # plain "Refractor" -- "Prism Refractor" sat in the plain bucket.
+        ("Pete Crow-Armstrong 2024 Topps Chrome Prism Refractor #16 Rookie", "Prism Refractor"),
+        ("2025 Topps Chrome Rome Odunze Leather Refractor #49", "Leather Refractor"),
+        ("Rome Odunze 2025 Finest Reflash Refractor #RF-12", "Reflash Refractor"),
+        ("Kyle Teel 2024 Bowman Chrome Mini Diamond Refractor #BCP-48", "Mini-Diamond Refractor"),
+        # A colour in front of a named refractor is part of its name.
+        ("PCA 2024 Topps Chrome #16 Magenta Speckle Refractor /350", "Magenta Speckle Refractor"),
+        ("Caleb Williams 2024 Resurgence Aqua Surge Refractor /249", "Aqua Surge Refractor"),
+        # Plurals and abbreviations fold onto one name.
+        ("2024 Topps Chrome Pete Crow-Armstrong Logofractors #16", "Logofractor"),
+        ("Andre Dawson 2025 Topps Chrome Blue Prism Refractors #425", "Blue Prism Refractor"),
+        ("Caleb Wilson Bowman Chrome Auto Blue Ref /150", "Blue Refractor"),
+        ("Kyle Teel Bowman Chrome Green Refractors /99", "Green Refractor"),
+        ("Kyle Teel 2024 Topps Chrome Blue X Fractor", "Blue X-Fractor"),
+        ("2026 Topps Chrome Munetaka Murakami Logo Refractor #274", "Logofractor"),
+        # One word said twice is one word.
+        ("2025 Bowman's Best Crow-Armstrong Blue Lazer Refractors refractor /150", "Blue Lazer Refractor"),
+        # And a plain refractor stays plain.
+        ("2024 Topps Chrome Pete Crow-Armstrong #16 Refractor Rookie", "Refractor"),
+    ],
+)
+def test_named_refractors_are_not_collapsed(title, parallel):
+    assert card_identity.extract_card_identity(title).parallel.value == parallel
+
+
+def test_parallel_aliases_do_not_widen_the_flagship_set():
+    # "X" as a familiar word let "Topps X <artist>" read as flagship Topps.
+    assert card_identity.extract_card_identity("2020 Topps X Steve Aoki #90 Andre Dawson").set_name.value is None
+
+
+
 def test_award_name_is_not_a_parallel_gold_glove():
     identity = card_identity.extract_card_identity("Michael Jordan Gold Glove Award unsigned photo card")
     assert identity.parallel.value is None
@@ -903,7 +938,7 @@ class TestIsBase:
         assert extract("2024 Panini Prizm Caleb Williams #301 RC /99").is_base.value is None
         assert extract("2024 Panini Prizm Caleb Williams #301 RC 23/99").is_base.value is None
 
-    @pytest.mark.parametrize("word", ["Jumbo", "Rainbow", "Color Wheel", "Oversized", "Logofractors", "Stars"])
+    @pytest.mark.parametrize("word", ["Jumbo", "Rainbow", "Color Wheel", "Oversized", "Filigree", "Stars"])
     def test_audit_outlier_words_block_the_assertion(self, word):
         # Words absent from the parallel vocabulary that the corpus showed
         # behind base-bucket outliers (identity audit, 2026-10-16).
