@@ -45,6 +45,7 @@ email is diffable day to day.
 """
 from __future__ import annotations
 
+import math
 import re
 import textwrap
 from collections import OrderedDict
@@ -801,6 +802,13 @@ def _whole_money(value: float) -> str:
     return "${:,.0f}".format(value)
 
 
+def _signed_whole(value: float, *, dollar: bool = True, sign: bool = True) -> str:
+    text = "{}{:,.0f}".format("$" if dollar else "", abs(value))
+    if not sign:
+        return text
+    return ("-" if value < 0 else "+") + text
+
+
 def summary_line(deal: Listing) -> Optional[str]:
     """One line a phone can show without scrolling, for a tiered deal:
     tier, price + shipping, MAX, expected sale range, comp basis and count,
@@ -816,21 +824,32 @@ def summary_line(deal: Listing) -> Optional[str]:
     if tier is None or stats is None or econ is None or deal.price is None:
         return None
     if deal.shipping_price is None:
-        price = "{}+ship?".format(_money(deal.price))
+        price = "{}+?".format(_money(deal.price))
     elif deal.shipping_price == 0:
-        price = "{} free ship".format(_money(deal.price))
+        price = "{} fs".format(_money(deal.price))
     else:
         price = "{}+{}".format(_money(deal.price), _money(deal.shipping_price))
     factor = econ.expected_sale_price / econ.estimated_market_value if econ.estimated_market_value else 1.0
+    net_high = econ.expected_profit
+    net_low = getattr(deal, "net_profit_low", None)
+    if net_low is None:
+        net_low = net_high
     parts = [
         tier.upper(),
         price,
-        "MAX {}".format(_whole_money(deal.max_rational_bid)) if deal.max_rational_bid else "MAX none",
+        # Rounded DOWN: a MAX of $27.80 printed as $28 would invite a $28
+        # offer that misses the floor.
+        "MAX ${:,d}".format(math.floor(deal.max_rational_bid)) if deal.max_rational_bid else "MAX none",
         "sells {}-{}".format(
             _whole_money(stats.minimum * factor), _whole_money(econ.expected_sale_price).lstrip("$")
         ),
         "{} n={}".format(str(stats.basis).upper(), stats.sample_size),
-        "net {}{}".format("+" if econ.expected_profit >= 0 else "-", _whole_money(abs(econ.expected_profit))),
+        # Low end first: the gate and MAX use the median, and selling at
+        # the cheap end of the comps can net far less.
+        "net {}..{}".format(
+            _signed_whole(net_low),
+            _signed_whole(net_high, dollar=False, sign=net_low < 0 or net_high < 0),
+        ),
     ]
     if getattr(deal, "profit_per_hour", None) is not None:
         parts.append("{}/h".format(_whole_money(deal.profit_per_hour)))

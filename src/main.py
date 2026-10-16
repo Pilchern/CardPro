@@ -1002,7 +1002,20 @@ def evaluate_listings(listings, engine, cfg, stats) -> None:
             expected_profit=listing.economics.expected_profit,
             min_net_profit=cfg.min_net_profit,
         )
-        listing.profit_per_hour = listing.economics.expected_profit / (cfg.minutes_per_flip / 60.0)
+        listing.profit_per_hour = (
+            listing.economics.expected_profit / (cfg.minutes_per_flip / 60.0)
+            if cfg.minutes_per_flip > 0 else None
+        )
+        # The gate and the MAX use the median; the summary also shows what
+        # selling at the cheap end of the comps would net, through the same
+        # fee model, so "+$15" is never read as a floor it is not.
+        listing.net_profit_low = economics.evaluate(
+            economics.Acquisition(
+                price=listing.price, shipping=listing.shipping_price,
+                sales_tax_pct=cfg.sales_tax_pct, assumed_shipping=cfg.assumed_inbound_shipping,
+            ),
+            match.stats.minimum, fees, resale_haircut_pct=haircut_pct, graded=graded,
+        ).expected_profit
         stats.opportunities_reported += 1
 
 

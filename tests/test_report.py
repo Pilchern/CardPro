@@ -2727,7 +2727,11 @@ def _tiered_deal(**overrides):
         economics.FeeModel.ebay_default(), resale_haircut_pct=20.0,
     )
     fields = dict(
-        shipping_price=None, economics=econ, deal_tier="Maybe", max_rational_bid=127.4,
+        shipping_price=None, economics=econ, deal_tier="Maybe", max_rational_bid=127.9,
+        net_profit_low=economics.evaluate(
+            economics.Acquisition(100.0, None, 10.25, assumed_shipping=4.50), 180.0,
+            economics.FeeModel.ebay_default(), resale_haircut_pct=20.0,
+        ).expected_profit,
         profit_per_hour=econ.expected_profit / (25 / 60),
         card_identity=CardIdentity(
             year=Field(1986, "high"), set_name=Field("Fleer", "high"),
@@ -2741,16 +2745,25 @@ def _tiered_deal(**overrides):
 
 def test_summary_line_reads_as_one_decision():
     # $100 + assumed $4.50 + 10.25% tax against a $200 asking median, 20%
-    # haircut: sells $144 (lowest comp $180) to $160, nets $15.09, $36/h.
+    # haircut: sells $144 (lowest comp $180) to $160, which nets $1.37 at
+    # the low end and $15.09 at the median; $36/h; MAX $127.90 floors to $127.
     assert report.summary_line(_tiered_deal()) == (
-        "MAYBE · $100.00+ship? · MAX $127 · sells $144-160 · ASKING n=7"
-        " · net +$15 · $36/h · ID med"
+        "MAYBE · $100.00+? · MAX $127 · sells $144-160 · ASKING n=7"
+        " · net +$1..15 · $36/h · ID med"
     )
+
+
+def test_a_loss_at_the_low_end_is_signed():
+    assert "net -$3..+15" in report.summary_line(_tiered_deal(net_profit_low=-3.2))
+
+
+def test_no_rate_without_a_profit_per_hour():
+    assert "/h" not in report.summary_line(_tiered_deal(profit_per_hour=None))
 
 
 def test_summary_line_states_known_and_free_shipping():
     assert "$100.00+$4.99 ·" in report.summary_line(_tiered_deal(shipping_price=4.99))
-    assert "$100.00 free ship ·" in report.summary_line(_tiered_deal(shipping_price=0.0))
+    assert "$100.00 fs ·" in report.summary_line(_tiered_deal(shipping_price=0.0))
 
 
 def test_summary_id_confidence_is_the_weakest_key_field():
@@ -2769,7 +2782,7 @@ def test_the_summary_is_the_first_line_of_a_deal_card():
     card = report._thesis_card(1, _tiered_deal())
     labels = [label for label, _ in card.fields]
     assert labels[0] == "Summary"
-    assert card.fields[0][1].startswith("MAYBE · $100.00+ship?")
+    assert card.fields[0][1].startswith("MAYBE · $100.00+?")
     assert "Cost" in labels  # the detailed block stays below it
 
 

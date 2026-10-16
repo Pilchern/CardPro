@@ -1239,6 +1239,21 @@ class TestDealTierWiring:
         assert listing.deal_tier == "Maybe"
         assert listing.profit_per_hour == pytest.approx(listing.economics.expected_profit / (25 / 60))
 
+    def test_the_low_end_net_uses_the_lowest_comp(self):
+        listing = make_listing(EXACT_TITLE, 200.0, listing_type="fixed_price")
+        rows = spread_observations(400.0)
+        rows[0]["price"] = 300.0
+        main_module.evaluate_listings([listing], engine_for(rows), fake_cfg(min_net_profit=15.0),
+                                      observability.RunStats())
+        assert listing.net_profit_low < listing.economics.expected_profit
+
+    def test_no_profit_per_hour_without_minutes(self):
+        listing = make_listing(EXACT_TITLE, 200.0, listing_type="fixed_price")
+        main_module.evaluate_listings([listing], engine_for(spread_observations(400.0)),
+                                      fake_cfg(min_net_profit=15.0, minutes_per_flip=0.0),
+                                      observability.RunStats())
+        assert listing.is_opportunity is True and listing.profit_per_hour is None
+
     def test_a_sold_comp_opportunity_is_strong(self):
         listing = make_listing(EXACT_TITLE, 200.0, listing_type="fixed_price")
         sold = spread_observations(400.0, basis=comps.BASIS_SOLD)

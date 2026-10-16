@@ -112,6 +112,9 @@ class Listing:
     # and net profit per hour of buying + selling time.
     deal_tier: Optional[str] = None
     profit_per_hour: Optional[float] = None
+    # Net profit if it sells at the LOW end of the comps (the lowest kept
+    # comp, same haircut) -- the other end of the range the summary shows.
+    net_profit_low: Optional[float] = None
     is_price_drop: bool = False  # seen before, and cheaper than last time
     previous_price: Optional[float] = None  # what it was last time we saw it, for price drops
 
