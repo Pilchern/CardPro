@@ -73,3 +73,62 @@ def test_no_rows_no_footer_line():
 
 def test_the_committed_file_is_just_the_header():
     assert main_module.FLIPS_PATH.read_text() == HEADER
+
+
+# -- review fixes (15r) -------------------------------------------------------
+
+
+def test_a_loose_date_is_normalised_and_cannot_crash_the_summary(tmp_path):
+    rows = flips.load(_csv(
+        tmp_path,
+        "2026-10-1,111,buy,32.50,4.50,0,,,{},".format(BUY_TITLE),
+        "2026-10-11 ,111,sell,58.00,0.82,8.66,,,,",
+    ))
+    assert [r["date"] for r in rows] == ["2026-10-01", "2026-10-11"]
+    assert "median 10 days" in flips.summary(rows)
+
+
+def test_dollar_signs_and_commas_are_read(tmp_path):
+    rows = flips.load(_csv(
+        tmp_path,
+        "2026-10-01,111,buy,\"$1,032.50\",$4.50,0,,,{},".format(BUY_TITLE),
+        "2026-10-11,111,sell,\"$1,258.00\",0.82,8.66,,,,",
+    ))
+    assert "realised net $211.52" in flips.summary(rows)  # 1258 - 8.66 - 0.82 - 1032.50 - 4.50
+
+
+def test_an_unreadable_amount_is_skipped_not_fatal(tmp_path, caplog):
+    rows = flips.load(_csv(
+        tmp_path,
+        "2026-10-01,111,buy,32.50,4.50,0,,,{},".format(BUY_TITLE),
+        "2026-10-11,111,sell,58.00,0.82,lots,,,,",
+    ))
+    with caplog.at_level(logging.WARNING):
+        assert flips.summary(rows) == "Flips: 2 logged (0 sold), realised net $0.00."
+    assert "unreadable amount" in caplog.text
+
+
+def test_a_repeated_sell_row_is_one_sale_and_the_last_wins(tmp_path):
+    rows = flips.load(_csv(
+        tmp_path,
+        "2026-10-01,111,buy,32.50,4.50,0,,,{},".format(BUY_TITLE),
+        "2026-10-11,111,sell,58.00,0.82,8.66,,,,",
+        "2026-10-11,111,sell,61.00,0.82,8.66,,,,corrected",
+    ))
+    [obs] = flips.sold_observations(rows, ["Pete Crow-Armstrong"])
+    assert obs["price"] == 61.0
+    assert "(1 sold)" in flips.summary(rows)
+
+
+def test_a_sell_with_no_buy_is_warned_about(tmp_path, caplog):
+    rows = flips.load(_csv(tmp_path, "2026-10-11,999,sell,58.00,0.82,8.66,,,,"))
+    with caplog.at_level(logging.WARNING):
+        flips.sold_observations(rows, ["Pete Crow-Armstrong"])
+    assert "no buy row" in caplog.text
+
+
+def test_an_own_sale_also_typed_into_sold_comps_counts_once(tmp_path):
+    [own] = flips.sold_observations(_rows(tmp_path), ["Pete Crow-Armstrong"])
+    typed = dict(own, id="sold:abc", source="130point")
+    assert flips.without_duplicates([own], [typed]) == []
+    assert flips.without_duplicates([own], [dict(typed, price=57.0)]) == [own]

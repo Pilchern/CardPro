@@ -1302,7 +1302,8 @@ def run(args: argparse.Namespace) -> None:
     # runs have none, and that is fine.
     # Your own sold flips (data/flips.csv) are sold comps too -- see src/flips.py.
     flip_rows = flips.load(FLIPS_PATH)
-    sold = sold_comps.load(cfg.sold_comps_path) + flips.sold_observations(flip_rows, cfg.players)
+    sold = sold_comps.load(cfg.sold_comps_path)
+    sold = sold + flips.without_duplicates(flips.sold_observations(flip_rows, cfg.players), sold)
     stats.flips_summary = flips.summary(flip_rows) or ""
     if sold:
         observations = list(observations) + sold

@@ -37,8 +37,9 @@ def listing_id(item_id: str) -> str:
 
 
 def _money(value) -> float:
+    text = str(value if value is not None else "").replace("$", "").replace(",", "").strip()
     try:
-        return float(value) if str(value).strip() else 0.0
+        return float(text) if text else 0.0
     except ValueError:
         return float("nan")
 
@@ -57,21 +58,29 @@ def load(path: Path) -> list:
             if not ok:
                 logger.warning("flips.csv line %d skipped: needs a date, item_id, pass|buy|sell and a price", number)
                 continue
+            # Canonical values from here on: "2026-1-20" / "2026-10-12 " are
+            # accepted above and would crash anything that parses them raw.
+            row["date"] = sold_comps._valid_date(row["date"])
+            row["item_id"] = row["item_id"].strip()
             rows.append(row)
     return rows
 
 
-def _pairs(rows) -> list:
-    """(buy, sell) per item_id that has both."""
-    buys = {r["item_id"].strip(): r for r in rows if r["action"] == "buy"}
-    return [(buys[r["item_id"].strip()], r) for r in rows
-            if r["action"] == "sell" and r["item_id"].strip() in buys]
+def _pairs(rows, warn: bool = False) -> list:
+    """(buy, sell) per item_id that has both. One sale per item: a repeated
+    sell row (an accidental duplicate, or a correction) -- the last wins."""
+    buys = {r["item_id"]: r for r in rows if r["action"] == "buy"}
+    sells = {r["item_id"]: r for r in rows if r["action"] == "sell"}
+    if warn:
+        for item_id in sells.keys() - buys.keys():
+            logger.warning("flips.csv: sell of %s has no buy row, so it is not a sold comp", item_id)
+    return [(buys[item_id], sell) for item_id, sell in sells.items() if item_id in buys]
 
 
 def sold_observations(rows, players) -> list:
     """Each sold flip as a CompEngine observation, or nothing if it would not validate."""
     observations = []
-    for buy, sell in _pairs(rows):
+    for buy, sell in _pairs(rows, warn=True):
         title = buy.get("title") or ""
         identity = card_identity.extract_card_identity(title)
         grade = matcher.detect_grade_details(title)
@@ -85,7 +94,7 @@ def sold_observations(rows, players) -> list:
             "relic": "patch" if identity.is_patch.value else ("relic" if identity.is_memorabilia.value else None),
             "print_run": identity.print_run.value,
             "price": _money(sell["price"]), "date": sell["date"], "source": "own-sale",
-            "note": "flip of " + sell["item_id"].strip(),
+            "note": "flip of " + sell["item_id"],
         }
         observation = sold_comps.to_observation({k: v for k, v in sale.items() if v is not None})
         if observation is None:
@@ -107,18 +116,38 @@ def mark_seen(rows, seen: dict, today: str) -> None:
                 seen[key] = {"price": _money(row["price"]), "first_seen": row["date"], "last_flagged": today}
 
 
+def without_duplicates(own: list, hand_entered: list) -> list:
+    """Own sales not already typed into config/sold_comps.json: the same sale
+    entered both ways must count once (same card, price and date)."""
+    def key(obs):
+        return tuple(obs.get(k) for k in (
+            "player", "year", "set_name", "parallel", "card_number", "card_type",
+            "grader", "grade", "price", "date"))
+    typed = {key(obs) for obs in hand_entered}
+    return [obs for obs in own if key(obs) not in typed]
+
+
 def summary(rows) -> Optional[str]:
-    """One footer line: flips logged, realised net, median days to sell."""
-    pairs = _pairs(rows)
+    """One footer line: flips logged, realised net, median days to sell.
+    A pair that cannot be read is logged and skipped -- a bad row in a
+    hand-edited file must never stop the scan."""
     if not rows:
         return None
-    net = sum(
-        _money(s["price"]) - _money(s["fees"]) - _money(s["ship"])
-        - _money(b["price"]) - _money(b["ship"]) - _money(b["fees"])
-        for b, s in pairs
-    )
-    days = [(date.fromisoformat(s["date"]) - date.fromisoformat(b["date"])).days for b, s in pairs]
-    line = "Flips: {} logged ({} sold), realised net ${:,.2f}".format(len(rows), len(pairs), net)
+    net, days, pairs = 0.0, [], 0
+    for b, s in _pairs(rows):
+        try:
+            flip_net = (_money(s["price"]) - _money(s["fees"]) - _money(s["ship"])
+                        - _money(b["price"]) - _money(b["ship"]) - _money(b["fees"]))
+            held = (date.fromisoformat(s["date"]) - date.fromisoformat(b["date"])).days
+        except (TypeError, ValueError, KeyError) as exc:
+            logger.warning("flips.csv: flip of %s skipped in the summary (%s)", s.get("item_id"), exc)
+            continue
+        if flip_net != flip_net:  # NaN: an unreadable money field
+            logger.warning("flips.csv: flip of %s has an unreadable amount, skipped", s.get("item_id"))
+            continue
+        net, pairs = net + flip_net, pairs + 1
+        days.append(held)
+    line = "Flips: {} logged ({} sold), realised net ${:,.2f}".format(len(rows), pairs, net)
     if days:
         line += ", median {:.0f} days to sell".format(statistics.median(days))
     return line + "."

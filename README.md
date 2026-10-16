@@ -998,9 +998,13 @@ date,item_id,action,price,ship,fees,grader,grade,title,note
 2026-10-21,336700000000,pass,40.00,,,,,,too dear
 ```
 
-`action` is `pass`, `buy` or `sell`; `item_id` is the eBay item number. On
-`buy` and `pass`, `price`/`ship` are what you paid or were asked; on `sell`,
-what the buyer paid, your postage and eBay's fees. Each `sell` joined to its
+`action` is `pass`, `buy` or `sell`; `item_id` is the eBay item number.
+`price` is always the ITEM price, excluding shipping -- shipping has its own
+column. On `buy` and `pass`, `price`/`ship` are what you paid or were asked;
+on `sell`, what the buyer paid for the card, your postage and eBay's fees.
+Dates are YYYY-MM-DD; "$" and "," in amounts are fine. A repeated `sell`
+row for the same item replaces the earlier one, and a sale you also typed
+into config/sold_comps.json counts once. Each `sell` joined to its
 `buy` becomes a sold comp (source "own-sale", identity read from the buy
 row's title), and cards you bought or passed on stop appearing in the email
 unless their price drops. The footer shows flips logged, realised net and
