@@ -79,6 +79,37 @@ def test_a_short_season_dates_a_black_product():
     assert identity.set_name.value == "Topps Chrome Black"
 
 
+@pytest.mark.parametrize("title, set_name", [
+    # Paraphrased corpus shapes (identity audit ID-7).
+    ("Munetaka Murakami 2018 BBM Rookie #317 Swallows", "BBM"),
+    ("1992 Fleer Ultra Frank Thomas #44", "Fleer Ultra"),
+    ("2021 Goodwin Champions Josh Giddey Goudey Lenticular", "Goodwin Champions"),
+    ("2023 UD Allure Connor Bedard #102 Yellow Taxi", "Upper Deck Allure"),
+    ("2023 Allure Connor Bedard Color Flow", "Upper Deck Allure"),
+    ("1994 Flair Michael Jordan #326", "Flair"),
+    ("1995-96 Fleer Metal Michael Jordan #13", "Fleer Metal"),
+    ("2022 Topps Pro Debut Colson Montgomery #PD-185", "Pro Debut"),
+    ("2024 Panini Stars and Stripes Kyle Teel Jersey", "Stars & Stripes"),
+    ("2022 Bowman U Chrome Caleb Williams #50", "Bowman University Chrome"),
+    ("Topps 2024-25 Bowman Univ Chrome Caleb Wilson #BPP-83", "Bowman University Chrome"),
+    ("Caleb Wilson 2025-26 Bowman University Best Rookie #91", "Bowman University Best"),
+    ("2023-24 O-Pee-Chee Platinum Connor Bedard #201", "O-Pee-Chee Platinum"),
+    ("2023 OPC Platinum Connor Bedard #201 Rainbow", "O-Pee-Chee Platinum"),
+])
+def test_set_vocabulary_id7(title, set_name):
+    assert card_identity.extract_card_identity(title).set_name.value == set_name
+
+
+@pytest.mark.parametrize("title, not_set", [
+    ("Caleb Williams 2024 Prizm Ultra Pro toploader #301", "Fleer Ultra"),
+    ("2024 Leaf Metal Kyle Teel Auto", "Fleer Metal"),
+    ("2024 Bowman Chrome Kyle Teel #BCP-48", "Bowman University Chrome"),
+    ("2023 O-Pee-Chee Connor Bedard #201", "O-Pee-Chee Platinum"),
+])
+def test_set_vocabulary_id7_false_friends(title, not_set):
+    assert card_identity.extract_card_identity(title).set_name.value != not_set
+
+
 def test_autograph_keyword_detected():
     identity = card_identity.extract_card_identity("2024 Panini Contenders Caleb Williams Autograph RC")
     assert identity.is_autograph.value is True

@@ -139,6 +139,19 @@ SET_KEYWORDS = [
     # bucket on purpose, since an insert is a different market from the
     # base card it inserts into.
     "Game Dated Moments", "Greatest Hits", "Silhouette",
+    # Identity audit ID-7, measured on the corpus (2026-10-16): products the
+    # vocabulary did not know, read as no set or as a different one.
+    # "Fleer Ultra" / "Fleer Metal" only with the brand: bare "Ultra" is also
+    # "Ultra Pro" (a toploader brand) and bare "Metal" is Leaf Metal or
+    # Metal Universe, both already their own sets.
+    "BBM", "Fleer Ultra", "Goodwin Champions", "UD Allure", "Allure", "Flair",
+    "Fleer Metal", "Pro Debut", "Stars & Stripes", "Stars and Stripes",
+    # Two products that were pooled into a bigger one: Bowman University is
+    # the college product (a player can have both a college and a pro Bowman
+    # Chrome card, at very different prices), and O-Pee-Chee Platinum is
+    # not O-Pee-Chee. Longest-first matching lets these win.
+    "Bowman University Chrome", "Bowman U Chrome", "Bowman Univ Chrome",
+    "Bowman University", "Bowman University Best", "O-Pee-Chee Platinum", "OPC Platinum",
 ]
 
 #: Spellings that mean the same product. Two names for one set means two comp
@@ -157,6 +170,12 @@ SET_ALIASES = {
     "Topps Series One": "Topps Series 1",
     "Topps Series Two": "Topps Series 2",
     "Rookies & Stars": "Panini Rookies and Stars",
+    "UD Allure": "Upper Deck Allure",
+    "Allure": "Upper Deck Allure",
+    "Stars and Stripes": "Stars & Stripes",
+    "Bowman U Chrome": "Bowman University Chrome",
+    "Bowman Univ Chrome": "Bowman University Chrome",
+    "OPC Platinum": "O-Pee-Chee Platinum",
 }
 
 #: A bare product line that more than one brand issues: "Chrome" is Topps
