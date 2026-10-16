@@ -60,6 +60,15 @@ def test_two_digit_lookalikes_are_not_seasons(title):
     assert card_identity.extract_card_identity(title).year.value is None
 
 
+def test_a_short_season_in_the_future_is_not_a_season():
+    from datetime import date
+
+    far = date.today().year + 2 - 2000
+    title = "{:02d}-{:02d} Bowman George Mikan".format(far, far + 1)
+    assert card_identity.extract_card_identity(title).year.value is None
+    assert card_identity.extract_card_identity("49-50 Bowman George Mikan").year.value is None
+
+
 def test_a_four_digit_year_wins_over_a_short_season():
     identity = card_identity.extract_card_identity("2024-25 Panini Prizm Matas Buzelis 23-24 insert")
     assert identity.year.value == 2024 and identity.year.confidence == "high"
@@ -284,6 +293,25 @@ def test_products_named_black_are_sets_not_the_black_parallel(title, set_name, p
     ],
 )
 def test_named_refractors_are_not_collapsed(title, parallel):
+    assert card_identity.extract_card_identity(title).parallel.value == parallel
+
+
+@pytest.mark.parametrize("title", [
+    "Caleb Wilson Bowman Chrome Blue Ref: 12345",
+    "Josh Giddey Prizm Ref# 202",
+    "Kyle Teel Bowman Ref 4471",
+    "1990 Hoops NBA Ref card",
+    "NFL Ref trading card Pro Set",
+])
+def test_ref_that_is_not_a_refractor_is_not_folded(title):
+    assert "Refractor" not in (card_identity.extract_card_identity(title).parallel.value or "")
+
+
+@pytest.mark.parametrize("title, parallel", [
+    ("Caleb Wilson McDonald's Chrome Blue Lava Ref #10 PSA 10", "Blue Lava Refractor"),
+    ("Kyle Teel Bowman Chrome Purple Ref 194/250", "Purple Refractor"),
+])
+def test_a_refractor_before_a_card_number_or_serial_still_folds(title, parallel):
     assert card_identity.extract_card_identity(title).parallel.value == parallel
 
 

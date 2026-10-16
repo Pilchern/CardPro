@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field as dataclass_field
+from datetime import date
 from typing import Optional
 
 from src import matcher
@@ -232,8 +233,18 @@ PARALLEL_ALIASES = {
     "X-Fractors": "X-Fractor", "Logofractors": "Logofractor",
     "X Fractor": "X-Fractor", "Logo Refractor": "Logofractor",
 }
+#: Contexts where an alias is not the parallel: "Ref: 12345", "Ref# 202"
+#: and "Ref 4471" are a seller's reference number, "NBA Ref" a referee card.
+#: Not blocked: "Ref #10" (a card number after a space) and "Ref 194/250"
+#: (a serial) -- both real refractors in the corpus.
+_ALIAS_GUARDS = {"Ref": (r"(?<!nba )(?<!nfl )", r"(?!\s*:)(?!#)(?!\s*\d+(?!\d|\s*/))")}
 _PARALLEL_ALIAS_RES = [
-    (re.compile(r"\b" + r"[\s-]+".join(re.escape(w) for w in alias.split()) + r"\b", re.IGNORECASE), name)
+    (re.compile(
+        _ALIAS_GUARDS.get(alias, ("", ""))[0]
+        + r"\b" + r"[\s-]+".join(re.escape(w) for w in alias.split()) + r"\b"
+        + _ALIAS_GUARDS.get(alias, ("", ""))[1],
+        re.IGNORECASE,
+    ), name)
     for alias, name in PARALLEL_ALIASES.items()
 ]
 
@@ -351,6 +362,8 @@ SEASON_RE = re.compile(r"\b((?:19|20)\d{2})-(\d{2})\b")
 # when no four-digit year is present, and only for consecutive years, so a
 # card number ("#25-26", "BD-72"), a print run ("/25-26") or a score is not
 # read as a season: the lookbehind bars "#", letters, "/", "." and "-".
+# No season starts later than next year; anything past it is not a season.
+_MAX_SEASON_YEAR = date.today().year + 1
 SHORT_SEASON_RE = re.compile(r"(?<![#\w/.-])(\d{2})-(\d{2})(?![\w/-])")
 CARD_NUMBER_RE = re.compile(r"#([A-Za-z0-9-]{1,10})\b")
 # "Card No. 150" / "card number 301" -- the same fact, spelled out.
@@ -1439,8 +1452,10 @@ def extract_card_identity(title: str) -> CardIdentity:
     if not year_match:
         for match in SHORT_SEASON_RE.finditer(title):
             first, second = int(match.group(1)), int(match.group(2))
+            century = 2000 if first <= 50 else 1900
+            if century + first > _MAX_SEASON_YEAR:
+                continue  # "49-50" is not the 2049-50 season
             if (first + 1) % 100 == second:
-                century = 2000 if first <= 50 else 1900
                 year_field = Field(value=century + first, confidence="medium", source="title")
                 short_season = "{}-{}".format(century + first, match.group(2))
                 break
