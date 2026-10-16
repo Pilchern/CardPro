@@ -72,6 +72,7 @@ def search_active_listings(
     buying_options: tuple = ("FIXED_PRICE", "AUCTION"),
     max_pages: int = 1,
     min_price: Optional[float] = None,
+    failures: Optional[list] = None,
 ) -> list[dict]:
     """Active for-sale listings for `query`. Returns raw Browse API item dicts.
 
@@ -86,7 +87,9 @@ def search_active_listings(
     keeps best match.
 
     A failed page ends the walk and keeps what earlier pages returned; a
-    failed first page is [] with a logged warning, same as before.
+    failed first page is [] with a logged warning, same as before. Pass a
+    list as `failures` to also get each failure back as "<status> <body>",
+    because a log nobody reads is how a dead search looks like a quiet day.
     """
     params = {
         "q": query,
@@ -112,6 +115,8 @@ def search_active_listings(
         )
         if resp.status_code != 200:
             logger.warning("eBay Browse search failed for %r: %s %s", query, resp.status_code, resp.text[:300])
+            if failures is not None:
+                failures.append("{} {}".format(resp.status_code, resp.text[:120]))
             break
         payload = resp.json()
         items.extend(payload.get("itemSummaries", []))

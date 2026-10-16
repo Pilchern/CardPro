@@ -218,6 +218,7 @@ def fetch_ebay_active(cfg, players, token, stats) -> list:
     listings = []
     seen_ids = set()
     capped = []
+    failed = {}  # player -> first failure, for one warning in the email
     now = datetime.now(timezone.utc)
     passes = [
         # A floor on the newest pass only: measured 2026-10-16, 77% of a
@@ -233,14 +234,18 @@ def fetch_ebay_active(cfg, players, token, stats) -> list:
         for search in passes:
             if search["max_pages"] < 1:
                 continue
+            failures = []
             items = ebay_client.search_active_listings(
                 query=player,
                 token=token,
                 category_id=cfg.ebay_category_id,
                 marketplace_id=cfg.ebay_marketplace_id,
                 limit=cfg.ebay_active_listing_limit,
+                failures=failures,
                 **search,
             )
+            if failures:
+                failed.setdefault(player, failures[0])
             if search["sort"] == "newlyListed" and len(items) >= cfg.ebay_active_listing_limit * search["max_pages"]:
                 capped.append(player)
             for item in items:
@@ -269,6 +274,17 @@ def fetch_ebay_active(cfg, players, token, stats) -> list:
                     stats.rejections.record(reasons.Reason.NO_PLAYER_MATCH)
                     continue
                 listings.append(listing)
+    if failed:
+        # A non-200 used to reach only the log, so a player whose search
+        # failed looked exactly like a player with nothing new today.
+        stats.warn(
+            "The eBay API refused the search for {} player(s) ({}), so their listings are "
+            "missing from today's report. First error: {}".format(
+                len(failed),
+                ", ".join(list(failed)[:5]) + (" and more" if len(failed) > 5 else ""),
+                next(iter(failed.values())),
+            )
+        )
     if capped:
         # Newest first, so a full walk means the oldest of today's new
         # listings fell off the end -- the alert path's capped-search

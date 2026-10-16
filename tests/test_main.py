@@ -756,6 +756,38 @@ class TestBrowsePaging:
         assert "min_price" not in by_sort["endingSoonest"]
 
 
+    def test_a_non_200_is_reported_back_to_the_caller(self, monkeypatch):
+        class Down:
+            status_code = 429
+            text = "Too many requests"
+        monkeypatch.setattr(ebay_client.requests, "get", lambda *a, **k: Down())
+        failures = []
+        assert ebay_client.search_active_listings("x", "t", "261328", "EBAY_US", failures=failures) == []
+        assert failures == ["429 Too many requests"]
+
+    def test_a_refused_search_reaches_the_email_as_a_warning(self, project, monkeypatch):
+        from src import config as config_module
+        cfg = config_module.load_config()
+        def refuse(query, failures=None, **kwargs):
+            if query == "Kyle Teel":
+                failures.append("500 Internal Server Error")
+            return []
+        monkeypatch.setattr(project.ebay_client, "search_active_listings", refuse)
+        stats = observability.RunStats()
+        project.fetch_ebay_active(cfg, ["Caleb Williams", "Kyle Teel"], "t", stats)
+        warning = " ".join(stats.warnings)
+        assert "refused the search for 1 player(s) (Kyle Teel)" in warning
+        assert "500 Internal Server Error" in warning
+
+    def test_no_warning_when_every_search_succeeds(self, project, monkeypatch):
+        from src import config as config_module
+        cfg = config_module.load_config()
+        monkeypatch.setattr(project.ebay_client, "search_active_listings", lambda query, **kw: [])
+        stats = observability.RunStats()
+        project.fetch_ebay_active(cfg, ["Caleb Williams"], "t", stats)
+        assert not any("refused" in w for w in stats.warnings)
+
+
 class TestCorpusSizeWarning:
     def test_quiet_below_the_threshold_and_when_missing(self, tmp_path):
         small = tmp_path / "c.json"
