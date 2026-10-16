@@ -40,6 +40,9 @@ Score = (expected net-profit-per-flip gain x confidence) / (effort + complexity 
 | 27 | Parallel plurals/abbreviations (133 rows) | ID-8 | 1 | 3 | 1 | 3 | todo |
 | 28 | Multi-player autos with a non-watchlist co-player; quantity/card-set lot patterns | ID-9, ID-10 | 1 | 3 | 2 | 1.5 | todo |
 | 30 | Print-run follow-ups: "1/1" exempt from the date guard; bare-run match must skip the denominator of a rejected date ("PSA 9 / 10 2024") (review of 7ef15b9) | review3 | 2 | 4 | 1 | 8 | todo |
+| 31 | Two-digit season years ("25-26 ...") parse as 2025 | review6 | 2 | 4 | 1 | 8 | todo |
+| 32 | MAX floor = max($15, 10% of value) once SOLD comps exist (5% haircut makes $15 thin on dear cards) | review6 | 2 | 3 | 1 | 6 | todo |
+| 33 | Cleanup: unused threshold_pct args in report offer cards; stale "keep your margin" / OFFER_*_PCT text in ARCH-NOTES, economics, tests | review6 | 0 | 5 | 1 | 0 (hygiene) | todo |
 | 29 | Stored corpus variant fields go stale after parser fixes (variant_of_observation prefers stored fields; replay_corpus ignores variant) | ID-11 | 2 | 4 | 2 | 4 | todo |
 
 Execution order (money math first, then identity fixes that must precede base keying): 1, 2, 3, 5, 7, 21, 22, 23, 24, 6, 9, 4, 12, 10, 11, 25, 26, 8, 13, 14, 29, then the rest.
