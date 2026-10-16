@@ -987,6 +987,25 @@ alert emails that produced it. This measures whether the *engine* behaves
 correctly, not whether the market values are right. No data source available
 to this project can tell us that yet.
 
+## Logging your own flips: `data/flips.csv`
+
+Append one row per decision, by hand or from a spreadsheet:
+
+```
+date,item_id,action,price,ship,fees,grader,grade,title,note
+2026-10-20,336749665825,buy,32.50,4.50,0,,,2024 Topps Chrome Pete Crow-Armstrong #16 Refractor,
+2026-11-02,336749665825,sell,58.00,0.82,8.66,,,,
+2026-10-21,336700000000,pass,40.00,,,,,,too dear
+```
+
+`action` is `pass`, `buy` or `sell`; `item_id` is the eBay item number. On
+`buy` and `pass`, `price`/`ship` are what you paid or were asked; on `sell`,
+what the buyer paid, your postage and eBay's fees. Each `sell` joined to its
+`buy` becomes a sold comp (source "own-sale", identity read from the buy
+row's title), and cards you bought or passed on stop appearing in the email
+unless their price drops. The footer shows flips logged, realised net and
+median days to sell.
+
 ## Sold comps worth adding, and why nothing flags today
 
 The engine flags nothing on the current corpus. Three different things could

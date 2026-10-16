@@ -76,6 +76,8 @@ class RunStats:
     # price" is the single biggest caveat on everything above it, and it
     # should be visible on the days it is true, not only when it changes.
     sold_comps_summary: str = ""
+    # data/flips.csv: flips logged, realised net, days to sell (src/flips.py).
+    flips_summary: str = ""
     #: Where today's eBay listings came from, while the Browse API and the
     #: alert emails run side by side. Empty when only one source ran.
     source_summary: str = ""
@@ -247,6 +249,8 @@ class RunStats:
 
         if self.sold_comps_summary:
             lines.append(self.sold_comps_summary)
+        if self.flips_summary:
+            lines.append(self.flips_summary)
 
         # The category roll-up and the top reasons are the same data at two
         # granularities, and printing both on consecutive lines is a footer

@@ -57,6 +57,7 @@ from src import (
     ebay_client,
     ebay_email_alerts,
     economics,
+    flips,
     emailer,
     matcher,
     observability,
@@ -73,6 +74,7 @@ from src.config import ROOT_DIR, load_config
 from src.models import Listing
 
 LOG_PATH = ROOT_DIR / "logs" / "scraper.log"
+FLIPS_PATH = ROOT_DIR / "data" / "flips.csv"
 
 # Module-level, like every other module in src/. It used to be created
 # fresh inside each function that logged, which meant a function that
@@ -1247,7 +1249,10 @@ def run(args: argparse.Namespace) -> None:
     # "high" confidence, and the concentration gate exempts them (three real
     # sales on one day are three real sales). Usually an empty list: most
     # runs have none, and that is fine.
-    sold = sold_comps.load(cfg.sold_comps_path)
+    # Your own sold flips (data/flips.csv) are sold comps too -- see src/flips.py.
+    flip_rows = flips.load(FLIPS_PATH)
+    sold = sold_comps.load(cfg.sold_comps_path) + flips.sold_observations(flip_rows, cfg.players)
+    stats.flips_summary = flips.summary(flip_rows) or ""
     if sold:
         observations = list(observations) + sold
     stats.sold_comps_summary = sold_comps.summary(sold)
@@ -1287,6 +1292,7 @@ def run(args: argparse.Namespace) -> None:
         stats.warn(format_warning)
 
     seen = dedupe.load_seen(cfg.seen_listings_path)
+    flips.mark_seen(flip_rows, seen, today_str)
     listings = apply_dedupe(listings, seen, today_str, stats)
     logger.info(
         "%d opportunity(ies) after dedupe; %d listing(s) not reported, top reasons: %s",
