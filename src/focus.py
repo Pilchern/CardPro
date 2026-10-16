@@ -122,6 +122,12 @@ class FocusRules:
     #: $40 ceiling hid 74% of them and the cool-cards ceiling half. 0 = off.
     numbered_max_print_run: int = 0
     numbered_price_ceiling: float = 0.0
+    #: An opportunity -- a deal that cleared the net-profit floor -- reaches
+    #: the email up to this all-in cost, whatever ``price_ceiling`` says.
+    #: The cheap ceiling exists to keep browsing short; it was also hiding
+    #: the only listings that make money, because fees and postage mean a
+    #: $15 net almost never comes from a card under $50. 0 = off.
+    deal_capital_ceiling: float = 0.0
 
 
 #: Focus disabled: every listing kept, no cap. The default for
@@ -235,6 +241,8 @@ def omission_reason(listing, rules: FocusRules) -> Optional[str]:
         # printed.
         return PRICE_UNKNOWN
     if price <= rules.price_ceiling:
+        return None
+    if getattr(listing, "is_opportunity", False) and price <= rules.deal_capital_ceiling:
         return None
     if is_exceptional(listing, rules):
         return None
