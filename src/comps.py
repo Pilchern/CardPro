@@ -359,6 +359,30 @@ def _clean_card_number(value) -> Optional[str]:
     return re.sub(r"[\s#-]+", "", text).upper() or None
 
 
+#: The parallel a base card keys under -- at the exact level only (see
+#: _key_same_card and _base_parallel).
+BASE_PARALLEL = "Base"
+
+
+def _base_parallel(parallel, is_base, card_number, card_type, year) -> Optional[str]:
+    """``parallel``, or "Base" for a base card that can key an exact bucket.
+
+    Base cards were the largest class of rows that could never reach a
+    flag-eligible level: parallel None means both "base" and "unread". With
+    is_base (the closed-world guard in card_identity) AND a card number the
+    two cannot be confused at the exact level -- 0 of 115 deep Base buckets
+    mixed card numbers on the corpus. Raw pre-1980 cards are left out: their
+    base buckets are priced by condition, not identity ($15-$69 for one
+    1969 Topps #51), so a cheap copy is not a cheap price.
+    """
+    cleaned = _clean(parallel)
+    if cleaned is not None or not is_base or card_number is None:
+        return cleaned
+    if card_type == "raw" and (year is None or year < 1980):
+        return None
+    return BASE_PARALLEL
+
+
 def _clean_year(value) -> Optional[int]:
     """Years arrive as ints from card_identity but as strings from hand-made
     JSON; 2024 and "2024" are the same year and must land in the same bucket.
@@ -473,7 +497,7 @@ def _identity_from_title(title: str) -> Optional[dict]:
         "year": identity.year.value, "set_name": identity.set_name.value,
         "parallel": identity.parallel.value, "card_number": identity.card_number.value,
         "card_type": grade.card_type, "grader": grade.grader, "grade": grade.grade,
-        "qualifier": grade.qualifier,
+        "qualifier": grade.qualifier, "is_base": identity.is_base.value,
     }
 
 
@@ -533,6 +557,12 @@ def _key_exact(f: dict) -> Optional[tuple]:
 
 def _key_same_card(f: dict) -> Optional[tuple]:
     if None in (f["year"], f["set_name"], f["parallel"], f["market"], f["variant"]):
+        return None
+    if f["parallel"] == BASE_PARALLEL:
+        # "Base" says nothing about WHICH card: a product's base card and its
+        # dozen unparalleled inserts all read as base, and 146 of 193 deep
+        # Base buckets at this level mixed card numbers (identity audit
+        # 2026-10-16). Only exact, which keys the card number, may use it.
         return None
     return (f["player"], f["year"], f["set_name"], f["parallel"], f["market"], f["variant"])
 
@@ -1102,7 +1132,10 @@ class CompEngine:
             "price": price,
             "year": _clean_year(obs.get("year")),
             "set_name": _clean(obs.get("set_name")),
-            "parallel": _clean(obs.get("parallel")),
+            "parallel": _base_parallel(
+                obs.get("parallel"), obs.get("is_base"), _clean_card_number(obs.get("card_number")),
+                card_type.lower() if card_type else None, _clean_year(obs.get("year")),
+            ),
             "card_number": _clean_card_number(obs.get("card_number")),
             "market": market_key(card_type, obs.get("grader"), obs.get("grade"), obs.get("qualifier")),
             # An autograph, a patch and a /50 print run are three different
@@ -1141,6 +1174,7 @@ class CompEngine:
         print_run: Optional[int] = None,
         is_serial_numbered: Optional[bool] = False,
         title_truncated: bool = False,
+        is_base: Optional[bool] = None,
         exclude_id: Optional[str] = None,
     ) -> Optional[CompMatch]:
         """First level that both applies and still has min_comps_required
@@ -1161,7 +1195,10 @@ class CompEngine:
             "price": price,
             "year": _clean_year(year),
             "set_name": _clean(set_name),
-            "parallel": _clean(parallel),
+            "parallel": _base_parallel(
+                parallel, is_base, _clean_card_number(card_number),
+                cleaned_type.lower() if cleaned_type else None, _clean_year(year),
+            ),
             "card_number": _clean_card_number(card_number),
             "market": market_key(card_type, grader, grade, qualifier),
             "variant": printing_variant(

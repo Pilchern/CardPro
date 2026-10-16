@@ -752,8 +752,24 @@ NOT_BASE_TOKENS = [
     "insert", "die cut", "die-cut", "case hit", "1st", "1of1", "one of one",
     "parallel", "numbered", "exclusive", "exclusives", "premium",
 ]
+# Measured on the corpus (identity audit, 2026-10-16): the outliers in base
+# buckets were parallels and oddities named with words absent from the
+# parallel vocabulary. Each makes a title "maybe not base". Conservative on
+# purpose: "stars" and "anniversary" also refuse the base cards of Rookies &
+# Stars / Platinum Anniversary, which costs coverage, not correctness. Kept
+# out of NOT_BASE_TOKENS because that list is also "familiar words" for the
+# flagship-set guard, where these would let "Topps Stars Of The MLB" read
+# as flagship Topps.
+_NOT_BASE_EXTRA_TOKENS = [
+    "jumbo", "oversized", "rainbow", "color wheel", "foil", "holo", "holofoil",
+    "border", "anniversary", "outburst", "spectrum", "mini", "logofractors",
+    "x-fractors", "refractors", "refr", "stars", "flex", "laser", "lazer",
+    "filigree", "filagree", "glitter", "diamante", "pulse", "platinum", "photo",
+    "image",
+]
 _NOT_BASE_RE = re.compile(
-    r"\b(" + "|".join(re.escape(t) for t in NOT_BASE_TOKENS) + r")\b", re.IGNORECASE
+    r"\b(" + "|".join(re.escape(t) for t in NOT_BASE_TOKENS + _NOT_BASE_EXTRA_TOKENS) + r")\b",
+    re.IGNORECASE,
 )
 
 
@@ -1107,8 +1123,15 @@ def _extract_is_base(
     declare a deal. Measured on the live corpus, resolving this is the single
     largest available gain in comp coverage.
 
-    THIS FIELD DOES NOT KEY A COMP BUCKET, and the question of whether it
-    should is now CLOSED rather than open. The test this docstring used to
+    UPDATE 2026-10-16: it now keys the EXACT level only, as parallel "Base"
+    (comps._base_parallel), because exact also keys the card number -- the
+    missing key the paragraphs below name. Re-measured on the 8-week corpus:
+    0 of 115 deep exact Base buckets mix card numbers, against 146 of 193 at
+    same_card, which still refuses it. Everything below is why same_card
+    must keep refusing.
+
+    THIS FIELD DID NOT KEY A COMP BUCKET, and the question of whether it
+    should was CLOSED rather than open. The test this docstring used to
     name -- replay a corpus several weeks wide and confirm the buckets it
     creates contain what they claim to -- was run against the 27-day corpus
     in data/ebay_alert_price_history.json (2026-08-21 .. 2026-09-16), with

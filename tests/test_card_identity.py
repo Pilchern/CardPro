@@ -897,6 +897,17 @@ class TestIsBase:
         assert extract("2024 Panini Prizm Caleb Williams #301 RC /99").is_base.value is None
         assert extract("2024 Panini Prizm Caleb Williams #301 RC 23/99").is_base.value is None
 
+    @pytest.mark.parametrize("word", ["Jumbo", "Rainbow", "Color Wheel", "Oversized", "Logofractors", "Stars"])
+    def test_audit_outlier_words_block_the_assertion(self, word):
+        # Words absent from the parallel vocabulary that the corpus showed
+        # behind base-bucket outliers (identity audit, 2026-10-16).
+        assert extract("2024 Topps Chrome Kyle Teel %s #16" % word).is_base.value is None
+
+    def test_extra_not_base_words_do_not_widen_the_flagship_set(self):
+        # They block "base" but must not become familiar words that let an
+        # insert name read as flagship Topps.
+        assert extract("Kyle Teel 2026 Topps Stars Of The MLB #SMLB-28 Rookie").set_name.value is None
+
     def test_a_short_print_token_blocks_the_assertion(self):
         for title in [
             "2024 Panini Prizm Caleb Williams #301 SSP",

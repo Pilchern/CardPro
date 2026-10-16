@@ -831,6 +831,9 @@ def evaluate_listings(listings, engine, cfg, stats) -> None:
             # Still refuses the level when the title says "numbered" and the
             # cut took the number: "one of something" is not comparable.
             is_serial_numbered=identity.is_serial_numbered.value if identity else False,
+            # Lets a base card with a card number key the exact level as
+            # parallel "Base" -- see comps._base_parallel.
+            is_base=identity.is_base.value if identity else None,
             # A listing must never be part of the comp set used to judge it.
             exclude_id=listing.id,
         )

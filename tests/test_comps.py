@@ -1109,6 +1109,47 @@ def test_a_sold_comp_typed_without_the_hyphen_matches_the_listing():
     assert match.stats.basis == comps.BASIS_SOLD
 
 
+class TestBaseAtExactOnly:
+    """A base card keys the exact level as parallel "Base"; same_card never
+    accepts it (146 of 193 deep same_card Base buckets mixed card numbers)."""
+
+    BASE_ROW = dict(year=2024, set_name="Prizm", parallel=None, card_number="301", is_base=True)
+
+    def _lookup(self, obs, **listing):
+        fields = dict(year=2024, set_name="Prizm", card_number="301", is_base=True)
+        fields.update(listing)
+        return _engine(obs).lookup(player="Caleb Williams", card_type="raw", price=4.0, **fields)
+
+    def test_base_cards_with_a_card_number_match_at_exact(self):
+        match = self._lookup(_spread((9.0, 10.0, 11.0), **self.BASE_ROW))
+        assert match.level == "exact"
+        assert match.flag_eligible is True
+
+    def test_base_never_keys_same_card(self):
+        # Rows without a card number cannot use the sentinel; the listing with
+        # one finds nothing flag-eligible rather than a pooled "Base" bucket.
+        rows = _spread((9.0, 10.0, 11.0), **dict(self.BASE_ROW, card_number=None))
+        match = self._lookup(rows)
+        assert match is None or match.flag_eligible is False
+        assert comps._key_same_card(dict(
+            player="x", year=2024, set_name="Prizm", parallel="Base", market=("raw",),
+            variant=comps.printing_variant(),
+        )) is None
+
+    def test_unknown_base_status_is_not_base(self):
+        match = self._lookup(_spread((9.0, 10.0, 11.0), **self.BASE_ROW), is_base=None)
+        assert match is None or match.level not in ("exact", "same_card")
+
+    def test_raw_pre_1980_cards_do_not_key_base(self):
+        # Condition, not identity, prices these: one 1969 Topps #51 raw ran $15-$69.
+        assert comps._base_parallel(None, True, "51", "raw", 1969) is None
+        assert comps._base_parallel(None, True, "51", "graded", 1969) == "Base"
+        assert comps._base_parallel(None, True, "51", "raw", 1990) == "Base"
+
+    def test_a_named_parallel_is_never_overwritten(self):
+        assert comps._base_parallel("Silver", True, "301", "raw", 2024) == "Silver"
+
+
 def test_card_number_normalisation_keeps_different_numbers_apart():
     assert comps._clean_card_number("BD-72") != comps._clean_card_number("BD-27")
     assert comps._clean_card_number(" # ") is None

@@ -1105,6 +1105,19 @@ class TestNetProfitGate:
         assert listing.rejection_reason is None
 
 
+class TestBaseCardsAtExact:
+    def test_a_base_card_is_valued_against_base_copies_of_its_number(self):
+        title = "2024 Panini Prizm Caleb Williams #301 RC"
+        rows = spread_observations(
+            40.0, card_type="raw", grader=None, grade=None, parallel=None, is_base=True,
+        )
+        listing = make_listing(title, 30.0, listing_type="fixed_price")
+        assert listing.card_identity.is_base.value is True
+        main_module.evaluate_listings([listing], engine_for(rows), fake_cfg(), observability.RunStats())
+        assert listing.comp_level_matched == "exact"
+        assert listing.comp_match.flag_eligible is True
+
+
 class TestFeeModelWiring:
     """The pipeline's choices that the fee model cannot make on its own:
     which haircut (by comp basis), what unknown inbound shipping costs, and
