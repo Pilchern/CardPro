@@ -2555,6 +2555,8 @@ class ReportModel:
     footer: str = ""
     #: Set only when eBay is not configured at all; then it is the whole body.
     not_configured: Optional[str] = None
+    #: Ids of every listing printed in a section, for the seen file.
+    shown_ids: frozenset = frozenset()
 
 
 def build_model(
@@ -2696,6 +2698,7 @@ def build_model(
         thresholds=thresholds,
         assumptions=_assumptions_footer(sections),
         footer=footer,
+        shown_ids=frozenset(shown),
     )
 
 

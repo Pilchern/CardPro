@@ -66,6 +66,9 @@ class RunStats:
     opportunities_reported: int = 0
     price_drops: int = 0
     duplicates_suppressed: int = 0
+    # Cards that are not deals (browse sections, auctions, review) already
+    # printed on an earlier day, left out this time -- see main.apply_dedupe.
+    previously_shown_suppressed: int = 0
     blocked_by_negative_signal: int = 0
 
     # One line about the hand-entered sold-comp corpus. Worth a permanent
@@ -185,11 +188,13 @@ class RunStats:
             "Shipping: {} known / {} unknown{}".format(
                 self.shipping_known, self.shipping_unknown, _rate_suffix(self.unknown_shipping_rate, "unknown")
             ),
-            "Outcomes: {} reported, {} price drops, {} already-seen suppressed, {} blocked on a negative signal".format(
+            "Outcomes: {} reported, {} price drops, {} already-seen suppressed, {} blocked on a "
+            "negative signal, {} other card(s) left out as already shown".format(
                 self.opportunities_reported,
                 self.price_drops,
                 self.duplicates_suppressed,
                 self.blocked_by_negative_signal,
+                self.previously_shown_suppressed,
             ),
         ]
 

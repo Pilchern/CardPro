@@ -647,14 +647,40 @@ class TestApplyDedupe:
         assert listing.previous_price == 200.0
         assert stats.price_drops == 1
 
-    def test_non_opportunities_pass_through_untouched(self):
-        # Auctions and needs-review items must not be deduped away: an
-        # auction that's still live is still worth seeing.
+    def test_a_card_not_shown_before_passes_through(self):
         stats = observability.RunStats()
         auction = make_listing(EXACT_TITLE, 50.0, listing_id="A1", listing_type="auction")
         kept = main_module.apply_dedupe([auction], {}, "2026-08-22", stats)
         assert kept == [auction]
         assert stats.duplicates_suppressed == 0
+
+
+    SEEN = {"C1": {"price": 100.0, "first_seen": "2026-08-21", "last_flagged": "2026-08-21"}}
+
+    def _card(self, price, **overrides):
+        return make_listing(EXACT_TITLE, price, listing_id="C1", listing_type="fixed_price", **overrides)
+
+    def test_a_card_shown_before_is_left_out_and_counted(self):
+        stats = observability.RunStats()
+        kept = main_module.apply_dedupe([self._card(100.0)], dict(self.SEEN), "2026-08-22", stats)
+        assert kept == []
+        assert stats.previously_shown_suppressed == 1
+
+    def test_it_comes_back_on_a_five_percent_drop_and_not_less(self):
+        stats = observability.RunStats()
+        assert main_module.apply_dedupe([self._card(94.0)], dict(self.SEEN), "2026-08-22", stats)
+        assert not main_module.apply_dedupe([self._card(97.0)], dict(self.SEEN), "2026-08-22", stats)
+
+    def test_a_target_hit_is_always_shown(self):
+        hit = self._card(100.0, target_hit=object())
+        kept = main_module.apply_dedupe([hit], dict(self.SEEN), "2026-08-22", observability.RunStats())
+        assert kept == [hit]
+
+    def test_only_printed_cards_are_recorded_as_seen(self):
+        seen = {}
+        shown, hidden = self._card(50.0), make_listing(EXACT_TITLE, 60.0, listing_id="C2")
+        main_module.record_shown([shown, hidden], frozenset({"C1"}), seen, "2026-08-22")
+        assert set(seen) == {"C1"} and seen["C1"]["price"] == 50.0
 
 
 class TestBrowseFields:

@@ -2771,3 +2771,9 @@ def test_the_summary_is_the_first_line_of_a_deal_card():
     assert labels[0] == "Summary"
     assert card.fields[0][1].startswith("MAYBE · $100.00+ship?")
     assert "Cost" in labels  # the detailed block stays below it
+
+
+def test_the_model_names_every_printed_listing():
+    deal = make_listing(id="shown")
+    model = report.build_model([deal], 30, date(2026, 8, 10))
+    assert model.shown_ids == frozenset({"shown"})

@@ -139,3 +139,10 @@ def test_prune_old_unreadable_date_is_logged_not_dropped_silently(caplog):
             today=datetime(2026, 8, 27, tzinfo=timezone.utc),
         )
     assert "id1" in caplog.text
+
+
+def test_a_minimum_drop_ignores_a_trim():
+    seen = {"x": {"price": 100.0, "first_seen": "2026-08-21", "last_flagged": "2026-08-21"}}
+    assert dedupe.is_new_or_price_drop("x", 96.0, seen, min_drop_pct=5.0) is False
+    assert dedupe.is_new_or_price_drop("x", 94.99, seen, min_drop_pct=5.0) is True
+    assert dedupe.is_new_or_price_drop("x", 99.99, seen) is True  # default: any drop

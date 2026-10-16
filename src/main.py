@@ -1006,16 +1006,35 @@ def evaluate_listings(listings, engine, cfg, stats) -> None:
         stats.opportunities_reported += 1
 
 
+#: A card that is not a deal comes back only on a real price drop.
+SHOWN_REPEAT_MIN_DROP_PCT = 5.0
+
+
 def apply_dedupe(listings, seen, today_str, stats) -> list:
     """Suppress opportunities already reported at the same or a higher price,
-    and mark genuine price drops. Everything else (auctions, target hits,
-    needs-review) passes through untouched -- deduping those would hide an
-    auction that's still live, which is the opposite of useful.
+    and mark genuine price drops.
+
+    Every other card printed on an earlier day (browse sections, auctions,
+    needs-review) is left out of today's report too unless its price fell
+    by SHOWN_REPEAT_MIN_DROP_PCT: the same cool cards and cheap finds
+    every morning buried the one new line worth reading. Target hits are
+    always shown -- you named those cards. Left-out cards are counted in the
+    footer, not dropped silently. What counts as "printed" is recorded after
+    the report is built (record_shown).
     """
     kept = []
     for listing in listings:
         if not listing.is_opportunity:
-            kept.append(listing)
+            if (
+                listing.target_hit is not None
+                or listing.price is None
+                or dedupe.is_new_or_price_drop(
+                    listing.id, listing.price, seen, min_drop_pct=SHOWN_REPEAT_MIN_DROP_PCT
+                )
+            ):
+                kept.append(listing)
+            else:
+                stats.previously_shown_suppressed += 1
             continue
 
         prior = seen.get(listing.id)
@@ -1042,6 +1061,13 @@ def apply_dedupe(listings, seen, today_str, stats) -> list:
         stats.opportunities_reported -= 1
         kept.append(listing)
     return kept
+
+
+def record_shown(listings, shown_ids, seen, today_str) -> None:
+    """Mark every card the report actually printed as seen, at today's price."""
+    for listing in listings:
+        if listing.id in shown_ids and listing.price is not None:
+            dedupe.record_flagged(listing.id, listing.price, seen, today_str)
 
 
 def build_craigslist_links(cfg, players) -> dict:
@@ -1277,6 +1303,7 @@ def run(args: argparse.Namespace) -> None:
         cheap_auction_floor=cfg.cheap_auction_floor,
         cheap_auction_ceiling=cfg.cheap_auction_ceiling,
     )
+    record_shown(listings, model.shown_ids, seen, today_str)
     body = report.render_text(model)
     html_body = report_html.render(model)
     subject = f"{cfg.email_subject_prefix} {model.subject}"

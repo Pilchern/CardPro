@@ -83,10 +83,12 @@ def _readable_price(record) -> float | None:
     return None if math.isnan(value) else value
 
 
-def is_new_or_price_drop(listing_id: str, price: float, seen: dict) -> bool:
+def is_new_or_price_drop(listing_id: str, price: float, seen: dict, min_drop_pct: float = 0.0) -> bool:
     """True if this listing has never been flagged, or its price dropped
-    since the last time it was. Does NOT mutate `seen` -- call
-    record_flagged() after you've decided to include it in the report.
+    since the last time it was -- by more than ``min_drop_pct`` percent when
+    one is given (a 1% trim on a card you already saw is not news). Does NOT
+    mutate `seen` -- call record_flagged() after you've decided to include
+    it in the report.
     """
     prior = seen.get(listing_id)
     if prior is None:
@@ -105,7 +107,7 @@ def is_new_or_price_drop(listing_id: str, price: float, seen: dict) -> bool:
             _field(prior, "price"),
         )
         return True
-    return price < prior_price
+    return price < prior_price * (1.0 - min_drop_pct / 100.0)
 
 
 def record_flagged(listing_id: str, price: float, seen: dict, today: str) -> None:
