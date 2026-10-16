@@ -904,6 +904,25 @@ class TestListingAge:
         assert (bad.age_days, bad.age_basis) == (1, "first seen")
         assert unknown.age_days is None
 
+    def test_an_older_first_sighting_beats_a_fresh_ebay_date(self):
+        # Review probe: created 2 days ago (a relist), first seen 20 days ago.
+        listing = make_listing(EXACT_TITLE, 20.0, listing_id="X", listed_at="2026-10-14T23:30:00.000Z")
+        history = {"P|raw": [{"id": "X", "date": "2026-09-26"}]}
+        main_module.annotate_listing_age([listing], history, self.TODAY)
+        assert (listing.age_days, listing.age_basis) == (20, "first seen")
+
+    def test_origin_date_is_preferred_over_creation_date(self, project, monkeypatch):
+        from src import config as config_module
+        cfg = config_module.load_config()
+        item = {"itemId": "v1|123456789012|0", "legacyItemId": "123456789012",
+                "itemWebUrl": "https://www.ebay.com/itm/123456789012", "title": EXACT_TITLE,
+                "price": {"value": "20.00"}, "buyingOptions": ["FIXED_PRICE"],
+                "itemOriginDate": "2026-09-01T10:00:00.000Z",
+                "itemCreationDate": "2026-10-15T10:00:00.000Z"}
+        monkeypatch.setattr(project.ebay_client, "search_active_listings", lambda query, **kw: [item])
+        [listing] = project.fetch_ebay_active(cfg, ["Caleb Williams"], "t", observability.RunStats())
+        assert listing.listed_at == "2026-09-01T10:00:00.000Z"
+
     def test_browse_creation_date_reaches_the_listing(self, project, monkeypatch):
         from src import config as config_module
         cfg = config_module.load_config()

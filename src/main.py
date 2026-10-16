@@ -278,7 +278,9 @@ def fetch_ebay_active(cfg, players, token, stats) -> list:
                     bid_count=item.get("bidCount"),
                     time_left_text=ebay_client.time_left_text(item, now),
                     has_best_offer="BEST_OFFER" in buying_options,
-                    listed_at=item.get("itemCreationDate"),
+                    # itemOriginDate survives a relist; itemCreationDate is
+                    # reset by one, so it is only the fallback.
+                    listed_at=item.get("itemOriginDate") or item.get("itemCreationDate"),
                 )
                 if listing is None:
                     stats.rejections.record(reasons.Reason.NO_PLAYER_MATCH)
@@ -1101,21 +1103,24 @@ def annotate_listing_age(listings, history, today) -> None:
     """
     first_seen = {row.get("id"): row.get("date") for rows in history.values() for row in rows}
     for listing in listings:
+        listed = seen = None
         if listing.listed_at:
             try:
-                created = datetime.fromisoformat(str(listing.listed_at).replace("Z", "+00:00")).date()
-            except ValueError:
-                created = None
-            if created is not None:
-                listing.age_days, listing.age_basis = max(0, (today - created).days), "listed"
-                continue
-        seen = first_seen.get(listing.id)
-        if seen:
-            try:
-                listing.age_days = max(0, (today - date.fromisoformat(seen)).days)
-                listing.age_basis = "first seen"
+                listed = (today - datetime.fromisoformat(
+                    str(listing.listed_at).replace("Z", "+00:00")).date()).days
             except ValueError:
                 pass
+        if first_seen.get(listing.id):
+            try:
+                seen = (today - date.fromisoformat(first_seen[listing.id])).days
+            except ValueError:
+                pass
+        # The older of the two: a relist can carry a fresh eBay date for a
+        # card the corpus has watched sit unsold for weeks.
+        if seen is not None and (listed is None or seen > listed):
+            listing.age_days, listing.age_basis = max(0, seen), "first seen"
+        elif listed is not None:
+            listing.age_days, listing.age_basis = max(0, listed), "listed"
 
 
 def record_shown(listings, shown_ids, seen, today_str) -> None:
