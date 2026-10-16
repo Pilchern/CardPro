@@ -260,6 +260,41 @@ def test_date_fraction_is_not_a_print_run():
     assert identity.serial_number.value is None
 
 
+def test_date_with_a_spaced_year_is_not_a_print_run():
+    identity = card_identity.extract_card_identity("Topps Now Aaron Judge sold 7/14 2024")
+    assert identity.print_run.value is None
+    assert identity.serial_number.value is None
+
+
+def test_spaced_date_chain_is_not_a_print_run():
+    identity = card_identity.extract_card_identity("Aaron Judge sold 7 / 14 / 2024")
+    assert identity.print_run.value is None
+
+
+@pytest.mark.parametrize(
+    "title, serial, print_run",
+    [
+        # Corpus titles that read unnumbered before (high-dollar numbered cards).
+        ("2024 Topps Cosmic Chrome Caleb Williams Gold Interstellar Auto #/50 PSA 9", None, 50),
+        ("Caleb Wilson # /75 2025 Mcdonalds Chrome Auto Winning Tags Refractor Psa 10", None, 75),
+        ("Kyle Teel Prospect Jersey Auto 73/99 2024 Panini Three and Two Baseball", "73/99", 99),
+        ("KYLE TEEL PURPLE MOJO RC Chicago White Sox 056/250 2026 Bowman", "56/250", 250),
+        ("Rome Odunze RC Auto /5 2024 Panini Photogenic Rookie Photo Bomb Football Bears", None, 5),
+        ("2024 Bowman Chrome 1st Fuchsia Mojo Refractor KYLE TEEL #BCP-48 #/1", None, 1),
+    ],
+)
+def test_print_run_before_a_year_and_after_a_hash(title, serial, print_run):
+    identity = card_identity.extract_card_identity(title)
+    assert identity.serial_number.value == serial
+    assert identity.print_run.value == print_run
+
+
+def test_hash_print_run_does_not_disturb_the_card_number():
+    identity = card_identity.extract_card_identity("2024 Bowman Chrome Kyle Teel #BCP-48 #/1")
+    assert identity.card_number.value == "BCP-48"
+    assert identity.print_run.value == 1
+
+
 def test_print_run_denominator_is_sanity_bounded():
     assert card_identity.extract_card_identity("2024 Topps card /0").print_run.value is None
     assert card_identity.extract_card_identity("2024 Topps card /999999").print_run.value is None

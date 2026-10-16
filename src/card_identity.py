@@ -322,10 +322,21 @@ PREFIXED_CARD_NUMBER_RE = re.compile(
 # "BCP-83 /150" was read as copy 83 of 150, and the report then stated
 # "(83/150)" on a card whose title says no such thing. A serial that has
 # to borrow the card number for its numerator is not a serial.
-SERIAL_NUMBER_RE = re.compile(r"(?<![\w./-])(\d{1,4})\s*/\s*(\d{1,5})(?!\s*[/.]?\d)\b")
-# Bare "/99" or "/ 99" -- print run only, no serial. Must start at a space
-# or bracket so we don't fire on "9.5/10" or "w/99".
-BARE_PRINT_RUN_RE = re.compile(r"(?:(?<=\s)|(?<=\()|^)/\s*(\d{1,5})(?!\s*[/.]?\d)\b")
+#
+# The lookahead refuses a date chain ("12/25/2024", "12 / 25 / 2024") but
+# NOT a number after a space: it used to, and that dropped every serial
+# followed by the year ("73/99 2024 Panini", "/150 2025 ..."). A bare
+# "month/day year" is refused in _extract_serial_and_print_run instead.
+SERIAL_NUMBER_RE = re.compile(r"(?<![\w./-])(\d{1,4})\s*/\s*(\d{1,5})(?![/.]?\d)(?!\s*/\s*\d)\b")
+# Bare "/99", "/ 99" or "#/99" -- print run only, no serial. Must start at a
+# space, bracket or "#" so we don't fire on "9.5/10" or "w/99".
+BARE_PRINT_RUN_RE = re.compile(
+    r"(?:(?<=\s)|(?<=\()|(?<=#)|^)/\s*(\d{1,5})(?![/.]?\d)(?!\s*/\s*\d)\b"
+)
+# "7/14 2024": a month/day followed by a year, not copy 7 of 14.
+_DATE_YEAR_AFTER_RE = re.compile(r"\s+(?:19|20)\d{2}\b")
+# "7 / 14 / 2024": the "/ 2024" at the end of a date chain is not a bare run.
+_DATE_CHAIN_BEFORE_RE = re.compile(r"\d\s*/\s*\d{1,2}\s*$")
 LOT_OF_N_RE = re.compile(r"\blot\s+of\s+\d+\b", re.IGNORECASE)
 CARD_LOT_RE = re.compile(r"\b\d+\s*-?\s*card\s+lot\b", re.IGNORECASE)
 BARE_LOT_RE = re.compile(r"\blot\b", re.IGNORECASE)
@@ -1228,12 +1239,16 @@ def _extract_serial_and_print_run(title: str):
             continue
         if 1900 <= denominator <= 2099 and numerator <= 31:
             continue  # "12/2024" is a date, not a serial
+        if numerator <= 12 and denominator <= 31 and _DATE_YEAR_AFTER_RE.match(title, match.end()):
+            continue  # "7/14 2024" is a date too
         serial = Field(value=f"{numerator}/{denominator}", confidence="high", source="title")
         return serial, Field(value=denominator, confidence="high", source="title")
 
     for match in BARE_PRINT_RUN_RE.finditer(title):
         denominator = int(match.group(1))
         if not _valid_print_run(denominator):
+            continue
+        if _DATE_CHAIN_BEFORE_RE.search(title[: match.start()]):
             continue
         return unknown, Field(value=denominator, confidence="high", source="title")
 
