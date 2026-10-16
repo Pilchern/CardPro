@@ -326,8 +326,8 @@ def evaluate(
         )
     if acquisition.sales_tax_pct > 0.0:
         assumptions.append(
-            "Sales tax of {:.2f}% is applied to the item price plus known shipping at "
-            "purchase.".format(acquisition.sales_tax_pct)
+            "Sales tax of {:.2f}% is applied to the item price plus shipping (stated or "
+            "assumed) at purchase.".format(acquisition.sales_tax_pct)
         )
     else:
         assumptions.append(
@@ -442,9 +442,9 @@ def max_rational_bid(
     ``shipping_in=None`` means unknown. There is no honest way to solve
     for a bid ceiling while an input is unknown, so it is treated as
     $0.00 -- which makes the returned number an **upper bound that is too
-    high by exactly the unknown shipping**. Tell the user that; do not
-    present the figure as final. (Passing a pessimistic guess instead is
-    the safer habit.)
+    high by exactly the unknown shipping**. The pipeline therefore never
+    passes None: it passes ``economics.assumed_inbound_shipping`` for an
+    unknown, and the report still says the shipping was assumed.
 
     Returns **0.0 when no bid can preserve your margin** -- the card is
     not worth enough to cover the fees, the shipping and the margin you

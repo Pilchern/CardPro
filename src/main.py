@@ -784,7 +784,7 @@ def evaluate_listings(listings, engine, cfg, stats) -> None:
             # YOU set for what you are willing to pay, and what you pay
             # includes the tax. Listing.total_cost is the pre-tax figure the
             # report prints beside the item price; at the shipped
-            # sales_tax_pct of 0.0 they are the same number.
+            # sales_tax_pct of 10.25 they differ by that much.
             total_cost=_total_cost_with_tax(listing, cfg),
             year=identity.year.value if identity else None,
             set_name=identity.set_name.value if identity else None,

@@ -2059,7 +2059,7 @@ class TestUnknownShippingIsCarriedThrough:
         # the Cost line declines to state a total and the Discount line then
         # named one to the cent two lines later.
         deal = make_listing(shipping_price=None)
-        assert "before shipping, which is unknown" in report._discount_text(deal)
+        assert "with shipping unknown and assumed" in report._discount_text(deal)
 
     def test_a_known_shipping_discount_carries_no_caveat(self):
         assert "unknown" not in report._discount_text(make_listing(shipping_price=4.99))

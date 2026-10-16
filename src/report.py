@@ -719,11 +719,12 @@ def _discount_text(deal: Listing) -> Optional[str]:
             _money(deal.dollar_savings), _pct1(deal.pct_under_market)
         )
     if deal.shipping_price is None:
-        # total_cost falls back to price alone when shipping is unknown, so
-        # this figure is computed against a cost the Cost line has just
-        # declined to state. Naming it to the cent two lines later, with no
-        # caveat, is the report contradicting itself.
-        text += " -- before shipping, which is unknown, so this is a ceiling"
+        # The saving is computed against an ASSUMED inbound shipping
+        # (economics.assumed_inbound_shipping, plus tax on it) because the
+        # real one is unknown -- a cost the Cost line has just declined to
+        # state. Naming it to the cent with no caveat is the report
+        # contradicting itself.
+        text += " -- with shipping unknown and assumed, so the real figure may differ"
     return text
 
 

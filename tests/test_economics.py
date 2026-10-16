@@ -410,7 +410,8 @@ def test_sales_tax_assumption_when_tax_is_charged():
     result = evaluate(Acquisition(100.0, None, 7.5), 200.0, NO_FEES)
     assert result.acquisition_cost == pytest.approx(107.5)
     assert (
-        "Sales tax of 7.50% is applied to the item price plus known shipping at purchase."
+        "Sales tax of 7.50% is applied to the item price plus shipping (stated or assumed) at "
+        "purchase."
     ) in result.assumptions
 
 

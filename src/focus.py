@@ -101,11 +101,11 @@ class FocusRules:
     #: Without it the ceiling silently means something different from the
     #: deal gate. ``Listing.total_cost`` is price + shipping;
     #: ``economics.Acquisition.total_cost`` -- which is what the discount and
-    #: the profit are computed from -- is price + shipping + tax. At the
-    #: shipped ``sales_tax_pct: 0.0`` the two are identical and nothing
-    #: happens here; set a real rate and a $40 ceiling quietly becomes a
-    #: pre-tax $40 while every number printed under it is post-tax. The
-    #: ceiling is meant to be what leaves your account.
+    #: the profit are computed from -- is price + shipping + tax. At a
+    #: real rate (settings ship 10.25%) a ceiling without it would quietly
+    #: become pre-tax while every number printed under it is post-tax. The
+    #: ceiling is meant to be what leaves your account. (Unlike the deal
+    #: gate it does not add the assumed inbound shipping for an unknown.)
     sales_tax_pct: float = 0.0
 
     #: A higher ceiling for cards with something genuinely scarce about them
