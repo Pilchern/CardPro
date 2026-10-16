@@ -220,7 +220,13 @@ def fetch_ebay_active(cfg, players, token, stats) -> list:
     capped = []
     now = datetime.now(timezone.utc)
     passes = [
-        dict(sort="newlyListed", max_pages=cfg.ebay_newest_pages_per_player),
+        # A floor on the newest pass only: measured 2026-10-16, 77% of a
+        # newest page was under $20, a band where no flip clears the $15
+        # net floor -- it filled the 200-item page (hiding the rest of the
+        # day's listings) and grew the corpus ~3k rows a day. The auction
+        # pass keeps every price: a cheap current bid is the point of it.
+        dict(sort="newlyListed", max_pages=cfg.ebay_newest_pages_per_player,
+             min_price=cfg.ebay_newest_min_price),
         dict(sort="endingSoonest", buying_options=("AUCTION",), max_pages=cfg.ebay_auction_pages_per_player),
     ]
     for player in players:

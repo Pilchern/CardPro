@@ -9,6 +9,8 @@
     "active_listing_limit_per_player": 200,
     "newest_pages_per_player": 1,
     "auction_pages_per_player": 1,
+    "_newest_min_price_comment": "Item-price floor (USD) on the newest-first pass only; the auction pass keeps every price. Measured 2026-10-16: 77% of a newest page was under $20, a band where no flip clears economics.min_net_profit, so it filled the 200-item page (hiding the rest of the day's new listings) and grew the corpus about 3,000 rows a day. Cheaper cards still arrive through the alert emails and auctions. null = no floor.",
+    "newest_min_price": 20.0,
     "_insights_comment": "Marketplace Insights (real sold prices) returned 404 for this app on 2026-10-15: limited release, not granted. Left off so a run doesn't make a wasted call per player. Set true only after eBay grants access.",
     "marketplace_insights_enabled": false,
     "sold_lookback_days": 60,

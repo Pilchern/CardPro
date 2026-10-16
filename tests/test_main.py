@@ -731,6 +731,31 @@ class TestBrowsePaging:
         assert "sort" not in calls[0]
 
 
+    def test_a_min_price_adds_a_price_filter(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(ebay_client.requests, "get", self._fake_get([{"itemSummaries": []}], calls))
+        ebay_client.search_active_listings("x", "t", "261328", "EBAY_US", sort="newlyListed", min_price=20.0)
+        assert calls[0]["filter"] == "buyingOptions:{FIXED_PRICE|AUCTION},price:[20..],priceCurrency:USD"
+
+    def test_no_min_price_means_no_price_filter(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(ebay_client.requests, "get", self._fake_get([{"itemSummaries": []}], calls))
+        ebay_client.search_active_listings("x", "t", "261328", "EBAY_US")
+        assert "price" not in calls[0]["filter"]
+
+    def test_only_the_newest_pass_gets_the_floor(self, project, monkeypatch):
+        from src import config as config_module
+        cfg = config_module.load_config()
+        cfg.ebay_auction_pages_per_player = 1
+        searches = []
+        monkeypatch.setattr(project.ebay_client, "search_active_listings",
+                            lambda query, **kwargs: searches.append(kwargs) or [])
+        project.fetch_ebay_active(cfg, ["Caleb Williams"], "t", observability.RunStats())
+        by_sort = {search["sort"]: search for search in searches}
+        assert by_sort["newlyListed"]["min_price"] == 20.0
+        assert "min_price" not in by_sort["endingSoonest"]
+
+
 class TestCorpusSizeWarning:
     def test_quiet_below_the_threshold_and_when_missing(self, tmp_path):
         small = tmp_path / "c.json"
