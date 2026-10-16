@@ -11,6 +11,7 @@ def _obs(price, date, listing_id="", **identity_overrides):
     obs = {
         "price": price,
         "date": date,
+        "last_seen": date,
         "id": listing_id,
         "year": None,
         "set_name": None,
@@ -530,3 +531,35 @@ class TestDropProbableOpeningBids:
         history = {"X|raw": [{"id": "a", "price": 5.0, "date": "2026-09-01"}]}
         cleaned, dropped = price_history.drop_probable_opening_bids(history, 1.00)
         assert dropped == 0 and cleaned == history
+
+
+
+class TestRetentionByLastSeen:
+    """Rows keep their first-seen date; retention follows the last sighting."""
+
+    def test_a_listing_seen_daily_for_fifty_days_is_never_pruned(self):
+        from datetime import date as _date, timedelta as _td
+        history = {}
+        start = _date(2026, 8, 1)
+        for day in range(50):
+            today = start + _td(days=day)
+            price_history.record(history, "Caleb Williams", "raw", 50.0, today.isoformat(), "live-1")
+            history = price_history.prune_old(
+                history, 45, datetime(today.year, today.month, today.day, 15, tzinfo=timezone.utc)
+            )
+            [row] = history["Caleb Williams|raw"]
+            assert row["date"] == "2026-08-01"  # still the first sighting
+            assert row["last_seen"] == today.isoformat()
+
+    def test_a_listing_not_seen_for_the_window_is_pruned(self):
+        history = {"P|raw": [{"id": "gone", "price": 5.0, "date": "2026-08-01", "last_seen": "2026-08-20"}]}
+        assert price_history.prune_old(history, 45, datetime(2026, 10, 16, tzinfo=timezone.utc)) == {}
+
+    def test_the_cutoff_day_itself_is_kept_whatever_the_time_of_day(self):
+        history = {"P|raw": [{"id": "edge", "price": 5.0, "date": "2026-09-01"}]}
+        kept = price_history.prune_old(history, 45, datetime(2026, 10, 16, 23, 59, tzinfo=timezone.utc))
+        assert len(kept["P|raw"]) == 1
+
+    def test_a_row_from_before_last_seen_falls_back_to_its_date(self):
+        history = {"P|raw": [{"id": "old", "price": 5.0, "date": "2026-08-30"}]}
+        assert price_history.prune_old(history, 45, datetime(2026, 10, 16, tzinfo=timezone.utc)) == {}
