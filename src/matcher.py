@@ -196,6 +196,9 @@ def detect_grade_details(title: str) -> GradeInfo:
     """
     for match in GRADE_RE.finditer(title):
         grader, grade = match.group(1).upper(), match.group(2)
+        # "#PSA12" is a card number, and no grader issues a grade above 10.
+        if title[max(0, match.start() - 1):match.start()] == "#" or float(grade) > 10:
+            continue
         if _SERIAL_NOT_GRADE_RE.match(title, match.end()):
             if grader != "TAG" and _DUAL_GRADE_RE.match(title, match.end()) and float(grade) <= 10:
                 return GradeInfo(card_type="graded", grader=grader, grade=None)

@@ -324,3 +324,11 @@ def test_a_grade_with_a_spaced_print_run_is_still_that_grade():
 def test_a_tag_one_of_one_is_still_not_a_slab():
     assert matcher.detect_grade_details("Bedard laundry tag 1/1 patch").card_type == "raw"
     assert matcher.detect_grade_details("Bedard TAG 1/1 patch").card_type == "raw"
+
+
+def test_a_grader_word_inside_a_card_number_is_not_a_grade():
+    assert matcher.detect_grade_details("Caleb Williams Insert #PTA12 rookie").card_type == "raw"
+
+
+def test_no_grade_above_ten():
+    assert matcher.detect_grade_details("Kyle Teel 2024 Bowman ISA 15 card lot").card_type == "raw"
