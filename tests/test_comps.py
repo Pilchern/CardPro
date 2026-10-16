@@ -834,7 +834,10 @@ class TestConcentrationGate:
         correlation this gate exists to catch."""
         obs = [_ob(p, obs_id="s%d" % i, basis="sold", **_IDENTITY)
                for i, p in enumerate((95.0, 98.0, 100.0, 102.0, 105.0))]
-        obs[0]["basis"] = "asking"
+        # One sale cannot stand alone (two or more would value the bucket
+        # from the sales only -- see TestSoldTakeover), so it stays pooled.
+        for row in obs[1:]:
+            row["basis"] = "asking"
         match = _engine(obs).lookup(player="Caleb Williams", card_type="raw", price=50.0, **_IDENTITY)
         assert match.stats.basis == "asking"
         assert match.stats.is_concentrated is True
@@ -911,7 +914,8 @@ class TestConfidence:
 
     def test_one_asking_point_makes_the_whole_bucket_asking(self):
         obs = self._five("sold")
-        obs[0]["basis"] = "asking"
+        for row in obs[1:]:  # one sale stays pooled with the asks
+            row["basis"] = "asking"
         match = _engine(obs).lookup(player="Caleb Williams", card_type="raw", price=50.0, **_IDENTITY)
         assert match.stats.basis == "asking"
         assert match.confidence == "medium"
@@ -1148,6 +1152,49 @@ class TestBaseAtExactOnly:
 
     def test_a_named_parallel_is_never_overwritten(self):
         assert comps._base_parallel("Silver", True, "301", "raw", 2024) == "Silver"
+
+
+class TestSoldTakeover:
+    """Two or more SOLD prices in a card-level bucket value it alone."""
+
+    IDENT = dict(year=2024, set_name="Prizm", parallel="Silver", card_number="301")
+
+    def _sales(self, prices):
+        from src import sold_comps
+
+        return [
+            sold_comps.to_observation(dict(
+                player="Caleb Williams", price=p, date=_days_ago(7 * i), source="130point", **self.IDENT,
+            ))
+            for i, p in enumerate(prices)
+        ]
+
+    def _lookup(self, obs):
+        return _engine(obs).lookup(player="Caleb Williams", card_type="raw", price=40.0, **self.IDENT)
+
+    def test_two_sales_outrank_a_bucket_of_asks(self):
+        asks = _spread((150.0, 160.0, 170.0, 180.0), **self.IDENT)
+        match = self._lookup(asks + self._sales((100.0, 110.0)))
+        assert match.level == "exact"
+        assert match.stats.basis == "sold"
+        assert match.stats.sample_size == 2
+        assert 100.0 <= match.stats.median <= 110.0
+        assert match.flag_eligible is True
+
+    def test_one_sale_stays_pooled_with_the_asks(self):
+        asks = _spread((150.0, 160.0, 170.0, 180.0), **self.IDENT)
+        match = self._lookup(asks + self._sales((100.0,)))
+        assert match.stats.basis == "asking"
+        # Pooled: all five went into the stats (the lone sale may be trimmed).
+        assert match.stats.sample_size + match.stats.trimmed_count == 5
+
+    def test_context_levels_never_take_over(self):
+        # same_set (parallel unknown) is context-only; it keeps pooling.
+        obs = _spread((150.0, 160.0, 170.0), year=2024, set_name="Prizm") + self._sales((100.0, 110.0))
+        match = _engine(obs).lookup(player="Caleb Williams", card_type="raw", price=40.0,
+                                    year=2024, set_name="Prizm")
+        assert match.level == "same_set"
+        assert match.stats.sample_size == 5
 
 
 def test_card_number_normalisation_keeps_different_numbers_apart():

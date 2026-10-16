@@ -1305,6 +1305,14 @@ class TestFeeModelWiring:
         listing = self._evaluated(sold, resale_haircut_asking_pct=20.0)
         assert listing.economics.expected_sale_price == pytest.approx(380.0)
 
+    def test_two_sales_value_the_card_with_the_sold_haircut(self):
+        asks = spread_observations(400.0)
+        sold = [observation(300.0, "s1", date="2026-08-10", basis=comps.BASIS_SOLD),
+                observation(300.0, "s2", date="2026-08-18", basis=comps.BASIS_SOLD)]
+        listing = self._evaluated(asks + sold, resale_haircut_asking_pct=20.0, resale_haircut_pct=5.0)
+        assert listing.comp_match.stats.basis == comps.BASIS_SOLD
+        assert listing.economics.expected_sale_price == pytest.approx(300.0 * 0.95)
+
     def test_unknown_inbound_shipping_is_assumed_not_zero(self):
         listing = self._evaluated(spread_observations(400.0), assumed_inbound_shipping=4.50)
         assert listing.economics.acquisition_cost == pytest.approx(204.50)

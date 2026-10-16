@@ -317,6 +317,9 @@ CONFIDENCE_LADDER = ("high", "medium", "low")
 #: "sold" is the market's. Today 100% of this project's corpus is "asking".
 BASIS_ASKING = "asking"
 BASIS_SOLD = "sold"
+#: SOLD observations in a flag-eligible bucket at which the bucket is valued
+#: from its sales alone (see CompEngine.lookup).
+SOLD_TAKEOVER_MIN = 2
 
 
 def _downgrade(confidence: str, steps: int = 1) -> str:
@@ -1228,11 +1231,22 @@ class CompEngine:
             points = self._buckets[spec.name].get(key)
             if not points:
                 continue
+            min_comps = self.min_comps_required
+            if spec.flag_eligible:
+                # Real sales outrank asks: once a card-level bucket holds two
+                # SOLD prices it is valued from those alone, basis SOLD, rather
+                # than pooled with asks that only cap what it might fetch. Two
+                # sales are a thinner sample than three asks, and the report
+                # says so; they are still the better evidence. One sale is
+                # not enough to stand alone and stays pooled.
+                sold = [p for p in points if p["basis"] == BASIS_SOLD and p["id"] != exclude_id]
+                if len(sold) >= SOLD_TAKEOVER_MIN:
+                    points, min_comps = sold, SOLD_TAKEOVER_MIN
             stats = self._stats_for(spec.name, key, points, exclude_id)
-            if stats is None or stats.sample_size < self.min_comps_required:
+            if stats is None or stats.sample_size < min_comps:
                 continue
             return assess_comp_match(
-                stats, spec.name, self.min_comps_required, card_number=fields["card_number"]
+                stats, spec.name, min_comps, card_number=fields["card_number"]
             )
         return None
 
