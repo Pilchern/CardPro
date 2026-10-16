@@ -267,6 +267,10 @@ TEAM_AND_PHRASE_MASKS = [
     "Silver Slugger", "Gold Glove", "Golden Spikes", "Green Jacket",
     # Set names containing a parallel word
     "Collector's Choice", "Collectors Choice",
+    # Set name containing an autograph word: every base card of Topps
+    # Signature Class read as an auto and was keyed with the autos. Still
+    # found as a set -- set lookup skips masks that are SET_KEYWORDS.
+    "Signature Class",
     # Events / places / idioms
     "Orange Bowl", "Rose Bowl", "White House", "Red Zone", "Blue Line",
     # Listing boilerplate that would otherwise read as a parallel

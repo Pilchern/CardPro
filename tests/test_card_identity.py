@@ -43,6 +43,23 @@ def test_autograph_false_when_absent():
     assert identity.is_autograph.value is False
 
 
+def test_signature_class_is_a_set_not_an_autograph():
+    # Corpus title, $1.49: was keyed with the set's autos (median $57.99).
+    identity = card_identity.extract_card_identity(
+        "2025 Topps Signature Class - Rookies Colston Loveland #113 (RC)"
+    )
+    assert identity.is_autograph.value is False
+    assert identity.set_name.value == "Signature Class"
+
+
+def test_a_signature_class_autograph_is_still_an_autograph():
+    identity = card_identity.extract_card_identity(
+        "2025 Topps Signature Class Colston Loveland Rookie Autograph #SC-CL"
+    )
+    assert identity.is_autograph.value is True
+    assert identity.set_name.value == "Signature Class"
+
+
 def test_memorabilia_keyword_detected():
     identity = card_identity.extract_card_identity("2024 Panini National Treasures Patch Auto Caleb Williams")
     assert identity.is_memorabilia.value is True
