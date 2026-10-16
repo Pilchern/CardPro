@@ -65,6 +65,7 @@ never a guessed match.
 """
 from __future__ import annotations
 
+import dataclasses
 import math
 import re
 import statistics
@@ -320,6 +321,9 @@ BASIS_SOLD = "sold"
 #: SOLD observations in a flag-eligible bucket at which the bucket is valued
 #: from its sales alone (see CompEngine.lookup).
 SOLD_TAKEOVER_MIN = 2
+#: Two sales may stand alone only if they agree: the higher at most this
+#: multiple of the lower. Otherwise the bucket stays pooled with the asks.
+SOLD_PAIR_MAX_RATIO = 1.5
 
 
 def _downgrade(confidence: str, steps: int = 1) -> str:
@@ -1240,11 +1244,20 @@ class CompEngine:
                 # says so; they are still the better evidence. One sale is
                 # not enough to stand alone and stays pooled.
                 sold = [p for p in points if p["basis"] == BASIS_SOLD and p["id"] != exclude_id]
-                if len(sold) >= SOLD_TAKEOVER_MIN:
+                prices = [p["price"] for p in sold]
+                if len(sold) >= 3 or (
+                    len(sold) >= SOLD_TAKEOVER_MIN and max(prices) <= SOLD_PAIR_MAX_RATIO * min(prices)
+                ):
                     points, min_comps = sold, SOLD_TAKEOVER_MIN
             stats = self._stats_for(spec.name, key, points, exclude_id)
             if stats is None or stats.sample_size < min_comps:
                 continue
+            if min_comps == SOLD_TAKEOVER_MIN and stats.sample_size < 3:
+                # Two sales: the weighted median IS the newer one, and the
+                # dispersion gate cannot trip on two points. So the pair must
+                # agree (above), and the card is valued at the LOWER sale --
+                # one $90 sale must not make a $15 card read as a $90 one.
+                stats = dataclasses.replace(stats, median=stats.minimum)
             return assess_comp_match(
                 stats, spec.name, min_comps, card_number=fields["card_number"]
             )

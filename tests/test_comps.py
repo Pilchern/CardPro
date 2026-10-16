@@ -1181,6 +1181,24 @@ class TestSoldTakeover:
         assert 100.0 <= match.stats.median <= 110.0
         assert match.flag_eligible is True
 
+    def test_two_sales_that_disagree_fall_back_to_the_pooled_asks(self):
+        # Review repro: an old $10 sale and a new $90 one read as a SOLD $90
+        # against $15 asks. A pair must agree within 1.5x to stand alone.
+        asks = _spread((14.0, 15.0, 16.0, 15.0), **self.IDENT)
+        match = self._lookup(asks + self._sales((90.0, 10.0)))
+        assert match.stats.basis == "asking"
+
+    def test_an_agreeing_pair_is_valued_at_the_lower_sale(self):
+        asks = _spread((150.0, 160.0, 170.0, 180.0), **self.IDENT)
+        match = self._lookup(asks + self._sales((140.0, 100.0)))  # newer first
+        assert match.stats.basis == "sold"
+        assert match.stats.median == 100.0
+
+    def test_three_sales_keep_the_weighted_median(self):
+        match = self._lookup(self._sales((120.0, 110.0, 100.0)))
+        assert (match.stats.basis, match.stats.sample_size) == ("sold", 3)
+        assert match.stats.median > match.stats.minimum  # not floored to the lowest
+
     def test_one_sale_stays_pooled_with_the_asks(self):
         asks = _spread((150.0, 160.0, 170.0, 180.0), **self.IDENT)
         match = self._lookup(asks + self._sales((100.0,)))
