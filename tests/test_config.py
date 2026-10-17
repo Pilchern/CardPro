@@ -347,6 +347,7 @@ def test_the_grading_block_loads_and_is_off(tmp_path, monkeypatch):
     assert shipped["grading"]["enabled"] is False
     cfg = _load_with(tmp_path, monkeypatch, settings_extra={"grading": shipped["grading"]})
     assert cfg.grading["psa_standard"] == 59.99 and cfg.grading["enabled"] is False
+    assert cfg.grading["bgs_express"] is None  # unsourced, kept null
     other = tmp_path / "no_grading"
     other.mkdir()
     assert _load_with(other, monkeypatch).grading == {}

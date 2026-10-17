@@ -78,12 +78,12 @@
     "minutes_per_flip": 25
   },
   "grading": {
-    "_comment": "Grading costs for a FUTURE grade-and-flip branch. Nothing reads these yet beyond config loading, and there is no grading branch: enabled stays false. Prices as seen 2026-10-16 (phase1-research.md, MR-8; secondary sources, the graders' own pages returned 403 = UNVERIFIED-official). psa_standard: PSA Standard (new 2026-09-14) $59.99 up to $1,000 declared value (PSA Value tiers paused since 2026-06-02). sgc: SGC Standard $50 up to $1,500 (raised from $15-$20 on 2026-09-02). bgs_express: Beckett Express (BGS Base/Standard paused 2026-09-26; express price not in the research table, UNVERIFIED). cgc_bulk: CGC Bulk $17, 25-card minimum, ~150 working days. shipping_per_card: return shipping + insurance allowance per card (hypothesis; returns run ~$15-$30 per order). The owner's grade-and-flip floor is $40 net and a grade is never assumed to be a 10.",
+    "_comment": "Grading costs for a FUTURE grade-and-flip branch. Nothing reads these yet beyond config loading, and there is no grading branch: enabled stays false. Prices as seen 2026-10-16 (phase1-research.md, MR-8; secondary sources, the graders' own pages returned 403 = UNVERIFIED-official). psa_standard: PSA Standard (new 2026-09-14) $59.99 up to $1,000 declared value (PSA Value tiers paused since 2026-06-02). sgc: SGC Standard $50 up to $1,500 (raised from $15-$20 on 2026-09-02). bgs_express: null on purpose -- BGS Base/Standard are paused (2026-09-26) and no sourced Express price was found, so there is no number to put here. cgc_bulk: CGC Bulk $17, 25-card minimum, ~150 working days. shipping_per_card: return shipping + insurance allowance per card (hypothesis; returns run ~$15-$30 per order). The owner's grade-and-flip floor is $40 net and a grade is never assumed to be a 10.",
     "enabled": false,
     "psa_standard": 59.99,
     "psa_standard_max_value": 1000,
     "sgc": 50,
-    "bgs_express": 79.95,
+    "bgs_express": null,
     "cgc_bulk": 17,
     "shipping_per_card": 10
   },
