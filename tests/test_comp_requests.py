@@ -240,3 +240,38 @@ class TestValueRanking:
         assert comp_requests.build_requests(listings, [], max_price=floor) == []
         dear = [listing(RAW_PRIZM, str(i), price=200.0) for i in range(2)]
         assert len(comp_requests.build_requests(dear, [], max_price=floor)) == 1
+
+
+class TestCapitalCeiling:
+    """Low-capital first: price stops counting above the cap, and a card no
+    deal could fit under it is not suggested."""
+
+    def test_an_expensive_identity_no_longer_outranks_an_affordable_one_with_more_listings(self):
+        affordable = [listing(RAW_PRIZM, "a%d" % i, price=120.0) for i in range(3)]
+        dear = [listing(PSA10_PRIZM, "d%d" % i, price=1500.0) for i in range(2)]
+        uncapped = comp_requests.build_requests(affordable + dear, [])
+        assert uncapped[0].market_label == "PSA 10"
+        capped = comp_requests.build_requests(
+            affordable + dear, [], capital_ceiling=150.0,
+            max_price=lambda median, graded: median * 0.7,
+        )
+        assert capped[0].market_label == "raw"
+
+    def test_a_card_no_deal_could_fit_under_the_cap_is_dropped(self):
+        dear = [listing(PSA10_PRIZM, "d%d" % i, price=1500.0) for i in range(2)]
+        assert comp_requests.build_requests(
+            dear, [], capital_ceiling=150.0, max_price=lambda median, graded: median * 0.7) == []
+
+    def test_a_cheap_ask_keeps_a_dear_median_identity(self):
+        mixed = [listing(PSA10_PRIZM, "d1", price=1500.0), listing(PSA10_PRIZM, "d2", price=140.0)]
+        assert len(comp_requests.build_requests(
+            mixed, [], capital_ceiling=150.0, max_price=lambda median, graded: median * 0.7)) == 1
+
+    def test_all_in_counts_toward_the_cap(self):
+        near = [listing(RAW_PRIZM, "n%d" % i, price=145.0) for i in range(2)]
+        kept = comp_requests.build_requests(near, [], capital_ceiling=150.0,
+                                            max_price=lambda median, graded: 300.0)
+        dropped = comp_requests.build_requests(near, [], capital_ceiling=150.0,
+                                               max_price=lambda median, graded: 300.0,
+                                               all_in=lambda price: price + 10.0)
+        assert len(kept) == 1 and dropped == []

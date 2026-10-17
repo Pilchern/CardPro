@@ -1387,6 +1387,8 @@ def run(args: argparse.Namespace) -> None:
                 shipping_in=cfg.assumed_inbound_shipping, fees=_fee_model(cfg),
                 resale_haircut_pct=cfg.resale_haircut_asking_pct, graded=graded,
             ),
+            capital_ceiling=cfg.focus_rules.deal_capital_ceiling or None,
+            all_in=lambda price: (price + cfg.assumed_inbound_shipping) * (1.0 + cfg.sales_tax_pct / 100.0),
         ),
         unidentified_listings=comp_requests.unidentified_count(listings),
         cheap_find_ceiling=cfg.cheap_find_ceiling,

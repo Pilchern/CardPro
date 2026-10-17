@@ -223,6 +223,8 @@ def build_requests(
     min_listings: int = DEFAULT_MIN_LISTINGS,
     limit: int = DEFAULT_LIMIT,
     max_price: Optional[Callable[[float, bool], float]] = None,
+    capital_ceiling: Optional[float] = None,
+    all_in: Callable[[float], float] = lambda price: price,
 ) -> list[CompRequest]:
     """Rank the card identities worth a 130point lookup.
 
@@ -238,10 +240,19 @@ def build_requests(
     median. An identity where it is 0 is dropped -- a sold comp for a card
     no buy price can make money on unlocks nothing you would act on.
 
+    ``capital_ceiling`` (focus.deal_capital_ceiling, all-in) keeps the list
+    inside the spending freeze: price stops counting toward a lookup's
+    value above it, and an identity is dropped when even its cheapest
+    plausible deal could not fit -- the MAX at the median AND the cheapest
+    ask seen are both above it, all-in (``all_in`` adds shipping and tax).
+    Ranked by raw ask, $1,000 cards took every slot and the first identity
+    under $50 ranked 73rd.
+
     Ordering is by value of the lookup: listings waiting, weighted by
     recency (a listing over RECENT_DAYS old counts half), times their median
-    ask; then fewest sales still needed; then the identity, so the output is
-    stable run to run rather than reshuffling on dict order.
+    ask capped at the capital ceiling; then fewest sales still needed; then
+    the identity, so the output is stable run to run rather than
+    reshuffling on dict order.
     """
     waiting: dict[tuple, int] = {}
     weight: dict[tuple, float] = {}
@@ -276,8 +287,15 @@ def build_requests(
             continue
         player, year, set_name, parallel, card_number, market, variant = key
         median_ask = statistics.median(asks[key]) if asks.get(key) else None
-        if max_price is not None and median_ask is not None and max_price(median_ask, market[0] == "graded") <= 0:
+        best_buy = max_price(median_ask, market[0] == "graded") if (max_price and median_ask) else None
+        if best_buy is not None and best_buy <= 0:
             continue
+        if (
+            capital_ceiling and median_ask is not None
+            and (best_buy is None or all_in(best_buy) > capital_ceiling)
+            and all_in(min(asks[key])) > capital_ceiling
+        ):
+            continue  # no deal on this card could fit the spending cap
         requests.append(
             CompRequest(
                 player=player,
@@ -292,7 +310,7 @@ def build_requests(
                 card_number=card_number,
                 variant=variant,
                 median_ask=median_ask,
-                score=weight[key] * (median_ask or 0.0),
+                score=weight[key] * min(median_ask or 0.0, capital_ceiling or float("inf")),
             )
         )
 
