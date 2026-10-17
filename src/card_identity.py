@@ -198,6 +198,15 @@ SET_ALIASES = {
 #:
 #: A title naming neither brand keeps the bare name rather than being
 #: assigned one at random -- unknown is never a guess.
+#: A named subset that identifies the card better than the product it is
+#: printed in: "2023-24 Upper Deck Series 2 Young Guns #451" and "2023 Young
+#: Guns #451" are one card and must key one bucket (the corpus held both).
+#: "Young Guns" is the key most titles already use.
+SUBSET_OVER_SET = {
+    "Upper Deck Series 1": "Young Guns",
+    "Upper Deck Series 2": "Young Guns",
+}
+
 BARE_SET_BY_BRAND = {
     "Chrome": (("Bowman", "Bowman Chrome"), ("Topps", "Topps Chrome")),
     "Sapphire": (
@@ -802,6 +811,27 @@ def _extract_parallel(masked_title: str) -> Field:
         return Field(value=run, confidence="medium", source="title")
 
     return Field(value=None, confidence="none", source="title")
+
+
+def _chrome_or_subset(set_field: Field, parallel: Optional[str], title: str) -> Field:
+    """Two products that print one card under two names.
+
+    * A Young Guns card in Upper Deck Series 1/2 keys as "Young Guns" (see
+      SUBSET_OVER_SET).
+    * Bowman Draft's refractors are printed only on the Chrome card: "2020
+      Bowman Draft Refractor BD-72" is the Bowman Chrome Draft card, so a
+      refractor-family parallel, or "Chrome" in the title, keys it there.
+      Paper Bowman Draft (base, foils) stays "Bowman Draft".
+    """
+    name = set_field.value
+    subset = SUBSET_OVER_SET.get(name)
+    if subset and re.search(r"\b" + r"\s*".join(subset.lower().split()) + r"\b", title.lower()):
+        return Field(value=subset, confidence=set_field.confidence, source=set_field.source)
+    if name == "Bowman Draft" and (
+        (parallel and "fractor" in parallel.lower()) or re.search(r"\bchrome\b", title, re.IGNORECASE)
+    ):
+        return Field(value="Bowman Chrome Draft", confidence=set_field.confidence, source=set_field.source)
+    return set_field
 
 
 def _canonical_set(set_field: Field, title: str) -> Field:
@@ -1522,6 +1552,7 @@ def extract_card_identity(title: str) -> CardIdentity:
             title, set_masked, manufacturer_field.value, card_number_field.value
         )
     parallel_field = _extract_parallel(masked)
+    set_field = _chrome_or_subset(set_field, parallel_field.value, title)
 
     # Everything above read the title as if it were whole. Where eBay cut it,
     # any field whose evidence runs into the cut is a fragment wearing a

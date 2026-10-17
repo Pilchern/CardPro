@@ -110,6 +110,20 @@ def test_set_vocabulary_id7_false_friends(title, not_set):
     assert card_identity.extract_card_identity(title).set_name.value != not_set
 
 
+@pytest.mark.parametrize("title, set_name", [
+    # Paraphrased: one card, previously two set keys.
+    ("2023-24 Upper Deck Series 2 Young Guns Connor Bedard #451 RC", "Young Guns"),
+    ("Connor Bedard 2023 Young Guns #451 rookie", "Young Guns"),
+    ("2023 Upper Deck Series 2 Connor Bedard #451", "Upper Deck Series 2"),  # no subset named
+    ("2020 Bowman Draft Pete Crow-Armstrong #BD-72 Refractor", "Bowman Chrome Draft"),
+    ("2020 Bowman Draft Chrome Pete Crow-Armstrong #BD-72 1st", "Bowman Chrome Draft"),
+    ("2020 Bowman Chrome Draft Refractor Pete Crow-Armstrong BD-72", "Bowman Chrome Draft"),
+    ("2020 Bowman Draft Pete Crow-Armstrong #BD-72 paper", "Bowman Draft"),  # paper stays paper
+])
+def test_one_card_one_set_key(title, set_name):
+    assert card_identity.extract_card_identity(title).set_name.value == set_name
+
+
 def test_autograph_keyword_detected():
     identity = card_identity.extract_card_identity("2024 Panini Contenders Caleb Williams Autograph RC")
     assert identity.is_autograph.value is True
@@ -988,7 +1002,9 @@ class TestSetVocabulary:
             ("2024 Topps Cosmic Chrome Pete Crow-Armstrong", "Cosmic Chrome"),
             ("2024 Topps Fire Caleb Williams", "Topps Fire"),
             ("2024-25 O-Pee-Chee Connor Bedard #201", "O-Pee-Chee"),
-            ("2024 Bowman Draft 1st Chrome Auto Konnor Griffin BDC-100", "Bowman Draft"),
+            # "Chrome" and a BDC- number: the Bowman Chrome Draft card, not
+            # paper Bowman Draft (one card, one key -- 26a).
+            ("2024 Bowman Draft 1st Chrome Auto Konnor Griffin BDC-100", "Bowman Chrome Draft"),
         ]:
             assert extract(title).set_name.value == expected, title
 
