@@ -124,6 +124,22 @@ def test_one_card_one_set_key(title, set_name):
     assert card_identity.extract_card_identity(title).set_name.value == set_name
 
 
+@pytest.mark.parametrize("title, set_name", [
+    # Paraphrased: Sapphire Edition is its own product, never plain Chrome.
+    ("2020 Bowman Chrome Draft Sapphire Edition Pete Crow-Armstrong #BD-72", "Bowman Chrome Draft Sapphire"),
+    ("2020 Bowman Draft Chrome Sapphire Crow-Armstrong BD-72", "Bowman Chrome Draft Sapphire"),
+    ("PCA 2020 Bowman Draft Sapphire 1st Bowman BD-72 PSA 9", "Bowman Chrome Draft Sapphire"),
+    ("2021 Bowman Chrome Pete Crow-Armstrong Base Sapphire", "Bowman Chrome Sapphire"),
+    ("Josh Giddey Sapphire 2025-26 Topps Chrome #118", "Topps Chrome Sapphire"),
+    ("2025 Topps Chrome Update Sapphire #76 Crow-Armstrong", "Topps Chrome Update Sapphire"),
+    # And the plain Chrome card stays plain.
+    ("2020 Bowman Draft Chrome Pete Crow-Armstrong #BD-72 Mets", "Bowman Chrome Draft"),
+])
+def test_sapphire_is_its_own_product(title, set_name):
+    assert card_identity.extract_card_identity(title).set_name.value == set_name
+
+
+
 def test_autograph_keyword_detected():
     identity = card_identity.extract_card_identity("2024 Panini Contenders Caleb Williams Autograph RC")
     assert identity.is_autograph.value is True

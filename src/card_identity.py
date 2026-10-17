@@ -830,7 +830,19 @@ def _chrome_or_subset(set_field: Field, parallel: Optional[str], title: str) -> 
     if name == "Bowman Draft" and (
         (parallel and "fractor" in parallel.lower()) or re.search(r"\bchrome\b", title, re.IGNORECASE)
     ):
-        return Field(value="Bowman Chrome Draft", confidence=set_field.confidence, source=set_field.source)
+        name = "Bowman Chrome Draft"
+    # Sapphire Edition is its own product, as "Topps Chrome Sapphire" and
+    # "Bowman Chrome Sapphire" already are: a $340 Sapphire BD-72 keyed as
+    # plain Chrome Draft pooled with $40 base copies.
+    sapphire = {
+        "Bowman Chrome": "Bowman Chrome Sapphire", "Bowman Chrome Draft": "Bowman Chrome Draft Sapphire",
+        "Bowman Draft": "Bowman Chrome Draft Sapphire", "Topps Chrome": "Topps Chrome Sapphire",
+        "Topps Chrome Update": "Topps Chrome Update Sapphire",
+    }
+    if name in sapphire and re.search(r"\bsapphire\b", title, re.IGNORECASE):
+        name = sapphire[name]
+    if name != set_field.value:
+        return Field(value=name, confidence=set_field.confidence, source=set_field.source)
     return set_field
 
 
