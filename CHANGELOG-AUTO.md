@@ -59,3 +59,6 @@ Tune baseline: Maybe+ flagged 7, precision 0.143, recall 1.0, FP rate 0.857. Cor
 | 20 | Grading price block in settings (enabled false); no grading branch | MR-8: current PSA/SGC/BGS/CGC prices on record | - | - | +14 / +13 | None | SHIP (bgs_express unsourced -> null queued) | 4e52de2 |
 
 **Net LOC, whole run (aefb60d..HEAD, fact):** src + scripts +1,440 / -306 (net +1,134, heavily commented); tests +1,799 / -72; config +45 / -13. Largest code additions: phone summary + tier (#4, #4r), flip record (#15), base keying (#9, #9r), live re-derivation (#29).
+| 19r | Suggestions weighted by listings x min(median ask, $150 cap); unaffordable identities dropped | Review of #19 (ranked $1,000 cards first) | unchanged | 154 -> 118 suggestions; first < $50 identity rank 86 -> 50 | +20 / +35 | Low | pending verifier | 4cdec0b |
+| 20n | grading.bgs_express null (unsourced) | Review of #20 | - | - | 0 / +1 | None | pending verifier | fdd68c9 |
+| 26a | One card, one set key: UD Series 1/2 + "Young Guns" -> Young Guns; Bowman Draft + refractor/Chrome -> Bowman Chrome Draft | Shopping-list pass: same card under two keys doubled hand entry | unchanged | 94 rows re-keyed, 4 buckets merged (read: clean); corpus flags 1 -> 3 (two BD-72 Refractor Maybes, ASKING) | +31 / +16 | Low-Medium: merged buckets create new flags | pending verifier | c5a5ea4 |
