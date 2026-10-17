@@ -32,10 +32,8 @@ WHAT THIS MODULE REFUSES TO DO
   decision is yours and the report's job is to hand you the evidence.
 * **No arithmetic the caller did not supply.** Market values, discounts,
   economics and max rational bids arrive already computed on the
-  ``Listing``. This module classifies and renders them. The only numbers
-  it derives are the Best Offer trio, which are flat percentages off the
-  market value and are printed with their arithmetic stated on the line
-  below (see ``_offer_block``).
+  ``Listing``. This module classifies and renders them; it derives none
+  (the max offer/bid is economics.max_rational_bid, solved in main).
 * **No number the data does not support.** No comp means the Market line
   says so in English and the Discount line does not exist. Unknown
   shipping is never $0; it is "shipping unknown -- actual cost may be
@@ -47,6 +45,7 @@ email is diffable day to day.
 """
 from __future__ import annotations
 
+import math
 import re
 import textwrap
 from collections import OrderedDict
@@ -196,7 +195,8 @@ SECTION_SUBTITLES = {
     ),
     SECTION_OFFERS: (
         "Not deals at the asking price -- but they accept offers, and a negotiated price "
-        "could get there. Offer figures are flat percentages off market, stated on each card."
+        "could get there. The max offer on each card is the highest price that still nets "
+        "your profit minimum after fees, postage and tax."
     ),
     SECTION_COOL_CARDS: (
         "No valuation claim here at all -- CardPro cannot tell you what these are worth, and "
@@ -253,16 +253,6 @@ DEFAULT_CHEAP_AUCTION_CEILING = 10.0
 #: a WATCH slot. 0.75 means "within a quarter of the way off" -- close
 #: enough to be worth an eye, far enough that WATCH doesn't become a dump.
 WATCH_CLOSE_FRACTION = 0.75
-
-#: Best Offer suggestions. The ceiling is derived from YOUR discount
-#: threshold -- the most you can pay and still clear your own gate -- and
-#: the other two step down from it, so aggressive < fair < maximum always.
-#: (Anchoring each figure independently to market value produced the
-#: incoherent "fair $279 | maximum $244" at a 30% threshold.) Not modelled,
-#: not negotiation advice: arithmetic you would do yourself, shown with its
-#: basis on the next line.
-OFFER_FAIR_BELOW_MAX_PCT = 5.0
-OFFER_AGGRESSIVE_BELOW_MAX_PCT = 15.0
 
 #: Sample size below which a comp is called thin in the report. Matches the
 #: threshold comps.assess_comp_match uses to downgrade confidence, so the
@@ -719,11 +709,12 @@ def _discount_text(deal: Listing) -> Optional[str]:
             _money(deal.dollar_savings), _pct1(deal.pct_under_market)
         )
     if deal.shipping_price is None:
-        # total_cost falls back to price alone when shipping is unknown, so
-        # this figure is computed against a cost the Cost line has just
-        # declined to state. Naming it to the cent two lines later, with no
-        # caveat, is the report contradicting itself.
-        text += " -- before shipping, which is unknown, so this is a ceiling"
+        # The saving is computed against an ASSUMED inbound shipping
+        # (economics.assumed_inbound_shipping, plus tax on it) because the
+        # real one is unknown -- a cost the Cost line has just declined to
+        # state. Naming it to the cent with no caveat is the report
+        # contradicting itself.
+        text += " -- with shipping unknown and assumed, so the real figure may differ"
     return text
 
 
@@ -768,8 +759,9 @@ def _economics_text(deal: Listing) -> Optional[str]:
         # footer filters per-card assumptions out, so the one assumption
         # that can flip the sign of the profit was the one the reader never
         # saw. On a $22 card with a $3.44 expected profit, $5 of postage
-        # makes it a $1.56 loss.
-        tail = "before unknown inbound shipping, which could make it a loss " + tail
+        # makes it a $1.56 loss. The pipeline now books an assumed postage
+        # (economics.assumed_inbound_shipping), but it is still a guess.
+        tail = "with inbound shipping unknown and assumed, so the real figure may differ " + tail
     return (
         "sell ~{} -> fees {} + ship/supplies {} -> net {} -> profit {} ({} ROI) "
         "{}".format(
@@ -782,6 +774,89 @@ def _economics_text(deal: Listing) -> Optional[str]:
             tail,
         )
     )
+
+
+#: ID confidence words for the summary line, lowest wins.
+_ID_CONFIDENCE_ORDER = ("none", "low", "medium", "high")
+_ID_CONFIDENCE_WORD = {"none": "?", "low": "low", "medium": "med", "high": "high"}
+
+
+def _id_confidence(deal: Listing) -> str:
+    """The weakest of year / set / parallel / card number, because the
+    identity is only as good as its least certain key field. A base card's
+    parallel counts at the confidence of the base call."""
+    identity = deal.card_identity
+    if identity is None:
+        return "?"
+    parallel = identity.parallel
+    if parallel.value is None and identity.is_base.value:
+        parallel = identity.is_base
+    levels = [
+        f.confidence if f.value is not None else "none"
+        for f in (identity.year, identity.set_name, parallel, identity.card_number)
+    ]
+    return _ID_CONFIDENCE_WORD[min(levels, key=_ID_CONFIDENCE_ORDER.index)]
+
+
+def _whole_money(value: float) -> str:
+    return "${:,.0f}".format(value)
+
+
+def _signed_whole(value: float, *, dollar: bool = True, sign: bool = True) -> str:
+    text = "{}{:,.0f}".format("$" if dollar else "", abs(value))
+    if not sign:
+        return text
+    return ("-" if value < 0 else "+") + text
+
+
+def summary_line(deal: Listing) -> Optional[str]:
+    """One line a phone can show without scrolling, for a tiered deal:
+    tier, price + shipping, MAX, expected sale range, comp basis and count,
+    net, $/h, identity confidence. None for anything without a tier.
+
+    The sale range is [lowest kept comp, median] after the same haircut the
+    profit uses -- selling anywhere from the cheap end of the comps up to
+    the median -- from spread stats the comp engine already keeps.
+    """
+    tier = getattr(deal, "deal_tier", None)
+    stats = _stats(deal)
+    econ = deal.economics
+    if tier is None or stats is None or econ is None or deal.price is None:
+        return None
+    if deal.shipping_price is None:
+        price = "{}+?".format(_money(deal.price))
+    elif deal.shipping_price == 0:
+        price = "{} fs".format(_money(deal.price))
+    else:
+        price = "{}+{}".format(_money(deal.price), _money(deal.shipping_price))
+    factor = econ.expected_sale_price / econ.estimated_market_value if econ.estimated_market_value else 1.0
+    net_high = econ.expected_profit
+    net_low = getattr(deal, "net_profit_low", None)
+    if net_low is None:
+        net_low = net_high
+    parts = [
+        tier.upper(),
+        price,
+        # Rounded DOWN: a MAX of $27.80 printed as $28 would invite a $28
+        # offer that misses the floor.
+        "MAX ${:,d}".format(math.floor(deal.max_rational_bid)) if deal.max_rational_bid else "MAX none",
+        "sells {}-{}".format(
+            _whole_money(stats.minimum * factor), _whole_money(econ.expected_sale_price).lstrip("$")
+        ),
+        "{} n={}".format(str(stats.basis).upper(), stats.sample_size),
+        # Low end first: the gate and MAX use the median, and selling at
+        # the cheap end of the comps can net far less.
+        "net {}..{}".format(
+            _signed_whole(net_low),
+            _signed_whole(net_high, dollar=False, sign=net_low < 0 or net_high < 0),
+        ),
+    ]
+    if getattr(deal, "profit_per_hour", None) is not None:
+        parts.append("{}/h".format(_whole_money(deal.profit_per_hour)))
+    if getattr(deal, "age_days", None) is not None:
+        parts.append("{} {}d ago".format(deal.age_basis or "listed", deal.age_days))
+    parts.append("ID {}".format(_id_confidence(deal)))
+    return " · ".join(parts)
 
 
 #: Attributes whose label reads as an adjective ("serial numbered"), which
@@ -973,6 +1048,11 @@ def _thesis_card(index: int, deal: Listing, ending_soon_hours: float = DEFAULT_E
         return _auction_card(index, deal, ending_soon_hours)
 
     fields = []
+    # First, so a phone shows the decision before the evidence. The reason
+    # is the Discount line below; the full block stays under it.
+    summary = summary_line(deal)
+    if summary:
+        fields.append(("Summary", summary))
     drop = _price_drop_line(deal)
     if drop:
         fields.append(("Price drop", drop))
@@ -986,6 +1066,8 @@ def _thesis_card(index: int, deal: Listing, ending_soon_hours: float = DEFAULT_E
     econ = _economics_text(deal)
     if econ:
         fields.append(("Economics", econ))
+    if deal.max_rational_bid is not None and _is_real_comp(deal):
+        fields.append(("Max buy", _max_text(deal, "pay")))
     cheap = _cheap_find_text(deal)
     if cheap:
         fields.append(("Cheap find", cheap))
@@ -1054,19 +1136,7 @@ def _auction_card(index: int, deal: Listing, ending_soon_hours: float = DEFAULT_
         fields.append(("Context", CONTEXT_ONLY_TEXT))
 
     if deal.max_rational_bid is not None:
-        max_bid_text = "{} -- the most you can pay and still keep your margin. Above this, stop.".format(
-            _money(deal.max_rational_bid)
-        )
-        if not getattr(deal, "max_rational_bid_shipping_known", True):
-            # Computed with shipping treated as $0 because it is unknown, so
-            # it is an upper bound that is too high by exactly the unknown
-            # shipping -- see economics.max_rational_bid. Printing it as a
-            # figure is how you overbid.
-            max_bid_text += (
-                " Shipping is unknown, so this assumes $0 postage and your real"
-                " ceiling is lower by whatever it turns out to be."
-            )
-        fields.append(("Max bid", max_bid_text))
+        fields.append(("Max bid", _max_text(deal, "bid")))
     else:
         fields.append(
             ("Max bid",
@@ -1087,30 +1157,30 @@ def _auction_card(index: int, deal: Listing, ending_soon_hours: float = DEFAULT_
     return _card(index, deal, fields)
 
 
-def offer_trio(market_value: float, threshold_pct: float) -> tuple:
-    """(aggressive, fair, maximum) offer prices for a Best Offer listing.
+def _max_text(deal: Listing, verb: str) -> str:
+    """The one MAX line: what you may pay for the item ("bid", "offer",
+    "pay") and still net your profit minimum. It replaced a Best Offer
+    "maximum" set at 30% under market gross, which on a raw card is a price
+    that loses money after fees and postage."""
+    if deal.max_rational_bid <= 0:
+        return "none -- no price nets your profit minimum against this market value. Walk away."
+    text = (
+        "{} -- the most you can {} for the card and still net your profit minimum after "
+        "fees, postage and tax. Above this, stop.".format(_money(deal.max_rational_bid), verb)
+    )
+    if not getattr(deal, "max_rational_bid_shipping_known", True):
+        # Computed with an ASSUMED postage (economics.assumed_inbound_
+        # shipping) because the real one is unknown -- see
+        # economics.max_rational_bid. Printing it as a firm figure is how
+        # you overpay when the seller charges more.
+        text += (
+            " Shipping is unknown, so this assumes typical postage and your real"
+            " ceiling is lower if the seller charges more."
+        )
+    return text
 
-    ``maximum`` is the anchor: the highest price that still clears the
-    discount threshold you configured, so an accepted offer at that number
-    is, by your own definition, still a deal. ``fair`` and ``aggressive``
-    step down from it by fixed percentages.
 
-    Deriving all three from the ceiling is what makes the trio monotonic by
-    construction -- aggressive < fair < maximum at every threshold. Pegging
-    each one independently to market value did not: at a 30% threshold it
-    produced a "fair" offer higher than the "maximum", which is nonsense
-    dressed up as arithmetic.
-
-    Nothing here is modelled or learned. It is the sum you would do
-    yourself, done once, with the basis printed next to it.
-    """
-    maximum = market_value * (1.0 - threshold_pct / 100.0)
-    fair = maximum * (1.0 - OFFER_FAIR_BELOW_MAX_PCT / 100.0)
-    aggressive = maximum * (1.0 - OFFER_AGGRESSIVE_BELOW_MAX_PCT / 100.0)
-    return aggressive, fair, maximum
-
-
-def _offer_card(index: int, deal: Listing, threshold_pct: float) -> str:
+def _offer_card(index: int, deal: Listing) -> str:
     if deal.is_auction:
         # An auction's number is a CURRENT BID. Rendering it under "Asking"
         # or "Cost" is how a $40 opening bid became a reported 60%-off deal
@@ -1129,30 +1199,8 @@ def _offer_card(index: int, deal: Listing, threshold_pct: float) -> str:
     if discount:
         fields.append(("Discount", "{} at the asking price".format(discount)))
 
-    aggressive, fair, maximum = offer_trio(deal.market_value, threshold_pct)
-    fields.append(
-        ("Offer",
-         "aggressive {} | fair {} | maximum {}".format(
-             _money(aggressive), _money(fair), _money(maximum)
-         ))
-    )
-    basis = (
-        "maximum is the highest price that still clears your {:.0f}% discount threshold "
-        "against a market estimate of {}; fair is {:.0f}% below it and aggressive {:.0f}% "
-        "below it. These are total-cost figures".format(
-            threshold_pct,
-            _money(deal.market_value),
-            OFFER_FAIR_BELOW_MAX_PCT,
-            OFFER_AGGRESSIVE_BELOW_MAX_PCT,
-        )
-    )
-    if deal.shipping_price:
-        basis += "; subtract the {} known shipping from what you actually offer".format(
-            _money(deal.shipping_price)
-        )
-    elif deal.shipping_price is None:
-        basis += "; shipping is unknown, so treat them as ceilings"
-    fields.append(("Basis", basis))
+    if deal.max_rational_bid is not None:
+        fields.append(("Max offer", _max_text(deal, "offer")))
     fields.append(("Confidence", _confidence_text(deal)))
     risks = _risks(deal)
     if risks:
@@ -1330,8 +1378,8 @@ def _auction_block(index: int, deal: Listing,
     return _text_block(_auction_card(index, deal, ending_soon_hours))
 
 
-def _offer_block(index: int, deal: Listing, threshold_pct: float) -> str:
-    return _text_block(_offer_card(index, deal, threshold_pct))
+def _offer_block(index: int, deal: Listing) -> str:
+    return _text_block(_offer_card(index, deal))
 
 
 def _compact_block(index: int, deal: Listing, *, why: Optional[str] = None,
@@ -1438,6 +1486,12 @@ def _savings(deal: Listing) -> float:
 
 def _clears_immediate(deal: Listing, min_savings: float, min_discount_pct: float) -> bool:
     if deal.dollar_savings is None or deal.pct_under_market is None:
+        return False
+    # The dollar bar applies to NET profit as well: a $25 gross saving on a
+    # $40 card nets a few dollars after fees and postage, which is not worth
+    # an interruption. No economics (not computed) leaves the gross test.
+    econ = deal.economics
+    if econ is not None and econ.expected_profit < min_savings:
         return False
     return deal.dollar_savings >= min_savings and deal.pct_under_market >= min_discount_pct
 
@@ -1564,7 +1618,12 @@ def classify_sections(
     for deal in ranked:
         if deal.id in claimed:
             continue
-        if deal.has_best_offer and not deal.is_opportunity and _is_real_comp(deal):
+        # Only when some offer still nets your profit minimum: an offer card
+        # whose answer is "no price works" is noise in a section about offers.
+        if (
+            deal.has_best_offer and not deal.is_opportunity and _is_real_comp(deal)
+            and (deal.max_rational_bid or 0.0) > 0.0
+        ):
             take(SECTION_OFFERS, deal)
 
     # COOL CARDS and CHEAP FINDS sit above WATCH and NEEDS REVIEW on purpose.
@@ -1821,7 +1880,7 @@ def section_cards(key: str, deals: list, threshold_pct: float, ending_soon_hours
         elif key in (SECTION_AUCTIONS, SECTION_CHEAP_AUCTIONS):
             cards.append(_auction_card(index, deal, ending_soon_hours))
         elif key == SECTION_OFFERS:
-            cards.append(_offer_card(index, deal, threshold_pct))
+            cards.append(_offer_card(index, deal))
         elif key == SECTION_NEEDS_REVIEW:
             cards.append(_review_card(index, deal, ending_soon_hours=ending_soon_hours))
         elif key in (SECTION_COOL_CARDS, SECTION_CHEAP_FINDS, SECTION_INVESTMENT):
@@ -1858,6 +1917,10 @@ def _watch_why(deal: Listing, threshold_pct: float, min_savings_dollars: float =
     if reason == reasons.Reason.BELOW_MIN_SAVINGS and deal.dollar_savings is not None:
         return "clears {:.0f}% but saves only {}, under your {} minimum".format(
             threshold_pct, _money(deal.dollar_savings), _money(min_savings_dollars)
+        )
+    if reason == reasons.Reason.BELOW_MIN_NET_PROFIT and deal.economics is not None:
+        return "clears {:.0f}% but nets only {} after fees and shipping, under your profit minimum".format(
+            threshold_pct, _money(deal.economics.expected_profit)
         )
     if _confidence(deal) == "low":
         return "the comp behind this is low confidence -- watch it, don't act on it"
@@ -2410,9 +2473,13 @@ def _focus_line(rules) -> str:
     if rules.max_listings > 0:
         parts.append("top {} listings".format(rules.max_listings))
     line = ", ".join(parts)
-    line += ". Anything dearer needed {:.0f}%+ off and {}+ saved to get in.".format(
+    line += ". Anything dearer needed {:.0f}%+ off and {}+ saved to get in".format(
         rules.exceptional_min_discount_pct, _money(rules.exceptional_min_savings_dollars)
     )
+    if rules.deal_capital_ceiling > 0:
+        line += ", except deals that clear your net-profit minimum, which get in up to {} " \
+                "all-in".format(_money(rules.deal_capital_ceiling))
+    line += "."
     return textwrap.fill(line, width=_WRAP_WIDTH)
 
 
@@ -2513,6 +2580,10 @@ class ReportModel:
     footer: str = ""
     #: Set only when eBay is not configured at all; then it is the whole body.
     not_configured: Optional[str] = None
+    #: Ids of every listing printed in a section, for the seen file.
+    shown_ids: frozenset = frozenset()
+    #: Ids in ACT NOW -- what an --alert-only poll emails and marks seen.
+    act_now_ids: frozenset = frozenset()
 
 
 def build_model(
@@ -2619,7 +2690,7 @@ def build_model(
     )
     thresholds = (
         "Thresholds: an opportunity needs {:.0f}%+ under market AND at least {} saved; "
-        "ACT NOW additionally needs {} saved and {:.0f}%+ off.".format(
+        "ACT NOW additionally needs {} saved and netted, and {:.0f}%+ off.".format(
             threshold_pct,
             _money(min_savings_dollars),
             _money(immediate_min_savings),
@@ -2654,6 +2725,8 @@ def build_model(
         thresholds=thresholds,
         assumptions=_assumptions_footer(sections),
         footer=footer,
+        shown_ids=frozenset(shown),
+        act_now_ids=frozenset(deal.id for deal in sections[SECTION_ACT_NOW]),
     )
 
 

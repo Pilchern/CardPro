@@ -34,10 +34,11 @@ CardPro 2.0 changed the shape of this file in three ways that matter:
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import logging
 import traceback
 import sys
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from datetime import date, datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -57,6 +58,7 @@ from src import (
     ebay_client,
     ebay_email_alerts,
     economics,
+    flips,
     emailer,
     matcher,
     observability,
@@ -73,6 +75,7 @@ from src.config import ROOT_DIR, load_config
 from src.models import Listing
 
 LOG_PATH = ROOT_DIR / "logs" / "scraper.log"
+FLIPS_PATH = ROOT_DIR / "data" / "flips.csv"
 
 # Module-level, like every other module in src/. It used to be created
 # fresh inside each function that logged, which meant a function that
@@ -156,7 +159,7 @@ def setup_logging() -> None:
 
 def _build_listing(cfg, *, listing_id, source, title, price, url, players, shipping_price=None,
                    listing_type="unknown", bid_count=None, time_left_text=None, has_best_offer=False,
-                   search_query=None):
+                   search_query=None, listed_at=None):
     """One Listing with identity fully extracted. Returns None when no
     watchlist player is in the title or, failing that, in the saved search
     the listing matched -- the caller records the reason."""
@@ -195,6 +198,7 @@ def _build_listing(cfg, *, listing_id, source, title, price, url, players, shipp
         listing_type=listing_type,
         bid_count=bid_count,
         time_left_text=time_left_text,
+        listed_at=listed_at,
         has_best_offer=has_best_offer,
         negative_signals=tuple(identity.negative_signals.value or ()),
         matched_players=tuple(matched),
@@ -218,23 +222,40 @@ def fetch_ebay_active(cfg, players, token, stats) -> list:
     listings = []
     seen_ids = set()
     capped = []
+    failed = {}  # player -> first failure, for one warning in the email
+    searches = failed_searches = 0
+    searches_by_player, failures_by_player = {}, {}
     now = datetime.now(timezone.utc)
     passes = [
-        dict(sort="newlyListed", max_pages=cfg.ebay_newest_pages_per_player),
+        # A floor on the newest pass only: measured 2026-10-16, 77% of a
+        # newest page was under $20, a band where no flip clears the $15
+        # net floor -- it filled the 200-item page (hiding the rest of the
+        # day's listings) and grew the corpus ~3k rows a day. The auction
+        # pass keeps every price: a cheap current bid is the point of it.
+        dict(sort="newlyListed", max_pages=cfg.ebay_newest_pages_per_player,
+             min_price=cfg.ebay_newest_min_price),
         dict(sort="endingSoonest", buying_options=("AUCTION",), max_pages=cfg.ebay_auction_pages_per_player),
     ]
     for player in players:
         for search in passes:
             if search["max_pages"] < 1:
                 continue
+            failures = []
             items = ebay_client.search_active_listings(
                 query=player,
                 token=token,
                 category_id=cfg.ebay_category_id,
                 marketplace_id=cfg.ebay_marketplace_id,
                 limit=cfg.ebay_active_listing_limit,
+                failures=failures,
                 **search,
             )
+            searches += 1
+            searches_by_player[player] = searches_by_player.get(player, 0) + 1
+            if failures:
+                failed_searches += 1
+                failures_by_player[player] = failures_by_player.get(player, 0) + 1
+                failed.setdefault(player, failures[0])
             if search["sort"] == "newlyListed" and len(items) >= cfg.ebay_active_listing_limit * search["max_pages"]:
                 capped.append(player)
             for item in items:
@@ -258,11 +279,30 @@ def fetch_ebay_active(cfg, players, token, stats) -> list:
                     bid_count=item.get("bidCount"),
                     time_left_text=ebay_client.time_left_text(item, now),
                     has_best_offer="BEST_OFFER" in buying_options,
+                    # itemOriginDate survives a relist; itemCreationDate is
+                    # reset by one, so it is only the fallback.
+                    listed_at=item.get("itemOriginDate") or item.get("itemCreationDate"),
                 )
                 if listing is None:
                     stats.rejections.record(reasons.Reason.NO_PLAYER_MATCH)
                     continue
                 listings.append(listing)
+    if failed:
+        # A non-200 used to reach only the log, so a player whose search
+        # failed looked exactly like a player with nothing new today.
+        # Every search refused is a 401/429 storm: the run did not work.
+        # One pass of several is a partial gap, and says only that.
+        whole = all(failures_by_player[p] == searches_by_player[p] for p in failed)
+        stats.warn(
+            "The eBay API refused {} of {} searches, for {} player(s) ({}), so {} from "
+            "today's report. First error: {}".format(
+                failed_searches, searches, len(failed),
+                ", ".join(list(failed)[:5]) + (" and more" if len(failed) > 5 else ""),
+                "their listings are missing" if whole else "some listings may be missing",
+                next(iter(failed.values())),
+            ),
+            broken=failed_searches == searches,
+        )
     if capped:
         # Newest first, so a full walk means the oldest of today's new
         # listings fell off the end -- the alert path's capped-search
@@ -647,6 +687,14 @@ def _relic_of(identity) -> Optional[str]:
     return None
 
 
+def required_net_profit(cfg, estimated_value: float) -> float:
+    """The owner's net-profit floor for one card: the flat minimum, or a
+    share of what the card is worth, whichever is more. $15 is a real margin
+    on a $60 card and noise on a $1,000 one."""
+    share = cfg.min_net_profit_pct_of_value
+    return max(cfg.min_net_profit, share * estimated_value) if share > 0 else cfg.min_net_profit
+
+
 def _fee_model(cfg):
     return economics.FeeModel(
         marketplace_fee_pct=cfg.fee_marketplace_pct,
@@ -655,6 +703,11 @@ def _fee_model(cfg):
         outbound_shipping=cfg.outbound_shipping,
         supplies=cfg.supplies_cost,
         sales_tax_pct=cfg.sales_tax_pct,
+        small_order_fixed_fee=cfg.fee_small_order_fixed,
+        small_order_max=cfg.fee_small_order_max,
+        envelope_shipping=cfg.outbound_shipping_envelope,
+        envelope_max_sale=cfg.envelope_max_sale,
+        graded_supplies=cfg.supplies_graded_cost,
     )
 
 
@@ -779,7 +832,7 @@ def evaluate_listings(listings, engine, cfg, stats) -> None:
             # YOU set for what you are willing to pay, and what you pay
             # includes the tax. Listing.total_cost is the pre-tax figure the
             # report prints beside the item price; at the shipped
-            # sales_tax_pct of 0.0 they are the same number.
+            # sales_tax_pct of 10.25 they differ by that much.
             total_cost=_total_cost_with_tax(listing, cfg),
             year=identity.year.value if identity else None,
             set_name=identity.set_name.value if identity else None,
@@ -826,6 +879,9 @@ def evaluate_listings(listings, engine, cfg, stats) -> None:
             # Still refuses the level when the title says "numbered" and the
             # cut took the number: "one of something" is not comparable.
             is_serial_numbered=identity.is_serial_numbered.value if identity else False,
+            # Lets a base card with a card number key the exact level as
+            # parallel "Base" -- see comps._base_parallel.
+            is_base=identity.is_base.value if identity else None,
             # A listing must never be part of the comp set used to judge it.
             exclude_id=listing.id,
         )
@@ -844,13 +900,22 @@ def evaluate_listings(listings, engine, cfg, stats) -> None:
         listing.comp_is_fallback = match.stats.basis == comps.BASIS_ASKING
         listing.comp_level_matched = match.level
         listing.comp_confidence = match.confidence
+        # An asking-price median overstates what the card sells for, so it
+        # takes the bigger haircut; see settings.json economics._haircut_comment.
+        haircut_pct = cfg.resale_haircut_asking_pct if listing.comp_is_fallback else cfg.resale_haircut_pct
+        graded = listing.card_type == "graded"
         listing.economics = economics.evaluate(
             economics.Acquisition(
-                price=listing.price, shipping=listing.shipping_price, sales_tax_pct=cfg.sales_tax_pct
+                price=listing.price,
+                shipping=listing.shipping_price,
+                sales_tax_pct=cfg.sales_tax_pct,
+                # Unknown shipping costs something; $0 here inflated profit.
+                assumed_shipping=cfg.assumed_inbound_shipping,
             ),
             match.stats.median,
             fees,
-            resale_haircut_pct=cfg.resale_haircut_pct,
+            resale_haircut_pct=haircut_pct,
+            graded=graded,
         )
         # Take the discount from economics rather than recomputing it here.
         # The two used different acquisition costs -- this one excluded sales
@@ -866,36 +931,58 @@ def evaluate_listings(listings, engine, cfg, stats) -> None:
         # would ever flip.
         listing.resale_uneconomic = listing.economics.expected_profit <= 0
 
+        # The most you can pay for the ITEM and still net min_net_profit at the
+        # haircut sale price, after fees, postage, supplies, tax and inbound
+        # shipping. One number for every priced listing: the bid ceiling on
+        # an auction, the max offer/buy on fixed price. It is the deal gate's
+        # own floor solved for price, so a flagged card is always at or under
+        # it. (It replaced a 30%-gross offer "maximum" that lost money on raw
+        # cards, and a 25%-of-value auction margin; auctions.required_margin_pct
+        # survives as an optional extra floor, shipped at 0.)
+        #
+        # ONLY off a comp CardPro will stand behind. A max bid is the one
+        # number in this report that tells you to spend money -- "the most
+        # you can pay. Above this, stop." -- and it was being computed from
+        # whatever median was available, including a price-bracket bucket.
+        # On the live corpus that put a $729.31 ceiling on a $125 Ernie Banks
+        # card, two lines under a Market line reading "not established ...
+        # CardPro has no valuation for this card". A number nobody may act on
+        # must not come back wearing the one label that says act on it.
+        #
+        # It cuts the other way too: focus._has_bidding_room drops an
+        # auction whose current bid is over this ceiling, so a context-only
+        # median was silently removing real auctions from the email. With no
+        # ceiling there is nothing to be over, and the report says plainly
+        # that none could be computed.
+        listing.max_rational_bid = economics.max_rational_bid(
+            match.stats.median,
+            # The profit floor scales with the card (required_net_profit);
+            # an auction may add its own extra margin on top.
+            required_margin_pct=max(
+                cfg.min_net_profit_pct_of_value * 100.0,
+                cfg.auction_required_margin_pct if listing.is_auction else 0.0,
+            ),
+            min_profit_dollars=cfg.min_net_profit,
+            # The same assumed postage evaluate() uses: treating unknown
+            # as $0 overstates the ceiling by exactly that postage.
+            shipping_in=(
+                listing.shipping_price
+                if listing.shipping_price is not None
+                else cfg.assumed_inbound_shipping
+            ),
+            fees=fees,
+            # The same haircut evaluate() applies. Without it the two
+            # disagree about the same card, and the ceiling comes out
+            # high -- which is the expensive direction to be wrong in.
+            resale_haircut_pct=haircut_pct,
+            graded=graded,
+        ) if match.flag_eligible else None
+        # Unknown shipping makes the ceiling an upper bound, not a
+        # figure. The report has to be able to say so; the bare float
+        # cannot carry that.
+        listing.max_rational_bid_shipping_known = listing.shipping_price is not None
+
         if listing.is_auction:
-            # ONLY off a comp CardPro will stand behind. A max bid is the one
-            # number in this report that tells you to spend money -- "the most
-            # you can pay and still keep your margin. Above this, stop." --
-            # and it was being computed from whatever median was available,
-            # including a price-bracket bucket. On the live corpus that put a
-            # $729.31 ceiling on a $125 Ernie Banks card, two lines under a
-            # Market line reading "not established ... CardPro has no
-            # valuation for this card". A number nobody may act on must not
-            # come back wearing the one label that says act on it.
-            #
-            # It cuts the other way too: focus._has_bidding_room drops an
-            # auction whose current bid is over this ceiling, so a
-            # context-only median was silently removing real auctions from
-            # the email. With no ceiling there is nothing to be over, and the
-            # report says plainly that none could be computed.
-            listing.max_rational_bid = economics.max_rational_bid(
-                match.stats.median,
-                required_margin_pct=cfg.auction_required_margin_pct,
-                shipping_in=listing.shipping_price,
-                fees=fees,
-                # The same haircut evaluate() applies. Without it the two
-                # disagree about the same card, and the ceiling comes out
-                # high -- which is the expensive direction to be wrong in.
-                resale_haircut_pct=cfg.resale_haircut_pct,
-            ) if match.flag_eligible else None
-            # Unknown shipping makes the ceiling an upper bound, not a
-            # figure. The report has to be able to say so; the bare float
-            # cannot carry that.
-            listing.max_rational_bid_shipping_known = listing.shipping_price is not None
             # A current bid is not a price, so an auction is never a
             # confirmed deal no matter how far under market it sits. It gets
             # its own report section and its own math instead.
@@ -928,25 +1015,75 @@ def evaluate_listings(listings, engine, cfg, stats) -> None:
             listing.rejection_reason = reasons.Reason.BELOW_MIN_SAVINGS
             stats.rejections.record(reasons.Reason.BELOW_MIN_SAVINGS, listing.id)
             continue
+        # The gates above are on GROSS discount, which ignores what fees,
+        # postage, supplies and tax take out of a flip. Corpus replay on the
+        # current fee model (measured 2026-10-16): 6 flags cleared them, 4 of
+        # which netted under $15; with this check, 2 flags, 0 under. A
+        # discount you cannot bank is not a deal.
+        if listing.economics.expected_profit < required_net_profit(cfg, match.stats.median):
+            listing.rejection_reason = reasons.Reason.BELOW_MIN_NET_PROFIT
+            stats.rejections.record(reasons.Reason.BELOW_MIN_NET_PROFIT, listing.id)
+            continue
 
         listing.is_opportunity = True
+        listing.deal_tier = economics.deal_tier(
+            flag_eligible=match.flag_eligible,
+            basis=match.stats.basis,
+            sample_size=match.stats.sample_size,
+            expected_profit=listing.economics.expected_profit,
+            min_net_profit=required_net_profit(cfg, match.stats.median),
+        )
+        listing.profit_per_hour = (
+            listing.economics.expected_profit / (cfg.minutes_per_flip / 60.0)
+            if cfg.minutes_per_flip > 0 else None
+        )
+        # The gate and the MAX use the median; the summary also shows what
+        # selling at the cheap end of the comps would net, through the same
+        # fee model, so "+$15" is never read as a floor it is not.
+        listing.net_profit_low = economics.evaluate(
+            economics.Acquisition(
+                price=listing.price, shipping=listing.shipping_price,
+                sales_tax_pct=cfg.sales_tax_pct, assumed_shipping=cfg.assumed_inbound_shipping,
+            ),
+            match.stats.minimum, fees, resale_haircut_pct=haircut_pct, graded=graded,
+        ).expected_profit
         stats.opportunities_reported += 1
+
+
+#: A card that is not a deal comes back only on a real price drop.
+SHOWN_REPEAT_MIN_DROP_PCT = 5.0
 
 
 def apply_dedupe(listings, seen, today_str, stats) -> list:
     """Suppress opportunities already reported at the same or a higher price,
-    and mark genuine price drops. Everything else (auctions, target hits,
-    needs-review) passes through untouched -- deduping those would hide an
-    auction that's still live, which is the opposite of useful.
+    and mark genuine price drops.
+
+    Every other card printed on an earlier day (browse sections, auctions,
+    needs-review) is left out of today's report too unless its price fell
+    by SHOWN_REPEAT_MIN_DROP_PCT: the same cool cards and cheap finds
+    every morning buried the one new line worth reading. Target hits are
+    always shown -- you named those cards. Left-out cards are counted in the
+    footer, not dropped silently. What counts as "printed" is recorded after
+    the report is built (record_shown).
     """
     kept = []
     for listing in listings:
         if not listing.is_opportunity:
-            kept.append(listing)
+            if (
+                listing.target_hit is not None
+                or listing.price is None
+                or dedupe.is_new_or_price_drop(
+                    listing.id, listing.price, seen, min_drop_pct=SHOWN_REPEAT_MIN_DROP_PCT
+                )
+            ):
+                kept.append(listing)
+            else:
+                stats.previously_shown_suppressed += 1
             continue
 
         prior = seen.get(listing.id)
-        if prior is None:
+        if not dedupe.was_reported_as_deal(prior):
+            # Never seen, or only ever shown as a browse card: a new deal.
             dedupe.record_flagged(listing.id, listing.price, seen, today_str)
             kept.append(listing)
             continue
@@ -969,6 +1106,46 @@ def apply_dedupe(listings, seen, today_str, stats) -> list:
         stats.opportunities_reported -= 1
         kept.append(listing)
     return kept
+
+
+def annotate_listing_age(listings, history, today) -> None:
+    """age_days on every listing that can have one. A deal that has sat for
+    three weeks is a different bet from one listed this morning: either
+    nobody wants it at that price or the comps are wrong. eBay's own
+    creation date when Browse gave one; otherwise the corpus's first-seen
+    date (a row keeps its first-sighting date), which is a floor on the age.
+    """
+    first_seen = {row.get("id"): row.get("date") for rows in history.values() for row in rows}
+    for listing in listings:
+        listed = seen = None
+        if listing.listed_at:
+            try:
+                listed = (today - datetime.fromisoformat(
+                    str(listing.listed_at).replace("Z", "+00:00")).date()).days
+            except ValueError:
+                pass
+        if first_seen.get(listing.id):
+            try:
+                seen = (today - date.fromisoformat(first_seen[listing.id])).days
+            except ValueError:
+                pass
+        # The older of the two: a relist can carry a fresh eBay date for a
+        # card the corpus has watched sit unsold for weeks.
+        if seen is not None and (listed is None or seen > listed):
+            listing.age_days, listing.age_basis = max(0, seen), "first seen"
+        elif listed is not None:
+            listing.age_days, listing.age_basis = max(0, listed), "listed"
+
+
+def record_shown(listings, shown_ids, seen, today_str) -> None:
+    """Mark every card the report actually printed as seen, at today's price.
+    A card that was not a deal is marked shown-only, so it can still be
+    reported as a deal later -- see dedupe.record_flagged."""
+    for listing in listings:
+        if listing.id in shown_ids and listing.price is not None:
+            dedupe.record_flagged(
+                listing.id, listing.price, seen, today_str, shown_only=not listing.is_opportunity
+            )
 
 
 def build_craigslist_links(cfg, players) -> dict:
@@ -1107,6 +1284,7 @@ def run(args: argparse.Namespace) -> None:
         if corpus_warning:
             stats.warn(corpus_warning)
         recorded = record_observations(listings, history, today_str)
+        annotate_listing_age(listings, history, today.date())
         logger.info("Recorded %d asking-price observation(s) (auctions and blocked listings excluded)", recorded)
         history = price_history.prune_old(history, cfg.ebay_alert_price_history_max_age_days, today)
         history, opening_bids = price_history.drop_probable_opening_bids(
@@ -1135,7 +1313,11 @@ def run(args: argparse.Namespace) -> None:
     # "high" confidence, and the concentration gate exempts them (three real
     # sales on one day are three real sales). Usually an empty list: most
     # runs have none, and that is fine.
+    # Your own sold flips (data/flips.csv) are sold comps too -- see src/flips.py.
+    flip_rows = flips.load(FLIPS_PATH)
     sold = sold_comps.load(cfg.sold_comps_path)
+    sold = sold + flips.without_duplicates(flips.sold_observations(flip_rows, cfg.players), sold)
+    stats.flips_summary = flips.summary(flip_rows) or ""
     if sold:
         observations = list(observations) + sold
     stats.sold_comps_summary = sold_comps.summary(sold)
@@ -1175,6 +1357,7 @@ def run(args: argparse.Namespace) -> None:
         stats.warn(format_warning)
 
     seen = dedupe.load_seen(cfg.seen_listings_path)
+    flips.mark_seen(flip_rows, seen, today_str)
     listings = apply_dedupe(listings, seen, today_str, stats)
     logger.info(
         "%d opportunity(ies) after dedupe; %d listing(s) not reported, top reasons: %s",
@@ -1197,13 +1380,24 @@ def run(args: argparse.Namespace) -> None:
         ending_soon_hours=cfg.auction_ending_soon_hours,
         focus_rules=cfg.focus_rules,
         comp_requests_list=comp_requests.build_requests(
-            listings, sold, min_comps_required=cfg.valuation_min_comps_required
+            listings, sold, min_comps_required=cfg.valuation_min_comps_required,
+            max_price=lambda median, graded: economics.max_rational_bid(
+                median, required_margin_pct=cfg.min_net_profit_pct_of_value * 100.0,
+                min_profit_dollars=cfg.min_net_profit,
+                shipping_in=cfg.assumed_inbound_shipping, fees=_fee_model(cfg),
+                resale_haircut_pct=cfg.resale_haircut_asking_pct, graded=graded,
+            ),
+            capital_ceiling=cfg.focus_rules.deal_capital_ceiling or None,
+            all_in=lambda price: (price + cfg.assumed_inbound_shipping) * (1.0 + cfg.sales_tax_pct / 100.0),
         ),
         unidentified_listings=comp_requests.unidentified_count(listings),
         cheap_find_ceiling=cfg.cheap_find_ceiling,
         cheap_auction_floor=cfg.cheap_auction_floor,
         cheap_auction_ceiling=cfg.cheap_auction_ceiling,
     )
+    alert_only = getattr(args, "alert_only", False)
+    if not alert_only:
+        record_shown(listings, model.shown_ids, seen, today_str)
     body = report.render_text(model)
     html_body = report_html.render(model)
     subject = f"{cfg.email_subject_prefix} {model.subject}"
@@ -1228,6 +1422,32 @@ def run(args: argparse.Namespace) -> None:
     # the run later fails.
     if history is not None:
         price_history.save(cfg.ebay_alert_price_history_path, history)
+
+    if alert_only:
+        # An intra-day poll: the corpus above is always kept, but email goes
+        # out only for an ACT NOW, and only the ACT NOW cards are marked seen
+        # -- read fresh, because apply_dedupe has already marked every new
+        # opportunity in `seen`, and those were not sent. No run marker: the
+        # daily digest and its --skip-if-ran-today backup key off it.
+        if not model.act_now_ids:
+            logger.info("Alert-only poll: nothing in ACT NOW -- no email")
+            return
+        if not subject.startswith(cfg.email_subject_prefix + " ACT NOW"):
+            subject = "{} ACT NOW: {}".format(cfg.email_subject_prefix, model.subject)
+        # Only the ACT NOW section: everything else stays for the digest,
+        # which is the only place the browse sections get marked as seen.
+        alert_model = dataclasses.replace(
+            model, lede=None, focus_line=None,
+            sections=OrderedDict((key, cards) for key, cards in model.sections.items()
+                                 if key == report.SECTION_ACT_NOW),
+        )
+        emailer.send_email(subject, report.render_text(alert_model), cfg.gmail_address,
+                           cfg.gmail_app_password, cfg.email_to, html_body=report_html.render(alert_model))
+        sent = dedupe.load_seen(cfg.seen_listings_path)
+        record_shown(listings, model.act_now_ids, sent, today_str)
+        dedupe.save_seen(cfg.seen_listings_path, sent)
+        logger.info("Alert-only poll: emailed %d ACT NOW card(s)", len(model.act_now_ids))
+        return
 
     emailer.send_email(subject, body, cfg.gmail_address, cfg.gmail_app_password,
                        cfg.email_to, html_body=html_body)
@@ -1292,6 +1512,12 @@ def main() -> None:
         help="Exit without doing anything if a scan already completed today. For the "
         "backup scheduled run -- GitHub drops scheduled workflows under load, and a "
         "dropped run is the one failure nothing else here can see.",
+    )
+    parser.add_argument(
+        "--alert-only",
+        action="store_true",
+        help="Intra-day poll: save the corpus, email only if ACT NOW is non-empty, mark only "
+        "those cards seen, and leave the run marker alone so the daily digest still runs.",
     )
     args = parser.parse_args()
 

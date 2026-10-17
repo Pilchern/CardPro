@@ -204,6 +204,22 @@ def test_act_now_not_triggered_below_the_dollar_threshold():
     assert sections[report.SECTION_TOP_OPPORTUNITIES] == [deal]
 
 
+def test_act_now_needs_the_dollar_bar_in_net_profit_too():
+    # $300 gross on a $200 market card nets ~$49 after fees, postage and tax.
+    thin = make_listing(dollar_savings=300.0, pct_under_market=55.0, economics=make_economics())
+    sections = report.classify_sections(
+        [thin], threshold_pct=30, immediate_min_savings=150.0, immediate_min_discount_pct=40.0
+    )
+    assert sections[report.SECTION_ACT_NOW] == []
+    assert sections[report.SECTION_TOP_OPPORTUNITIES] == [thin]
+
+    rich = make_listing(dollar_savings=300.0, pct_under_market=55.0, economics=make_economics(market=1000.0))
+    sections = report.classify_sections(
+        [rich], threshold_pct=30, immediate_min_savings=150.0, immediate_min_discount_pct=40.0
+    )
+    assert sections[report.SECTION_ACT_NOW] == [rich]
+
+
 def test_act_now_not_triggered_below_the_discount_threshold():
     deal = make_listing(dollar_savings=300.0, pct_under_market=35.0)
     sections = report.classify_sections(
@@ -378,7 +394,8 @@ def test_a_day_of_only_cheap_auctions_says_so_in_the_subject():
 
 
 def test_offer_section_requires_best_offer_no_opportunity_and_a_real_comp():
-    offerable = make_listing(id="offer", has_best_offer=True, is_opportunity=False, pct_under_market=5.0)
+    offerable = make_listing(id="offer", has_best_offer=True, is_opportunity=False, pct_under_market=5.0,
+                             max_rational_bid=120.0)
     no_comp = make_listing(
         id="nocomp", has_best_offer=True, is_opportunity=False, comp_match=None, market_value=None,
         pct_under_market=None, dollar_savings=None,
@@ -546,7 +563,8 @@ def test_each_section_renders_when_it_has_content():
                      card_identity=card_identity.extract_card_identity(
                          "2024 Panini Prizm Caleb Williams Silver Prizm #301"),
                      card_type="raw", grader=None, grade=None),
-        make_listing(id="offer", has_best_offer=True, is_opportunity=False, pct_under_market=5.0),
+        make_listing(id="offer", has_best_offer=True, is_opportunity=False, pct_under_market=5.0,
+                     max_rational_bid=120.0),
         # No comp: a card with one belongs in a section that prints it.
         make_listing(id="cool", is_opportunity=False, comp_match=None, market_value=None,
                      pct_under_market=None, dollar_savings=None,
@@ -753,7 +771,7 @@ def test_economics_line_shown_with_assumptions_footer():
     assert "profit" in body
     assert "ROI)" in body
     assert "ECONOMICS ASSUMPTIONS" in body
-    assert "Selling fees assumed at 13.60%" in body
+    assert "Selling fees assumed at 14.25%" in body
 
 
 def test_economics_line_omitted_when_there_are_no_economics():
@@ -765,8 +783,12 @@ def test_economics_line_omitted_when_there_are_no_economics():
 def test_assumptions_are_deduped_across_cards():
     deals = [make_listing(id="a", economics=make_economics()),
              make_listing(id="b", economics=make_economics())]
-    body = body_of(deals)
-    assert body.count("Outbound shipping assumed $5.00 and supplies $1.00 per sale.") == 1
+    # flat(): the longer rule-shaped sentence wraps across report lines.
+    body = flat(body_of(deals))
+    assert body.count(
+        "Outbound shipping assumed $0.82 (eBay Standard Envelope, raw card selling under $20.00; "
+        "else $6.00 tracked) and supplies $0.50 raw / $1.00 slab per sale."
+    ) == 1
 
 
 def test_assumptions_footer_holds_no_per_card_dollar_specifics():
@@ -780,7 +802,7 @@ def test_assumptions_footer_holds_no_per_card_dollar_specifics():
     footer = flat(body_of(deals).split("ECONOMICS ASSUMPTIONS")[1])
     assert "Inbound shipping of $" not in footer
     assert "Inbound shipping is UNKNOWN" not in footer
-    assert "Selling fees assumed at 13.60%" in footer
+    assert "Selling fees assumed at 14.25%" in footer
     assert "Per-card figures" in footer
 
 
@@ -1012,7 +1034,7 @@ def test_auction_block_shows_bids_time_left_and_max_rational_bid():
                            max_rational_bid=150.0, is_opportunity=False)
     body = body_of([listing])
     assert "7 bids, 0d 06h remaining" in flat(body)
-    assert "$150.00 -- the most you can pay and still keep your margin" in flat(body)
+    assert "$150.00 -- the most you can bid for the card and still net your profit minimum" in flat(body)
 
 
 def test_auction_discount_is_scoped_to_the_current_bid_and_warned_about():
@@ -1067,52 +1089,42 @@ def test_ending_soon_window_not_marked_for_a_distant_auction():
 # ---------------------------------------------------------------------------
 
 
-def test_offer_trio_anchors_on_the_threshold_ceiling():
-    aggressive, fair, maximum = report.offer_trio(300.0, 25.0)
-    assert maximum == 225.0  # market - the 25% discount threshold passed in
-    assert round(fair, 2) == 213.75  # 5% below the ceiling
-    assert round(aggressive, 2) == 191.25  # 15% below the ceiling
-
-
-def test_offer_trio_is_monotonic_at_every_threshold():
-    """The old market-anchored version produced a "fair" offer above the
-    "maximum" at a 30% threshold, which is nonsense dressed as arithmetic."""
-    for threshold in (0.0, 5.0, 20.0, 30.0, 50.0, 90.0):
-        aggressive, fair, maximum = report.offer_trio(349.0, threshold)
-        assert aggressive < fair < maximum, threshold
-
-
-def test_offer_maximum_still_clears_the_users_own_threshold():
-    market = 400.0
-    _, _, maximum = report.offer_trio(market, 30.0)
-    assert (market - maximum) / market * 100 == 30.0
-
-
-def test_offer_block_shows_the_trio_and_its_arithmetic():
+def test_offer_block_shows_one_max_offer_solved_for_the_profit_floor():
+    # Replaced the trio whose "maximum" was 30% under market GROSS -- a price
+    # that loses money on a raw card once fees and postage come out.
     listing = make_listing(has_best_offer=True, is_opportunity=False, price=280.0,
                            shipping_price=5.0, market_value=300.0, pct_under_market=5.0,
-                           dollar_savings=15.0, comp_match=make_match(median=300.0))
-    body = body_of([listing], threshold_pct=25)
-    offers = section_of(body, report.SECTION_OFFERS)
-    text = flat(offers)
-    assert "aggressive $191.25 | fair $213.75 | maximum $225.00" in text
-    assert "maximum is the highest price that still clears your 25% discount threshold" in text
-    assert "market estimate of $300.00" in text
-    assert "fair is 5% below it and aggressive 15% below it" in text
+                           dollar_savings=15.0, comp_match=make_match(median=300.0),
+                           max_rational_bid=187.5)
+    text = flat(section_of(body_of([listing], threshold_pct=25), report.SECTION_OFFERS))
+    assert "Max offer" in text
+    assert "$187.50 -- the most you can offer for the card and still net your profit minimum" in text
+    assert "aggressive" not in text
 
 
-def test_offer_block_notes_known_shipping_in_the_basis_line():
-    listing = make_listing(has_best_offer=True, is_opportunity=False, shipping_price=6.0,
-                           market_value=300.0, pct_under_market=5.0, dollar_savings=15.0)
-    body = body_of([listing])
-    assert "subtract the $6.00 known shipping from what you actually offer" in flat(body)
-
-
-def test_offer_block_treats_offers_as_ceilings_when_shipping_is_unknown():
+def test_max_offer_warns_when_shipping_was_assumed():
     listing = make_listing(has_best_offer=True, is_opportunity=False, shipping_price=None,
-                           market_value=300.0, pct_under_market=5.0, dollar_savings=15.0)
-    body = body_of([listing])
-    assert "shipping is unknown, so treat them as ceilings" in flat(body)
+                           market_value=300.0, pct_under_market=5.0, dollar_savings=15.0,
+                           max_rational_bid=150.0, max_rational_bid_shipping_known=False)
+    assert "Shipping is unknown, so this assumes typical postage" in flat(body_of([listing]))
+
+
+def test_no_offer_card_when_no_price_nets_the_floor():
+    listing = make_listing(has_best_offer=True, is_opportunity=False, pct_under_market=5.0,
+                           max_rational_bid=0.0)
+    sections = report.classify_sections([listing], threshold_pct=30)
+    assert sections[report.SECTION_OFFERS] == []
+
+
+def test_a_zero_max_says_walk_away():
+    listing = make_listing(listing_type="auction", is_opportunity=False, max_rational_bid=0.0)
+    assert "none -- no price nets your profit minimum" in flat(body_of([listing]))
+
+
+def test_deal_card_shows_the_max_buy():
+    deal = make_listing(max_rational_bid=210.0)
+    assert "Max buy" in flat(body_of([deal]))
+    assert "$210.00 -- the most you can pay for the card" in flat(body_of([deal]))
 
 
 # ---------------------------------------------------------------------------
@@ -1326,7 +1338,7 @@ def test_thresholds_footer_shows_both_thresholds():
     body = body_of([make_listing()], min_savings_dollars=15)
     text = flat(body)
     assert "30%+ under market AND at least $15.00 saved" in text
-    assert "ACT NOW additionally needs $150.00 saved and 40%+ off" in text
+    assert "ACT NOW additionally needs $150.00 saved and netted, and 40%+ off" in text
 
 
 # ---------------------------------------------------------------------------
@@ -1589,6 +1601,23 @@ class TestWatchWhy:
         why = report._watch_why(deal, 30.0, 10.0)
         assert "$4.00" in why
         assert "$10.00" in why
+
+    def test_below_min_net_profit_states_the_net(self):
+        # Clears 30% gross; $40 + $5 shipping against a $60 market nets
+        # -$0.45 after $8.95 of fees and $6.50 of mailer and supplies.
+        deal = make_listing(
+            comp_match=make_match(),
+            market_value=60.0,
+            pct_under_market=32.0,
+            dollar_savings=19.0,
+            is_opportunity=False,
+            rejection_reason=reasons.Reason.BELOW_MIN_NET_PROFIT,
+            economics=make_economics(price=40.0, shipping=5.0, market=60.0),
+        )
+        why = report._watch_why(deal, 30.0, 10.0)
+        assert abs(deal.economics.expected_profit - (-0.45)) < 1e-9
+        assert "nets only {}".format(report._money(-0.45)) in why
+        assert "30%" in why
 
     def test_low_confidence_opportunity_says_so(self):
         deal = make_listing(
@@ -2022,7 +2051,7 @@ class TestUnknownShippingIsCarriedThrough:
         # the Cost line declines to state a total and the Discount line then
         # named one to the cent two lines later.
         deal = make_listing(shipping_price=None)
-        assert "before shipping, which is unknown" in report._discount_text(deal)
+        assert "with shipping unknown and assumed" in report._discount_text(deal)
 
     def test_a_known_shipping_discount_carries_no_caveat(self):
         assert "unknown" not in report._discount_text(make_listing(shipping_price=4.99))
@@ -2109,7 +2138,7 @@ class TestEveryBlockKindRefusesToPriceAnAuction:
         return make_listing(listing_type="auction", bid_count=4, time_left_text="2d 04h")
 
     def test_the_offer_block_routes_an_auction_to_the_auction_block(self):
-        text = report._offer_block(1, self._auction(), 30.0)
+        text = report._offer_block(1, self._auction())
         assert "CURRENT BID, not an asking price" in flat(text)
         assert "Asking" not in text
 
@@ -2118,7 +2147,7 @@ class TestEveryBlockKindRefusesToPriceAnAuction:
         assert "CURRENT BID, not an asking price" in flat(text)
 
     def test_a_fixed_price_listing_is_unaffected(self):
-        assert "CURRENT BID" not in report._offer_block(1, make_listing(), 30.0)
+        assert "CURRENT BID" not in report._offer_block(1, make_listing())
 
 
 class TestRisksAreOrderedWorstFirst:
@@ -2683,3 +2712,94 @@ def test_a_search_implied_print_run_is_labelled_as_such():
     listing.card_identity = card_identity.extract_card_identity(title)
     listing.desirable_attributes = desirability.attributes_of(listing)
     assert "#'D /99 OR LESS? (PER SEARCH)" in " ".join(report._tags(listing)).upper()
+
+
+# ---------------------------------------------------------------------------
+# the phone summary line
+# ---------------------------------------------------------------------------
+
+
+def _tiered_deal(**overrides):
+    from src import economics
+
+    econ = economics.evaluate(
+        economics.Acquisition(100.0, None, 10.25, assumed_shipping=4.50), 200.0,
+        economics.FeeModel.ebay_default(), resale_haircut_pct=20.0,
+    )
+    fields = dict(
+        shipping_price=None, economics=econ, deal_tier="Maybe", max_rational_bid=127.9,
+        net_profit_low=economics.evaluate(
+            economics.Acquisition(100.0, None, 10.25, assumed_shipping=4.50), 180.0,
+            economics.FeeModel.ebay_default(), resale_haircut_pct=20.0,
+        ).expected_profit,
+        profit_per_hour=econ.expected_profit / (25 / 60),
+        card_identity=CardIdentity(
+            year=Field(1986, "high"), set_name=Field("Fleer", "high"),
+            parallel=Field(None, "none"), card_number=Field("57", "high"),
+            is_base=Field(True, "medium"),
+        ),
+    )
+    fields.update(overrides)
+    return make_listing(**fields)
+
+
+def test_summary_line_reads_as_one_decision():
+    # $100 + assumed $4.50 + 10.25% tax against a $200 asking median, 20%
+    # haircut: sells $144 (lowest comp $180) to $160, which nets $1.37 at
+    # the low end and $15.09 at the median; $36/h; MAX $127.90 floors to $127.
+    assert report.summary_line(_tiered_deal()) == (
+        "MAYBE · $100.00+? · MAX $127 · sells $144-160 · ASKING n=7"
+        " · net +$1..15 · $36/h · ID med"
+    )
+
+
+def test_a_loss_at_the_low_end_is_signed():
+    assert "net -$3..+15" in report.summary_line(_tiered_deal(net_profit_low=-3.2))
+
+
+def test_no_rate_without_a_profit_per_hour():
+    assert "/h" not in report.summary_line(_tiered_deal(profit_per_hour=None))
+
+
+def test_summary_line_states_known_and_free_shipping():
+    assert "$100.00+$4.99 ·" in report.summary_line(_tiered_deal(shipping_price=4.99))
+    assert "$100.00 fs ·" in report.summary_line(_tiered_deal(shipping_price=0.0))
+
+
+def test_summary_id_confidence_is_the_weakest_key_field():
+    identity = CardIdentity(
+        year=Field(1986, "high"), set_name=Field("Fleer", "low"),
+        parallel=Field("Silver", "high"), card_number=Field(None, "none"),
+    )
+    assert report.summary_line(_tiered_deal(card_identity=identity)).endswith("ID ?")
+
+
+def test_no_summary_without_a_tier():
+    assert report.summary_line(_tiered_deal(deal_tier=None)) is None
+
+
+def test_the_summary_is_the_first_line_of_a_deal_card():
+    card = report._thesis_card(1, _tiered_deal())
+    labels = [label for label, _ in card.fields]
+    assert labels[0] == "Summary"
+    assert card.fields[0][1].startswith("MAYBE · $100.00+?")
+    assert "Cost" in labels  # the detailed block stays below it
+
+
+def test_the_model_names_every_printed_listing():
+    deal = make_listing(id="shown")
+    model = report.build_model([deal], 30, date(2026, 8, 10))
+    assert model.shown_ids == frozenset({"shown"})
+
+
+def test_focus_line_names_the_deal_capital_ceiling():
+    rules = focus.FocusRules(price_ceiling=50.0, deal_capital_ceiling=150.0)
+    line = " ".join(report._focus_line(rules).split())
+    assert "deals that clear your net-profit minimum, which get in up to $150.00 all-in" in line
+    assert "up to $150" not in " ".join(report._focus_line(focus.FocusRules(price_ceiling=50.0)).split())
+
+
+def test_the_summary_says_how_long_the_listing_has_been_up():
+    assert "\u00b7 listed 2d ago \u00b7 ID" in report.summary_line(_tiered_deal(age_days=2, age_basis="listed"))
+    assert "first seen 6d ago" in report.summary_line(_tiered_deal(age_days=6, age_basis="first seen"))
+    assert "ago" not in report.summary_line(_tiered_deal())

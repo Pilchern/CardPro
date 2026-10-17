@@ -101,11 +101,11 @@ class FocusRules:
     #: Without it the ceiling silently means something different from the
     #: deal gate. ``Listing.total_cost`` is price + shipping;
     #: ``economics.Acquisition.total_cost`` -- which is what the discount and
-    #: the profit are computed from -- is price + shipping + tax. At the
-    #: shipped ``sales_tax_pct: 0.0`` the two are identical and nothing
-    #: happens here; set a real rate and a $40 ceiling quietly becomes a
-    #: pre-tax $40 while every number printed under it is post-tax. The
-    #: ceiling is meant to be what leaves your account.
+    #: the profit are computed from -- is price + shipping + tax. At a
+    #: real rate (settings ship 10.25%) a ceiling without it would quietly
+    #: become pre-tax while every number printed under it is post-tax. The
+    #: ceiling is meant to be what leaves your account. (Unlike the deal
+    #: gate it does not add the assumed inbound shipping for an unknown.)
     sales_tax_pct: float = 0.0
 
     #: A higher ceiling for cards with something genuinely scarce about them
@@ -122,6 +122,16 @@ class FocusRules:
     #: $40 ceiling hid 74% of them and the cool-cards ceiling half. 0 = off.
     numbered_max_print_run: int = 0
     numbered_price_ceiling: float = 0.0
+    #: An opportunity -- a deal that cleared the net-profit floor -- reaches
+    #: the email up to this all-in cost, whatever ``price_ceiling`` says.
+    #: The cheap ceiling exists to keep browsing short; it was also hiding
+    #: the only listings that make money, because fees and postage mean a
+    #: $15 net almost never comes from a card under $50. 0 = off.
+    deal_capital_ceiling: float = 0.0
+    #: economics.assumed_inbound_shipping, added (taxed) to the capital
+    #: check when a deal's shipping is unknown, so "$149 + ship?" cannot
+    #: slip under a $150 cap -- the same figure the deal's profit assumed.
+    assumed_inbound_shipping: float = 0.0
 
 
 #: Focus disabled: every listing kept, no cap. The default for
@@ -236,6 +246,12 @@ def omission_reason(listing, rules: FocusRules) -> Optional[str]:
         return PRICE_UNKNOWN
     if price <= rules.price_ceiling:
         return None
+    if getattr(listing, "is_opportunity", False):
+        all_in = price
+        if getattr(listing, "shipping_price", None) is None:
+            all_in += rules.assumed_inbound_shipping * (1.0 + rules.sales_tax_pct / 100.0)
+        if all_in <= rules.deal_capital_ceiling:
+            return None
     if is_exceptional(listing, rules):
         return None
     # A dearer card can also earn its place by being a genuinely scarce

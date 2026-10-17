@@ -29,9 +29,11 @@ def listing(title, listing_id="1", player="Caleb Williams", price=100.0):
 
 
 def sold(player="Caleb Williams", year=2024, set_name="Prizm", parallel="Silver Prizm",
-         card_type="raw", grader=None, grade=None, qualifier=None):
+         card_type="raw", grader=None, grade=None, qualifier=None, card_number="301"):
+    # Suggestions key on the EXACT identity, so a sold comp needs the card #.
     return {
         "player": player, "year": year, "set_name": set_name, "parallel": parallel,
+        "card_number": card_number,
         "card_type": card_type, "grader": grader, "grade": grade, "qualifier": qualifier,
         "price": 300.0, "date": "2026-08-01", "basis": "sold",
     }
@@ -138,14 +140,14 @@ class TestRanking:
 class TestSearchQuery:
     def test_a_slab_query_carries_the_grade(self):
         requests = comp_requests.build_requests([listing(PSA10_PRIZM, str(i)) for i in range(2)], [])
-        assert requests[0].search_query == "2024 Prizm Caleb Williams Silver Prizm PSA 10"
+        assert requests[0].search_query == "2024 Prizm Caleb Williams Silver Prizm #301 PSA 10"
 
     def test_a_raw_query_does_not_say_raw(self):
         # "raw" is our internal word for "not in a slab"; typing it into a
         # sold-listing search returns nothing.
         requests = comp_requests.build_requests([listing(RAW_PRIZM, str(i)) for i in range(2)], [])
         assert "raw" not in requests[0].search_query.lower()
-        assert requests[0].search_query == "2024 Prizm Caleb Williams Silver Prizm"
+        assert requests[0].search_query == "2024 Prizm Caleb Williams Silver Prizm #301"
 
     def test_an_example_listing_is_carried_through(self):
         requests = comp_requests.build_requests([listing(RAW_PRIZM, str(i)) for i in range(2)], [])
@@ -192,3 +194,84 @@ class TestAddCommand:
         request = self._request()
         for value in (request.set_name, request.parallel):
             assert '"{}"'.format(value) in request.add_command
+
+
+class TestExactIdentity:
+    def test_different_card_numbers_are_different_requests(self):
+        listings = [listing(RAW_PRIZM, "1"), listing(RAW_PRIZM, "2"),
+                    listing(RAW_PRIZM.replace("#301", "#BC-12"), "3"),
+                    listing(RAW_PRIZM.replace("#301", "#BC-12"), "4")]
+        assert {r.card_number for r in comp_requests.build_requests(listings, [])} == {"301", "BC12"}
+
+    def test_an_auto_is_not_requested_with_the_plain_card(self):
+        auto = RAW_PRIZM + " Auto /50"
+        listings = [listing(RAW_PRIZM, "1"), listing(RAW_PRIZM, "2"), listing(auto, "3"), listing(auto, "4")]
+        commands = sorted(r.add_command for r in comp_requests.build_requests(listings, []))
+        assert any("--auto" in c and "--print-run 50" in c for c in commands)
+        assert any("--auto" not in c for c in commands)
+
+    def test_the_command_carries_the_card_number(self):
+        [request] = comp_requests.build_requests([listing(RAW_PRIZM, str(i)) for i in range(2)], [])
+        assert "--card-number 301" in request.add_command
+
+    def test_a_sold_comp_without_the_card_number_does_not_count(self):
+        listings = [listing(RAW_PRIZM, "1"), listing(RAW_PRIZM, "2")]
+        [request] = comp_requests.build_requests(listings, [sold(card_number=None)] * 3)
+        assert request.sold_on_file == 0
+
+
+class TestValueRanking:
+    def test_a_dearer_card_outranks_a_more_common_cheap_one(self):
+        cheap = [listing(RAW_PRIZM, "c%d" % i, price=5.0) for i in range(4)]
+        dear = [listing(PSA10_PRIZM, "d%d" % i, price=300.0) for i in range(2)]
+        assert comp_requests.build_requests(cheap + dear, [])[0].market_label == "PSA 10"
+
+    def test_old_listings_count_half(self):
+        fresh = [listing(RAW_PRIZM, "f%d" % i, price=100.0) for i in range(2)]
+        stale = [listing(PSA10_PRIZM, "s%d" % i, price=110.0) for i in range(2)]
+        for item in stale:
+            item.age_days = 30
+        requests = comp_requests.build_requests(fresh + stale, [])
+        assert requests[0].market_label == "raw"  # 2 x $100 beats 1 x $110
+
+    def test_identities_no_buy_price_can_flip_are_dropped(self):
+        listings = [listing(RAW_PRIZM, str(i), price=8.0) for i in range(2)]
+        floor = lambda median, graded: max(0.0, median * 0.6 - 15.0)  # noqa: E731
+        assert comp_requests.build_requests(listings, [], max_price=floor) == []
+        dear = [listing(RAW_PRIZM, str(i), price=200.0) for i in range(2)]
+        assert len(comp_requests.build_requests(dear, [], max_price=floor)) == 1
+
+
+class TestCapitalCeiling:
+    """Low-capital first: price stops counting above the cap, and a card no
+    deal could fit under it is not suggested."""
+
+    def test_an_expensive_identity_no_longer_outranks_an_affordable_one_with_more_listings(self):
+        affordable = [listing(RAW_PRIZM, "a%d" % i, price=120.0) for i in range(3)]
+        dear = [listing(PSA10_PRIZM, "d%d" % i, price=1500.0) for i in range(2)]
+        uncapped = comp_requests.build_requests(affordable + dear, [])
+        assert uncapped[0].market_label == "PSA 10"
+        capped = comp_requests.build_requests(
+            affordable + dear, [], capital_ceiling=150.0,
+            max_price=lambda median, graded: median * 0.7,
+        )
+        assert capped[0].market_label == "raw"
+
+    def test_a_card_no_deal_could_fit_under_the_cap_is_dropped(self):
+        dear = [listing(PSA10_PRIZM, "d%d" % i, price=1500.0) for i in range(2)]
+        assert comp_requests.build_requests(
+            dear, [], capital_ceiling=150.0, max_price=lambda median, graded: median * 0.7) == []
+
+    def test_a_cheap_ask_keeps_a_dear_median_identity(self):
+        mixed = [listing(PSA10_PRIZM, "d1", price=1500.0), listing(PSA10_PRIZM, "d2", price=140.0)]
+        assert len(comp_requests.build_requests(
+            mixed, [], capital_ceiling=150.0, max_price=lambda median, graded: median * 0.7)) == 1
+
+    def test_all_in_counts_toward_the_cap(self):
+        near = [listing(RAW_PRIZM, "n%d" % i, price=145.0) for i in range(2)]
+        kept = comp_requests.build_requests(near, [], capital_ceiling=150.0,
+                                            max_price=lambda median, graded: 300.0)
+        dropped = comp_requests.build_requests(near, [], capital_ceiling=150.0,
+                                               max_price=lambda median, graded: 300.0,
+                                               all_in=lambda price: price + 10.0)
+        assert len(kept) == 1 and dropped == []

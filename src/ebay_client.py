@@ -71,8 +71,13 @@ def search_active_listings(
     sort: Optional[str] = None,
     buying_options: tuple = ("FIXED_PRICE", "AUCTION"),
     max_pages: int = 1,
+    min_price: Optional[float] = None,
+    failures: Optional[list] = None,
 ) -> list[dict]:
     """Active for-sale listings for `query`. Returns raw Browse API item dicts.
+
+    `min_price` (USD, item price) narrows the search server-side; None
+    searches every price.
 
     `limit` is the page size and `max_pages` how many pages to walk, so one
     call returns at most limit * max_pages items. Measured 2026-10-15: every
@@ -82,7 +87,9 @@ def search_active_listings(
     keeps best match.
 
     A failed page ends the walk and keeps what earlier pages returned; a
-    failed first page is [] with a logged warning, same as before.
+    failed first page is [] with a logged warning, same as before. Pass a
+    list as `failures` to also get each failure back as "<status> <body>",
+    because a log nobody reads is how a dead search looks like a quiet day.
     """
     params = {
         "q": query,
@@ -90,6 +97,9 @@ def search_active_listings(
         "limit": str(min(limit, BROWSE_MAX_PAGE_SIZE)),
         "filter": "buyingOptions:{%s}" % "|".join(buying_options),
     }
+    if min_price is not None:
+        # eBay's documented lower-bound form: "price:[20]" (no "..").
+        params["filter"] += ",price:[%s],priceCurrency:USD" % format(min_price, "g")
     if sort:
         params["sort"] = sort
     items: list[dict] = []
@@ -106,6 +116,8 @@ def search_active_listings(
         )
         if resp.status_code != 200:
             logger.warning("eBay Browse search failed for %r: %s %s", query, resp.status_code, resp.text[:300])
+            if failures is not None:
+                failures.append("{} {}".format(resp.status_code, resp.text[:120]))
             break
         payload = resp.json()
         items.extend(payload.get("itemSummaries", []))

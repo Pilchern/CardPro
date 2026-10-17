@@ -9,6 +9,8 @@
     "active_listing_limit_per_player": 200,
     "newest_pages_per_player": 1,
     "auction_pages_per_player": 1,
+    "_newest_min_price_comment": "Item-price floor (USD) on the newest-first pass only; the auction pass keeps every price. Measured 2026-10-16: 77% of a newest page was under $20, a band where no flip clears economics.min_net_profit, so it filled the 200-item page (hiding the rest of the day's new listings) and grew the corpus about 3,000 rows a day. Cheaper cards still arrive through the alert emails and auctions. null = no floor.",
+    "newest_min_price": 20.0,
     "_insights_comment": "Marketplace Insights (real sold prices) returned 404 for this app on 2026-10-15: limited release, not granted. Left off so a run doesn't make a wasted call per player. Set true only after eBay grants access.",
     "marketplace_insights_enabled": false,
     "sold_lookback_days": 60,
@@ -22,7 +24,8 @@
     "_mailbox_comment": "Searches All Mail, not just Inbox, so you're free to archive alert emails (or filter them straight out of your inbox) without CardPro losing sight of them -- only actually deleting a message (emptying Trash) makes it disappear. Change only if your Gmail account uses a non-English locale where this folder has a different IMAP name.",
     "mailbox": "[Gmail]/All Mail",
     "price_history_path": "data/ebay_alert_price_history.json",
-    "price_history_max_age_days": 90
+    "_max_age_comment": "Corpus retention, in days. 45 matches valuation.stale_after_days: a bucket whose newest comp is older than that cannot declare a deal anyway, and at half_life_days 30 a 45-day-old ask already counts about a third of a fresh one. It was 90; with the Browse API recording ~3,000 rows a day the corpus would cross GitHub's 100 MB file limit (warned at 40 MB) well before then. Stored titles mean a parser fix still reaches every kept row (comps re-reads them on load).",
+    "price_history_max_age_days": 45
   },
   "craigslist": {
     "_comment": "Craigslist blocks automated scraping outright (confirmed against both headless and headed browser automation), so these just build ready-to-click search links included in the daily email instead of being fetched automatically.",
@@ -48,27 +51,54 @@
     "min_comp_span_days": 7
   },
   "economics": {
-    "_comment": "Resale assumptions, not facts. Every one of these shows up in the report next to the profit figure so you can see what the number depends on. Tune them to how you actually sell. marketplace_fee_pct 13.6 + $0.30 is eBay's standard trading-card final value fee at time of writing -- verify against your own account. resale_haircut_pct is the gap between the median comp and what you'd realistically get selling it promptly.",
-    "marketplace_fee_pct": 13.6,
-    "marketplace_fixed_fee": 0.3,
+    "_comment": "Resale assumptions, not facts. Every one of these shows up in the report next to the profit figure so you can see what the number depends on. Tune them to how you actually sell. Rates checked 2026-10-16 against eBay help page id=4822.",
+    "_fees_comment": "eBay's final value fee for sports trading cards (no Store) is 13.25%, but it is charged on the order total INCLUDING the buyer's sales tax. marketplace_fee_pct folds that in: 13.25 x 1.0753 = 14.25, where 7.53% is a 2026 average combined US sales tax (ASSUMPTION; your buyers' real rate varies by state). Per-order fee: marketplace_fixed_fee $0.40 on an order over small_order_max ($10), small_order_fixed_fee $0.30 at or under it.",
+    "marketplace_fee_pct": 14.25,
+    "marketplace_fixed_fee": 0.4,
+    "small_order_fixed_fee": 0.3,
+    "small_order_max": 10.0,
     "payment_fee_pct": 0.0,
-    "outbound_shipping": 5.0,
-    "supplies": 1.0,
-    "sales_tax_pct": 0.0,
-    "resale_haircut_pct": 5.0
+    "_shipping_comment": "Ship-out by method. A RAW card selling under envelope_max_sale ($20) goes by eBay Standard Envelope at envelope_shipping $0.82; everything else (raw at $20+, any slab) goes in a tracked bubble mailer at outbound_shipping $6.00 (ASSUMPTION: typical eBay-label Ground Advantage, 4 oz). supplies is per raw card ($0.50), supplies_graded per slab ($1.00) (owner ASSUMPTION).",
+    "outbound_shipping": 6.0,
+    "envelope_shipping": 0.82,
+    "envelope_max_sale": 20.0,
+    "supplies": 0.5,
+    "supplies_graded": 1.0,
+    "_tax_comment": "sales_tax_pct is what YOU pay buying: 10.25% is Chicago's combined rate, inferred from craigslist.site=chicago (ASSUMPTION; set your own). assumed_inbound_shipping is put into the money math (profit, max bid) when a listing does not state its shipping; the card still reads as shipping-unknown. $4.50 is a typical seller-charged tracked shipment (ASSUMPTION). $0 made every such card look $4-5 better than it is.",
+    "sales_tax_pct": 10.25,
+    "assumed_inbound_shipping": 4.5,
+    "_haircut_comment": "The gap between the median comp and what you'd realistically get selling promptly, by what the comps are. resale_haircut_asking_pct 20 applies when the comps are ASKING prices -- every comp today -- because an ask is a ceiling on what sells: measured P25/median ask is 0.79 across 44 raw buckets, so selling at the cheap end of the asks means ~20% under the median (ASSUMPTION that sales land there). resale_haircut_pct 5 applies when the comps are SOLD prices.",
+    "resale_haircut_pct": 5.0,
+    "resale_haircut_asking_pct": 20.0,
+    "_min_net_profit_comment": "The deal gate's last check: an opportunity must ALSO net at least min_net_profit after every cost above (fees, postage, supplies, purchase tax, assumed inbound shipping, haircut). $15 is the owner's floor for a buy-and-resell flip, raw or slab (ASSUMPTION). The owner's $40 floor for grade-and-flip would apply only to a grading branch, and CardPro has none, so it is not used.",
+    "min_net_profit": 15.0,
+    "_min_net_profit_pct_comment": "The floor also scales with the card: required net = max(min_net_profit, min_net_profit_pct_of_value x estimated market value). A flat $15 is fine on a $60 card and nothing on a $1,000 one, where a 1.5% margin is inside the error of any comp, so a $1,000 card needs $100 net. Applies to the deal gate and to every MAX price (owner ASSUMPTION).",
+    "min_net_profit_pct_of_value": 0.10,
+    "_minutes_per_flip_comment": "Owner time per flip, for the $/h figure on each deal: 10 minutes to buy plus 15 to list, pack and ship (owner ASSUMPTION). Display only; nothing gates on it.",
+    "minutes_per_flip": 25
+  },
+  "grading": {
+    "_comment": "Grading costs for a FUTURE grade-and-flip branch. Nothing reads these yet beyond config loading, and there is no grading branch: enabled stays false. Prices as seen 2026-10-16 (phase1-research.md, MR-8; secondary sources, the graders' own pages returned 403 = UNVERIFIED-official). psa_standard: PSA Standard (new 2026-09-14) $59.99 up to $1,000 declared value (PSA Value tiers paused since 2026-06-02). sgc: SGC Standard $50 up to $1,500 (raised from $15-$20 on 2026-09-02). bgs_express: null on purpose -- BGS Base/Standard are paused (2026-09-26) and no sourced Express price was found, so there is no number to put here. cgc_bulk: CGC Bulk $17, 25-card minimum, ~150 working days. shipping_per_card: return shipping + insurance allowance per card (hypothesis; returns run ~$15-$30 per order). The owner's grade-and-flip floor is $40 net and a grade is never assumed to be a 10.",
+    "enabled": false,
+    "psa_standard": 59.99,
+    "psa_standard_max_value": 1000,
+    "sgc": 50,
+    "bgs_express": null,
+    "cgc_bulk": 17,
+    "shipping_per_card": 10
   },
   "auctions": {
-    "_comment": "An auction's current bid is not a price. Auctions get their own report section and their own math: max rational bid is the highest you could bid and still keep required_margin_pct of margin against estimated market value, after fees and shipping. ending_soon_hours controls what counts as urgent -- only used for ordering the section, never for relaxing any quality gate.",
-    "required_margin_pct": 25,
+    "_comment": "An auction's current bid is not a price. Auctions get their own report section and their own math: the max bid is the highest you could bid and still net economics.min_net_profit at the haircut sale price, after fees, postage, supplies, tax and inbound shipping -- the same number fixed-price listings show as their max offer/buy. required_margin_pct is an optional EXTRA floor for auctions only (profit of at least that % of market value, whichever is more); it was 25, which on top of the 20% asking haircut double-counted the safety margin and put the ceiling far below what the deal gate itself accepts (ASSUMPTION: the haircut is enough). ending_soon_hours controls what counts as urgent -- only used for ordering the section, never for relaxing any quality gate.",
+    "required_margin_pct": 0,
     "ending_soon_hours": 24
   },
   "alerts": {
-    "_comment": "Immediate-alert tier. Deliberately conservative: too many alerts destroy the product. An opportunity must clear BOTH of these AND have a flag-eligible comp to earn an out-of-band alert; everything else waits for the morning digest. The dollar figure is 25, not the 150 it was: with focus.price_ceiling at $40 a card cannot save $150 without being worth $190, so a $150 bar meant ACT NOW could never fire on the cards this report is now built around, and an alert tier that cannot fire is not conservative, it is off. Retune this whenever you move focus.price_ceiling -- the two numbers only make sense together.",
+    "_comment": "Immediate-alert tier. Deliberately conservative: too many alerts destroy the product. An opportunity must clear BOTH of these AND have a flag-eligible comp to earn an out-of-band alert -- and the dollar figure must be met by expected NET profit too, not just by the gross saving, since the gross saving ignores fees and postage; everything else waits for the morning digest. The dollar figure is 25, not the 150 it was: with focus.price_ceiling at $40 a card cannot save $150 without being worth $190, so a $150 bar meant ACT NOW could never fire on the cards this report is now built around, and an alert tier that cannot fire is not conservative, it is off. Retune this whenever you move focus.price_ceiling -- the two numbers only make sense together.",
     "immediate_alert_min_savings_dollars": 25,
     "immediate_alert_min_discount_pct": 40
   },
   "focus": {
-    "_comment": "What reaches the email, and how long it may be. Separate from the deal gate on purpose: the gate decides whether a card is underpriced, this decides whether it is what you shop for. price_ceiling is the cheap end you actually buy and bid at; a dearer card is not called bad, it just has to be exceptional (exceptional_min_discount_pct AND exceptional_min_savings_dollars, off a flag-eligible comp) to take a slot from the cheap ones. Cards on your target list ignore BOTH price rules -- the ceiling and the bidding-room rule -- because you named those cards and set their price yourself, and a target buy_zone normally sits well above the resale-margin ceiling max_rational_bid computes. Never seeing the card you asked for is an invisible failure; a slightly longer email is a visible one. The length cap still applies to targets. require_auction_bidding_room drops auctions already bid past your max rational bid: you cannot win those at a price that works, and they cost the same space as a live one (auctions with no market value have no ceiling to be past, so they stay). max_listings caps the whole email; max_per_section is the first-pass share each section gets before the leftovers are handed out, which is what stops a 40-opportunity morning from printing zero auctions. Nothing dropped here is dropped silently -- the counts and the setting that would bring each group back are printed in the report footer. cool_cards_price_ceiling is a HIGHER ceiling that applies only to cards with something genuinely scarce about them -- a signature or a patch or a serial number -- because \"is this the cheap end I shop at\" and \"is this a card worth looking at\" are different questions and a $60 auto fails the first while passing the second. Set enabled=false for the old everything-every-day report. price_ceiling is measured against what LEAVES YOUR ACCOUNT -- item price plus known shipping plus the economics.sales_tax_pct rate below -- so it means the same thing as the cost the deal gate and the profit figures are computed from. At the shipped sales_tax_pct of 0.0 that changes nothing; set a real rate and the ceiling follows it.",
+    "_comment": "What reaches the email, and how long it may be. Separate from the deal gate on purpose: the gate decides whether a card is underpriced, this decides whether it is what you shop for. price_ceiling is the cheap end you actually buy and bid at; a dearer card is not called bad, it just has to be exceptional (exceptional_min_discount_pct AND exceptional_min_savings_dollars, off a flag-eligible comp) to take a slot from the cheap ones. Cards on your target list ignore BOTH price rules -- the ceiling and the bidding-room rule -- because you named those cards and set their price yourself, and a target buy_zone normally sits well above the resale-margin ceiling max_rational_bid computes. Never seeing the card you asked for is an invisible failure; a slightly longer email is a visible one. The length cap still applies to targets. require_auction_bidding_room drops auctions already bid past your max rational bid: you cannot win those at a price that works, and they cost the same space as a live one (auctions with no market value have no ceiling to be past, so they stay). max_listings caps the whole email; max_per_section is the first-pass share each section gets before the leftovers are handed out, which is what stops a 40-opportunity morning from printing zero auctions. Nothing dropped here is dropped silently -- the counts and the setting that would bring each group back are printed in the report footer. cool_cards_price_ceiling is a HIGHER ceiling that applies only to cards with something genuinely scarce about them -- a signature or a patch or a serial number -- because \"is this the cheap end I shop at\" and \"is this a card worth looking at\" are different questions and a $60 auto fails the first while passing the second. Set enabled=false for the old everything-every-day report. price_ceiling is measured against what LEAVES YOUR ACCOUNT -- item price plus known shipping plus the economics.sales_tax_pct rate -- so it means the same thing as the cost the deal gate and the profit figures are computed from, except that the gate also adds economics.assumed_inbound_shipping when shipping is unknown. At the shipped sales_tax_pct of 10.25 a $50 ceiling is about $45.35 before tax.",
     "enabled": true,
     "price_ceiling": 50.0,
     "exceptional_min_discount_pct": 50,
@@ -79,7 +109,9 @@
     "cool_cards_price_ceiling": 100.0,
     "_numbered_comment": "Cards numbered at or under numbered_max_print_run and costing at or under numbered_price_ceiling (item + shipping + tax) always reach the email, whatever price_ceiling says. You collect /99-or-less; in the corpus those ask a median $100, so the $40 ceiling alone hid three quarters of them. $200 covers about two thirds. Set numbered_max_print_run to 0 to switch off.",
     "numbered_max_print_run": 99,
-    "numbered_price_ceiling": 200.0
+    "numbered_price_ceiling": 200.0,
+    "_deal_capital_comment": "An opportunity (a deal that cleared economics.min_net_profit) reaches the email up to deal_capital_ceiling all-in (item + shipping + tax), whatever price_ceiling says. price_ceiling keeps browsing short, but it also hid the only listings that make money: fees and postage mean a $15 net almost never comes from a card under $50. $150 is a capital cap for the spending freeze through 2026 (owner ASSUMPTION). Set 0 to switch off.",
+    "deal_capital_ceiling": 150.0
   },
   "cheap_cards": {
     "_comment": "Rules that apply only below price_ceiling. Cheap cards need their own gate because 48% of everything CardPro observes is under $10 and most of it is commodity -- base veterans, junk-wax commons, team cards. A 60%-off base common is still a base common. So a cheap card must clear a HIGHER percentage bar (min_discount_pct) and, if require_desirable_attribute is on, must actually have something that makes a copy scarce: rookie, autograph, patch/relic, serial numbering, a non-base parallel, or a grade. Anything cheap with none of those is rejected as common_card and counted in the report footer, not silently dropped. Set enabled=false to apply the ordinary rules at every price.",

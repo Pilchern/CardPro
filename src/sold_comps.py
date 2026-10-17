@@ -209,6 +209,12 @@ def describe_card(sale: dict) -> str:
         ("#" + _text(sale.get("card_number"))) if _text(sale.get("card_number")) else "",
     ]
     card = " ".join(p for p in parts if p)
+    if sale.get("is_autograph") is True:
+        card += " Auto"
+    if _text(sale.get("relic")):
+        card += " " + _text(sale.get("relic")).capitalize()
+    if _print_run(sale.get("print_run")):
+        card += f" /{_print_run(sale.get('print_run'))}"
     grader, grade = _text(sale.get("grader")), _text(sale.get("grade"))
     slab = f"{grader.upper()} {grade}" if grader and grade else "raw"
     player = _text(sale.get("player")) or "?"
@@ -255,6 +261,15 @@ def validation_error(sale) -> Optional[str]:
         return "has a 'grader' but no 'grade' (a slab with no grade has no market)"
     if grade and not grader:
         return "has a 'grade' but no 'grader' (PSA 10 and BGS 10 are different markets)"
+    # The printing variant: an auto, a patch and a /50 are different cards
+    # from the base one, and a sale entered without them keyed the plain
+    # card's bucket. Optional; absent means the plain card, as on a title.
+    if sale.get("is_autograph") is not None and not isinstance(sale.get("is_autograph"), bool):
+        return f"is_autograph {sale.get('is_autograph')!r} is not true or false"
+    if sale.get("relic") is not None and _text(sale.get("relic")) not in ("patch", "relic"):
+        return f"relic {sale.get('relic')!r} is not \"patch\" or \"relic\""
+    if sale.get("print_run") is not None and _print_run(sale.get("print_run")) is None:
+        return f"print_run {sale.get('print_run')!r} is not a positive whole number (the /N on the card)"
     # A typed set or parallel is worth nothing unless it is spelled the way
     # card_identity spells it. Comp buckets are keyed on the exact string, so
     # "prizm" and "Prizm" are two different cards to the engine: a sale typed
@@ -285,6 +300,16 @@ def validation_error(sale) -> Optional[str]:
     return None
 
 
+def _print_run(value) -> Optional[int]:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 and str(value).strip() == str(number) else None
+
+
 def sale_id(sale: dict) -> str:
     """A stable synthetic listing id, derived only from the sale's own fields.
 
@@ -313,6 +338,12 @@ def sale_id(sale: dict) -> str:
             fields["date"] or "",
             fields["source"] or "",
         ]
+        # Only when present, so a sale entered before these fields existed
+        # keeps its id.
+        + (
+            [str(fields["is_autograph"]), fields["relic"] or "", str(fields["print_run"] or "")]
+            if (fields["is_autograph"] or fields["relic"] or fields["print_run"]) else []
+        )
     )
     digest = hashlib.sha1(payload.encode("utf-8")).hexdigest()[:12]
     return f"sold:{digest}"
@@ -336,6 +367,9 @@ def _normalised(sale: dict) -> dict:
         "date": _valid_date(sale.get("date")),
         "source": _text(sale.get("source")),
         "note": _text(sale.get("note")),
+        "is_autograph": sale.get("is_autograph") is True,
+        "relic": _text(sale.get("relic")),
+        "print_run": _print_run(sale.get("print_run")),
     }
 
 
@@ -367,7 +401,11 @@ def to_observation(sale: dict) -> Optional[dict]:
         "grader": f["grader"],
         "grade": f["grade"],
         "qualifier": f["qualifier"],
-        "print_run": None,
+        # Explicit variant fields, so comps.variant_of_observation keys an
+        # auto or numbered sale with the autos / that print run.
+        "is_autograph": f["is_autograph"],
+        "relic": f["relic"],
+        "print_run": f["print_run"],
         "basis": comps.BASIS_SOLD,
         # Carried, never folded into price -- see the module docstring.
         "shipping": f["shipping"],

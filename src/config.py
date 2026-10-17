@@ -40,6 +40,7 @@ class Config:
     ebay_sold_lookback_days: int
     ebay_min_comps_required: int
     ebay_newest_pages_per_player: int  # pages of newest listings walked per player
+    ebay_newest_min_price: Optional[float]  # item-price floor on the newest pass; None = all prices
     ebay_auction_pages_per_player: int  # pages of soonest-ending auctions per player; 0 = none
     ebay_marketplace_insights_enabled: bool  # sold-price API; off until eBay grants access
 
@@ -88,7 +89,25 @@ class Config:
     outbound_shipping: float
     supplies_cost: float
     sales_tax_pct: float
-    resale_haircut_pct: float
+    resale_haircut_pct: float  # applied when the comps are SOLD prices
+    # Applied when the comps are ASKING prices: an ask is a ceiling on what
+    # sells, so it needs a bigger haircut than a real sale.
+    resale_haircut_asking_pct: float
+    fee_small_order_fixed: float
+    fee_small_order_max: float
+    outbound_shipping_envelope: float
+    envelope_max_sale: float
+    supplies_graded_cost: float
+    # Used in the money math when a listing's shipping is unknown; the
+    # listing still reads as shipping-unknown everywhere.
+    assumed_inbound_shipping: float
+    # The deal gate's floor on expected NET profit; see settings.json.
+    min_net_profit: float
+    min_net_profit_pct_of_value: float  # floor also scales with the card's value
+    minutes_per_flip: float  # owner time per flip, for profit per hour
+    # settings.json "grading": costs for a future grade-and-flip branch.
+    # Loaded so it is validated JSON in one place; nothing reads it yet.
+    grading: dict
 
     auction_required_margin_pct: float
     auction_ending_soon_hours: int
@@ -181,6 +200,10 @@ def load_config() -> Config:
         ebay_sold_lookback_days=int(settings["ebay"]["sold_lookback_days"]),
         ebay_min_comps_required=int(settings["ebay"]["min_comps_required"]),
         ebay_newest_pages_per_player=int(settings["ebay"].get("newest_pages_per_player", 1)),
+        ebay_newest_min_price=(
+            None if settings["ebay"].get("newest_min_price", 20.0) is None
+            else float(settings["ebay"].get("newest_min_price", 20.0))
+        ),
         ebay_auction_pages_per_player=int(settings["ebay"].get("auction_pages_per_player", 0)),
         ebay_marketplace_insights_enabled=bool(settings["ebay"].get("marketplace_insights_enabled", False)),
         craigslist_site=settings["craigslist"]["site"],
@@ -206,14 +229,27 @@ def load_config() -> Config:
             "last_run_path", "data/last_run.json"
         ),
         require_flag_eligible_comp=bool(valuation.get("require_flag_eligible_comp", True)),
-        fee_marketplace_pct=float(economics.get("marketplace_fee_pct", 13.6)),
-        fee_marketplace_fixed=float(economics.get("marketplace_fixed_fee", 0.30)),
+        # Defaults match economics.FeeModel.ebay_default() and the shipped
+        # settings.json, so a missing key cannot quietly change a number.
+        fee_marketplace_pct=float(economics.get("marketplace_fee_pct", 14.25)),
+        fee_marketplace_fixed=float(economics.get("marketplace_fixed_fee", 0.40)),
         fee_payment_pct=float(economics.get("payment_fee_pct", 0.0)),
-        outbound_shipping=float(economics.get("outbound_shipping", 5.0)),
-        supplies_cost=float(economics.get("supplies", 1.0)),
-        sales_tax_pct=float(economics.get("sales_tax_pct", 0.0)),
+        outbound_shipping=float(economics.get("outbound_shipping", 6.0)),
+        supplies_cost=float(economics.get("supplies", 0.5)),
+        sales_tax_pct=float(economics.get("sales_tax_pct", 10.25)),
         resale_haircut_pct=float(economics.get("resale_haircut_pct", 5.0)),
-        auction_required_margin_pct=float(auctions.get("required_margin_pct", 25.0)),
+        resale_haircut_asking_pct=float(economics.get("resale_haircut_asking_pct", 20.0)),
+        fee_small_order_fixed=float(economics.get("small_order_fixed_fee", 0.30)),
+        fee_small_order_max=float(economics.get("small_order_max", 10.0)),
+        outbound_shipping_envelope=float(economics.get("envelope_shipping", 0.82)),
+        envelope_max_sale=float(economics.get("envelope_max_sale", 20.0)),
+        supplies_graded_cost=float(economics.get("supplies_graded", 1.0)),
+        assumed_inbound_shipping=float(economics.get("assumed_inbound_shipping", 4.50)),
+        min_net_profit=float(economics.get("min_net_profit", 15.0)),
+        min_net_profit_pct_of_value=float(economics.get("min_net_profit_pct_of_value", 0.10)),
+        minutes_per_flip=float(economics.get("minutes_per_flip", 25.0)),
+        grading=dict(_section(settings, "grading")),
+        auction_required_margin_pct=float(auctions.get("required_margin_pct", 0.0)),
         auction_ending_soon_hours=int(auctions.get("ending_soon_hours", 24)),
         immediate_alert_min_savings_dollars=float(alerts.get("immediate_alert_min_savings_dollars", 150.0)),
         immediate_alert_min_discount_pct=float(alerts.get("immediate_alert_min_discount_pct", 40.0)),
@@ -257,13 +293,15 @@ def load_config() -> Config:
                 ),
                 numbered_max_print_run=int(focus_settings.get("numbered_max_print_run", 0)),
                 numbered_price_ceiling=float(focus_settings.get("numbered_price_ceiling", 0.0)),
+                deal_capital_ceiling=float(focus_settings.get("deal_capital_ceiling", 150.0)),
+                assumed_inbound_shipping=float(economics.get("assumed_inbound_shipping", 4.50)),
                 # Read from `economics`, not from `focus`: there is one
                 # sales-tax rate and it is a fact about you, not an
                 # editorial setting. Two copies of it would eventually
                 # disagree, and the symptom would be a price ceiling that
                 # means something different from the deal gate underneath
                 # it -- see focus.FocusRules.sales_tax_pct.
-                sales_tax_pct=float(economics.get("sales_tax_pct", 0.0)),
+                sales_tax_pct=float(economics.get("sales_tax_pct", 10.25)),
             )
             if focus_settings
             else focus.OFF

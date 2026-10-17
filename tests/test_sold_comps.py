@@ -933,3 +933,62 @@ class TestPasteMode:
 
         assert not path.exists()
         assert "--price" in capsys.readouterr().err
+
+
+# -- the printing variant (PR-5) ---------------------------------------------
+
+
+def test_an_auto_numbered_sale_keys_the_auto_numbered_variant():
+    obs = sold_comps.to_observation(_sale(is_autograph=True, print_run=50))
+    assert comps.variant_of_observation(obs) == (True, None, ("numbered", 50))
+
+
+def test_a_sale_without_variant_fields_is_the_plain_card():
+    obs = sold_comps.to_observation(_sale())
+    assert comps.variant_of_observation(obs) == comps.printing_variant()
+
+
+def test_a_patch_sale_keys_the_patch_variant():
+    obs = sold_comps.to_observation(_sale(relic="patch"))
+    assert comps.variant_of_observation(obs) == (False, "patch", ("unnumbered",))
+
+
+@pytest.mark.parametrize("overrides, fragment", [
+    ({"is_autograph": "yes"}, "is_autograph"),
+    ({"relic": "jersey"}, "relic"),
+    ({"print_run": 0}, "print_run"),
+    ({"print_run": "fifty"}, "print_run"),
+])
+def test_bad_variant_fields_are_refused(overrides, fragment):
+    assert fragment in sold_comps.validation_error(_sale(**overrides))
+
+
+def test_an_older_sale_keeps_its_id():
+    # No variant fields -> the same id as before they existed.
+    assert sold_comps.sale_id(_sale()) == sold_comps.sale_id(_sale(is_autograph=False))
+    assert sold_comps.sale_id(_sale()) != sold_comps.sale_id(_sale(is_autograph=True))
+
+
+def test_an_auto_sale_values_an_auto_listing_not_the_base_card():
+    sales = [sold_comps.to_observation(_sale(is_autograph=True, price=p, date=d))
+             for p, d in ((900.0, "2026-08-01"), (950.0, "2026-08-08"), (1000.0, "2026-08-15"))]
+    engine = comps.CompEngine(sales, min_comps_required=3, today=datetime(2026, 8, 20))
+    ident = dict(player="Caleb Williams", card_type="graded", grader="PSA", grade="10",
+                 year=2024, set_name="Prizm", parallel="Silver", card_number="301")
+    assert engine.lookup(price=400.0, is_autograph=True, **ident).level == "exact"
+    plain = engine.lookup(price=400.0, **ident)
+    assert plain is None or plain.level not in ("exact", "same_card")
+
+
+def test_cli_flags_write_the_variant(tmp_path):
+    path = tmp_path / "s.json"
+    argv = _argv(path) + ["--auto", "--relic", "patch", "--print-run", "25"]
+    assert add_sold_comp.main(argv) == 0
+    sale = json.loads(path.read_text())["sales"][0]
+    assert (sale["is_autograph"], sale["relic"], sale["print_run"]) == (True, "patch", 25)
+    assert "Auto Patch /25" in sold_comps.describe_card(sale)
+
+
+def test_a_title_supplies_the_variant_too():
+    read = add_sold_comp.identity_from_title("2024 Panini Prizm Caleb Williams Silver #301 Auto /50 PSA 10")
+    assert (read["is_autograph"], read["print_run"]) == (True, 50)

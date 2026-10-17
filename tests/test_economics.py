@@ -44,12 +44,58 @@ def test_ebay_defaults_are_the_documented_numbers():
     # These are assumptions, not facts -- but they are assumptions the
     # report prints, so a silent change to one should break a test.
     fees = FeeModel.ebay_default()
-    assert fees.marketplace_fee_pct == 13.6
-    assert fees.marketplace_fixed_fee == 0.30
+    assert fees.marketplace_fee_pct == 14.25
+    assert fees.marketplace_fixed_fee == 0.40
+    assert fees.small_order_fixed_fee == 0.30
     assert fees.payment_fee_pct == 0.0
-    assert fees.outbound_shipping == 5.00
-    assert fees.supplies == 1.00
-    assert fees.sales_tax_pct == 0.0
+    assert fees.outbound_shipping == 6.00
+    assert fees.envelope_shipping == 0.82
+    assert fees.supplies == 0.50
+    assert fees.graded_supplies == 1.00
+    assert fees.sales_tax_pct == 10.25
+
+
+def test_ebay_defaults_match_the_shipped_settings():
+    # Two copies of one set of numbers: a run with no economics block and a
+    # run with the shipped one must produce the same profit.
+    import json
+    from pathlib import Path
+
+    shipped = json.loads((Path(__file__).resolve().parents[1] / "config" / "settings.json").read_text())
+    econ = shipped["economics"]
+    fees = FeeModel.ebay_default()
+    assert econ["marketplace_fee_pct"] == fees.marketplace_fee_pct
+    assert econ["marketplace_fixed_fee"] == fees.marketplace_fixed_fee
+    assert econ["small_order_fixed_fee"] == fees.small_order_fixed_fee
+    assert econ["outbound_shipping"] == fees.outbound_shipping
+    assert econ["envelope_shipping"] == fees.envelope_shipping
+    assert econ["supplies"] == fees.supplies
+    assert econ["supplies_graded"] == fees.graded_supplies
+    assert econ["sales_tax_pct"] == fees.sales_tax_pct
+
+
+def test_per_order_fee_is_tiered_at_ten_dollars():
+    fees = FeeModel.ebay_default()
+    assert fees.fixed_fee_on(10.0) == pytest.approx(0.30)
+    assert fees.fixed_fee_on(10.01) == pytest.approx(0.40)
+    assert fees.selling_fees_on(100.0) == pytest.approx(14.25 + 0.40)
+
+
+def test_outbound_method_follows_card_type_and_sale_price():
+    fees = FeeModel.ebay_default()
+    # Raw under $20: Standard Envelope + raw supplies.
+    assert fees.outbound_costs_on(19.99) == pytest.approx(0.82 + 0.50)
+    # Raw at $20: tracked mailer.
+    assert fees.outbound_costs_on(20.0) == pytest.approx(6.00 + 0.50)
+    # A slab never goes in an envelope, and packs as a slab.
+    assert fees.outbound_costs_on(15.0, graded=True) == pytest.approx(6.00 + 1.00)
+
+
+def test_unset_refinements_keep_the_flat_figures():
+    # A FeeModel built the old way must price exactly as before.
+    assert SIMPLE_FEES.fixed_fee_on(5.0) == 0.0
+    assert SIMPLE_FEES.outbound_costs_on(5.0) == pytest.approx(6.0)
+    assert SIMPLE_FEES.outbound_costs_on(500.0, graded=True) == pytest.approx(6.0)
 
 
 def test_fee_model_is_frozen():
@@ -110,6 +156,89 @@ def test_sales_tax_applies_to_price_plus_known_shipping():
 def test_sales_tax_ignores_unknown_shipping():
     acq = Acquisition(price=100.0, shipping=None, sales_tax_pct=10.0)
     assert acq.total_cost == pytest.approx(110.0)
+
+
+def test_assumed_shipping_fills_in_only_while_shipping_is_unknown():
+    unknown = Acquisition(price=100.0, shipping=None, sales_tax_pct=10.0, assumed_shipping=4.50)
+    assert unknown.total_cost == pytest.approx(104.50 * 1.10)
+    assert unknown.shipping_known is False  # assumed is still not known
+    stated = Acquisition(price=100.0, shipping=2.0, sales_tax_pct=0.0, assumed_shipping=4.50)
+    assert stated.total_cost == pytest.approx(102.0)
+
+
+def test_evaluate_says_when_inbound_shipping_was_assumed():
+    result = evaluate(Acquisition(50.0, None, 0.0, assumed_shipping=4.50), 100.0, SIMPLE_FEES)
+    assert result.acquisition_cost == pytest.approx(54.50)
+    assert result.shipping_known is False
+    assert _find(result, "Inbound shipping is UNKNOWN") == (
+        "Inbound shipping is UNKNOWN; $4.50 is assumed and included -- the actual cost may "
+        "differ from $54.50."
+    )
+
+
+def test_evaluate_ships_a_slab_as_a_slab():
+    fees = FeeModel.ebay_default()
+    raw = evaluate(Acquisition(5.0, 0.0, 0.0), 15.0, fees)
+    slab = evaluate(Acquisition(5.0, 0.0, 0.0), 15.0, fees, graded=True)
+    assert raw.outbound_costs == pytest.approx(0.82 + 0.50)
+    assert slab.outbound_costs == pytest.approx(6.00 + 1.00)
+
+
+def test_max_bid_solved_for_a_profit_floor_nets_exactly_that_floor():
+    # Round trip: buy at the max (plus shipping, plus tax) and the profit is
+    # the floor -- the max is the deal gate's own rule solved for price.
+    fees = FeeModel.ebay_default()
+    bid = max_rational_bid(
+        100.0, required_margin_pct=0.0, min_profit_dollars=15.0, shipping_in=4.50,
+        fees=fees, resale_haircut_pct=20.0,
+    )
+    at_max = evaluate(Acquisition(bid, 4.50, fees.sales_tax_pct), 100.0, fees, resale_haircut_pct=20.0)
+    assert at_max.expected_profit == pytest.approx(15.0)
+
+
+def test_the_larger_of_margin_and_floor_wins():
+    fees = FeeModel.ebay_default()
+    floor_only = max_rational_bid(400.0, required_margin_pct=0.0, min_profit_dollars=15.0,
+                                  shipping_in=0.0, fees=fees)
+    margin_too = max_rational_bid(400.0, required_margin_pct=25.0, min_profit_dollars=15.0,
+                                  shipping_in=0.0, fees=fees)
+    # $100 of margin is more than the $15 floor, so it sets the bid.
+    assert floor_only - margin_too == pytest.approx(85.0 / 1.1025)
+
+
+class TestDealTier:
+    BASE = dict(flag_eligible=True, basis="sold", sample_size=3, expected_profit=15.0, min_net_profit=15.0)
+
+    def _tier(self, **overrides):
+        from src.economics import deal_tier
+
+        return deal_tier(**dict(self.BASE, **overrides))
+
+    def test_strong_needs_sold_comps_three_deep_and_the_net_floor(self):
+        assert self._tier() == "Strong"
+
+    def test_asking_comps_cap_at_maybe_however_good(self):
+        assert self._tier(basis="asking", sample_size=40, expected_profit=500.0) == "Maybe"
+
+    def test_two_sold_comps_are_maybe(self):
+        assert self._tier(sample_size=2) == "Maybe"
+
+    def test_under_the_floor_is_no_tier(self):
+        assert self._tier(expected_profit=14.99) is None
+
+    def test_a_context_only_comp_is_no_tier(self):
+        assert self._tier(flag_eligible=False) is None
+
+    def test_no_economics_is_no_tier(self):
+        assert self._tier(expected_profit=None) is None
+
+
+def test_max_bid_uses_the_slab_outbound_cost():
+    fees = FeeModel.ebay_default()
+    raw = max_rational_bid(15.0, required_margin_pct=0.0, shipping_in=0.0, fees=fees)
+    slab = max_rational_bid(15.0, required_margin_pct=0.0, shipping_in=0.0, fees=fees, graded=True)
+    # The difference is the outbound difference, before the purchase tax.
+    assert raw - slab == pytest.approx((7.00 - 1.32) / 1.1025)
 
 
 # --- evaluate: the ordinary path ------------------------------------------
@@ -330,7 +459,8 @@ def test_sales_tax_assumption_when_tax_is_charged():
     result = evaluate(Acquisition(100.0, None, 7.5), 200.0, NO_FEES)
     assert result.acquisition_cost == pytest.approx(107.5)
     assert (
-        "Sales tax of 7.50% is applied to the item price plus known shipping at purchase."
+        "Sales tax of 7.50% is applied to the item price plus shipping (stated or assumed) at "
+        "purchase."
     ) in result.assumptions
 
 
@@ -543,8 +673,8 @@ class TestMaxBidRoundTrip:
     def test_bidding_the_max_produces_the_margin_at_the_shipped_haircut(self):
         # The haircut was missing here while evaluate() applied it, so the
         # two disagreed about the same card: the ceiling on a $60 card came
-        # out $25.76 and actually realised 20.66%, under the words "the most
-        # you can pay and still keep your margin. Above this, stop."
+        # out $25.76 and actually realised 20.66%, printed as the most you
+        # could pay.
         _, result = self._round_trip(emv=60.0, margin=25.0, shipping=4.99, haircut=5.0)
         assert result.expected_profit == pytest.approx(15.0)
 

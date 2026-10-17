@@ -32,6 +32,114 @@ def test_unknown_fields_are_none_not_guessed():
     assert identity.serial_number.value is None
 
 
+@pytest.mark.parametrize(
+    "title, year, season",
+    [
+        # Paraphrased corpus shapes: a season written with two-digit years.
+        ("24-25 Upper Deck MVP Connor Bedard #98", 2024, "2024-25"),
+        ("Josh Giddey 25-26 Topps Chrome Black Ivory Auto /25", 2025, "2025-26"),
+        ("92-93 Upper Deck Michael Jordan #23", 1992, "1992-93"),
+    ],
+)
+def test_two_digit_season_sets_the_year(title, year, season):
+    identity = card_identity.extract_card_identity(title)
+    assert (identity.year.value, identity.season.value) == (year, season)
+    assert identity.year.confidence == "medium"
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Connor Bedard #25-26 Upper Deck",   # a card number
+        "Josh Giddey /25-26 Topps",          # not a season after a slash
+        "Bowman BD-72 Pete Crow-Armstrong",  # prefixed card number
+        "Score 24-21 Caleb Williams",        # not consecutive years
+    ],
+)
+def test_two_digit_lookalikes_are_not_seasons(title):
+    assert card_identity.extract_card_identity(title).year.value is None
+
+
+def test_a_short_season_in_the_future_is_not_a_season():
+    from datetime import date
+
+    far = date.today().year + 2 - 2000
+    title = "{:02d}-{:02d} Bowman George Mikan".format(far, far + 1)
+    assert card_identity.extract_card_identity(title).year.value is None
+    assert card_identity.extract_card_identity("49-50 Bowman George Mikan").year.value is None
+
+
+def test_a_four_digit_year_wins_over_a_short_season():
+    identity = card_identity.extract_card_identity("2024-25 Panini Prizm Matas Buzelis 23-24 insert")
+    assert identity.year.value == 2024 and identity.year.confidence == "high"
+
+
+def test_a_short_season_dates_a_black_product():
+    identity = card_identity.extract_card_identity("Josh Giddey 25-26 Topps Chrome Black Ivory Auto /25")
+    assert identity.set_name.value == "Topps Chrome Black"
+
+
+@pytest.mark.parametrize("title, set_name", [
+    # Paraphrased corpus shapes (identity audit ID-7).
+    ("Munetaka Murakami 2018 BBM Rookie #317 Swallows", "BBM"),
+    ("1992 Fleer Ultra Frank Thomas #44", "Fleer Ultra"),
+    ("2021 Goodwin Champions Josh Giddey Goudey Lenticular", "Goodwin Champions"),
+    ("2023 UD Allure Connor Bedard #102 Yellow Taxi", "Upper Deck Allure"),
+    ("2023 Allure Connor Bedard Color Flow", "Upper Deck Allure"),
+    ("1994 Flair Michael Jordan #326", "Flair"),
+    ("1995-96 Fleer Metal Michael Jordan #13", "Fleer Metal"),
+    ("2022 Topps Pro Debut Colson Montgomery #PD-185", "Pro Debut"),
+    ("2024 Panini Stars and Stripes Kyle Teel Jersey", "Stars & Stripes"),
+    ("2022 Bowman U Chrome Caleb Williams #50", "Bowman University Chrome"),
+    ("Topps 2024-25 Bowman Univ Chrome Caleb Wilson #BPP-83", "Bowman University Chrome"),
+    ("Caleb Wilson 2025-26 Bowman University Best Rookie #91", "Bowman University Best"),
+    ("2023-24 O-Pee-Chee Platinum Connor Bedard #201", "O-Pee-Chee Platinum"),
+    ("2023 OPC Platinum Connor Bedard #201 Rainbow", "O-Pee-Chee Platinum"),
+])
+def test_set_vocabulary_id7(title, set_name):
+    assert card_identity.extract_card_identity(title).set_name.value == set_name
+
+
+@pytest.mark.parametrize("title, not_set", [
+    ("Caleb Williams 2024 Prizm Ultra Pro toploader #301", "Fleer Ultra"),
+    ("2024 Leaf Metal Kyle Teel Auto", "Fleer Metal"),
+    ("2024 Bowman Chrome Kyle Teel #BCP-48", "Bowman University Chrome"),
+    ("2023 O-Pee-Chee Connor Bedard #201", "O-Pee-Chee Platinum"),
+])
+def test_set_vocabulary_id7_false_friends(title, not_set):
+    assert card_identity.extract_card_identity(title).set_name.value != not_set
+
+
+@pytest.mark.parametrize("title, set_name", [
+    # Paraphrased: one card, previously two set keys.
+    ("2023-24 Upper Deck Series 2 Young Guns Connor Bedard #451 RC", "Young Guns"),
+    ("Connor Bedard 2023 Young Guns #451 rookie", "Young Guns"),
+    ("2023 Upper Deck Series 2 Connor Bedard #451", "Upper Deck Series 2"),  # no subset named
+    ("2020 Bowman Draft Pete Crow-Armstrong #BD-72 Refractor", "Bowman Chrome Draft"),
+    ("2020 Bowman Draft Chrome Pete Crow-Armstrong #BD-72 1st", "Bowman Chrome Draft"),
+    ("2020 Bowman Chrome Draft Refractor Pete Crow-Armstrong BD-72", "Bowman Chrome Draft"),
+    ("2020 Bowman Draft Pete Crow-Armstrong #BD-72 paper", "Bowman Draft"),  # paper stays paper
+])
+def test_one_card_one_set_key(title, set_name):
+    assert card_identity.extract_card_identity(title).set_name.value == set_name
+
+
+@pytest.mark.parametrize("title, set_name", [
+    # Paraphrased: Sapphire Edition is its own product, never plain Chrome.
+    ("2020 Bowman Chrome Draft Sapphire Edition Pete Crow-Armstrong #BD-72", "Bowman Chrome Draft Sapphire"),
+    ("2020 Bowman Draft Chrome Sapphire Crow-Armstrong BD-72", "Bowman Chrome Draft Sapphire"),
+    ("PCA 2020 Bowman Draft Sapphire 1st Bowman BD-72 PSA 9", "Bowman Chrome Draft Sapphire"),
+    ("2021 Bowman Chrome Pete Crow-Armstrong Base Sapphire", "Bowman Chrome Sapphire"),
+    ("Josh Giddey Sapphire 2025-26 Topps Chrome #118", "Topps Chrome Sapphire"),
+    ("2025 Topps Chrome Update Sapphire #76 Crow-Armstrong", "Topps Chrome Update Sapphire"),
+    # And the plain Chrome card stays plain.
+    ("2020 Bowman Draft Chrome Pete Crow-Armstrong #BD-72 Mets", "Bowman Chrome Draft"),
+])
+def test_sapphire_is_its_own_product(title, set_name):
+    assert card_identity.extract_card_identity(title).set_name.value == set_name
+
+
+
 def test_autograph_keyword_detected():
     identity = card_identity.extract_card_identity("2024 Panini Contenders Caleb Williams Autograph RC")
     assert identity.is_autograph.value is True
@@ -41,6 +149,60 @@ def test_autograph_keyword_detected():
 def test_autograph_false_when_absent():
     identity = card_identity.extract_card_identity("1996-97 Topps Michael Jordan #23")
     assert identity.is_autograph.value is False
+
+
+def test_signature_class_is_a_set_not_an_autograph():
+    # Corpus title, $1.49: was keyed with the set's autos (median $57.99).
+    identity = card_identity.extract_card_identity(
+        "2025 Topps Signature Class - Rookies Colston Loveland #113 (RC)"
+    )
+    assert identity.is_autograph.value is False
+    assert identity.set_name.value == "Signature Class"
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        # Corpus titles that read non-auto before.
+        "2024 Topps Chrome - Rookie Autographs Caleb Williams #RA-CWI (AU, RC)",
+        "2025 BOWMAN CHROME PROSPECT AUTOS BLUE REFRACTOR CALEB WILSON 87/150 PSA 8",
+        "2024 Panini Select Rookie Signatures Rome Odunze Green Prizm /5 PSA 10",
+        "2024 Panini-Obsidian Rome Odunze Black Refractor RPA #RJJ-ROE /299",
+        "2021-22 Panini Contenders - Rookie Ticket Josh Giddey #106 (AU, RC)",
+        "Colson Montgomery /275 AU Ro...",
+    ],
+)
+def test_autograph_plurals_abbreviations_and_the_au_tag(title):
+    assert card_identity.extract_card_identity(title).is_autograph.value is True
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        # A cut straight after "Au" is as often SP Authentic as an auto.
+        "Connor Bedard - 2023-24 Sp Au…",
+        "Image of COLSTON LOVELAND RC Au...",
+        "2024 Panini Prizm Gold Automatic Caleb Williams",
+    ],
+)
+def test_au_false_friends_are_not_autographs(title):
+    assert card_identity.extract_card_identity(title).is_autograph.value is False
+
+
+def test_an_autographs_insert_name_does_not_assert_the_flagship_set():
+    identity = card_identity.extract_card_identity(
+        "Caleb Williams Rookie Auto 2024 Topps Midnight - Horizon Signatures #RHS-CW RC"
+    )
+    assert identity.is_autograph.value is True
+    assert identity.set_name.value is None
+
+
+def test_a_signature_class_autograph_is_still_an_autograph():
+    identity = card_identity.extract_card_identity(
+        "2025 Topps Signature Class Colston Loveland Rookie Autograph #SC-CL"
+    )
+    assert identity.is_autograph.value is True
+    assert identity.set_name.value == "Signature Class"
 
 
 def test_memorabilia_keyword_detected():
@@ -105,6 +267,121 @@ def test_team_name_is_not_a_parallel_red_sox():
     assert identity.is_autograph.value is True
 
 
+def test_tulane_green_wave_is_a_team_not_a_parallel():
+    identity = card_identity.extract_card_identity("2019 Panini Contenders Tulane Green Wave Auto")
+    assert identity.parallel.value is None
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        # Corpus titles: the bare-"Green Wave" team mask erased the parallel
+        # and put these in the #301 base bucket (median $8.25).
+        "2024 Panini Prizm Caleb Williams #301 Green Wave Prizm (RC) Chicago Bears Rookie",
+        "2025-26 Topps Chrome Update Josh Giddey #48 Green Wave Refractor /99 Bulls",
+        "2025 Topps Chrome Black Colston Loveland Green Wave 64/99 Bears RC #106",
+    ],
+)
+def test_green_wave_is_a_parallel(title):
+    identity = card_identity.extract_card_identity(title)
+    assert identity.parallel.value == "Green Wave"
+    assert identity.parallel.confidence == "high"
+
+
+@pytest.mark.parametrize(
+    "title, parallel",
+    [
+        # Paraphrased corpus shapes (not eval-set titles) whose named
+        # parallel was collapsed to a shorter one.
+        ("2021 Prizm Josh Giddey Fast Break Purple Rookie #301 /75", "Fast Break Purple"),
+        ("Donruss Optic 2024-25 Josh Giddey #120 Red Seismic Bulls /149", "Red Seismic"),
+        ("Dick Butkus 2020 Panini Mosaic Reactive Blue Prizm #42", "Reactive Blue"),
+        ("2021-22 Panini Select Concourse Josh Giddey #58 Green, White & Purple Prizm RC",
+         "Green White Purple"),
+        ("Frank Thomas 2026 Allen & Ginter #231 Silver Portrait", "Silver Portrait"),
+    ],
+)
+def test_compound_parallels_are_not_collapsed(title, parallel):
+    assert card_identity.extract_card_identity(title).parallel.value == parallel
+
+
+@pytest.mark.parametrize(
+    "title, set_name, parallel",
+    [
+        # The products (first issued 2024); paraphrased, not eval titles.
+        ("2024-25 Panini Prizm Black Matas Buzelis Private Signings Auto #PS-BUZ", "Prizm Black", None),
+        ("2025 Topps Chrome Black Colston Loveland Rookie #106", "Topps Chrome Black", None),
+        ("2024-25 Panini Prizm Black Hyper Prizm Matas Buzelis #41 PSA 8", "Prizm Black", "Hyper"),
+        # Before 2024 the same words, same order, are the scarce Black PARALLEL.
+        ("2022 Topps Chrome Black /10 Julio Rodriguez", "Topps Chrome", "Black"),
+        ("2020 Panini Prizm Black 1/1 Joe Burrow", "Prizm", "Black"),
+        # No year: keep the parallel reading rather than assert a product.
+        ("Panini Prizm Black 1/1 Joe Burrow", "Prizm", "Black"),
+        # The Black parallel of ordinary products is untouched.
+        ("2024 Panini Prizm Caleb Williams Black Prizm 1/1", "Prizm", "Black Prizm"),
+        ("2023 Bowman Chrome Kyle Teel Black Refractor /10", "Bowman Chrome", "Black Refractor"),
+    ],
+)
+def test_products_named_black_are_sets_not_the_black_parallel(title, set_name, parallel):
+    identity = card_identity.extract_card_identity(title)
+    assert identity.set_name.value == set_name
+    assert identity.parallel.value == parallel
+
+
+@pytest.mark.parametrize(
+    "title, parallel",
+    [
+        # Paraphrased corpus shapes. A named refractor must never collapse to
+        # plain "Refractor" -- "Prism Refractor" sat in the plain bucket.
+        ("Pete Crow-Armstrong 2024 Topps Chrome Prism Refractor #16 Rookie", "Prism Refractor"),
+        ("2025 Topps Chrome Rome Odunze Leather Refractor #49", "Leather Refractor"),
+        ("Rome Odunze 2025 Finest Reflash Refractor #RF-12", "Reflash Refractor"),
+        ("Kyle Teel 2024 Bowman Chrome Mini Diamond Refractor #BCP-48", "Mini-Diamond Refractor"),
+        # A colour in front of a named refractor is part of its name.
+        ("PCA 2024 Topps Chrome #16 Magenta Speckle Refractor /350", "Magenta Speckle Refractor"),
+        ("Caleb Williams 2024 Resurgence Aqua Surge Refractor /249", "Aqua Surge Refractor"),
+        # Plurals and abbreviations fold onto one name.
+        ("2024 Topps Chrome Pete Crow-Armstrong Logofractors #16", "Logofractor"),
+        ("Andre Dawson 2025 Topps Chrome Blue Prism Refractors #425", "Blue Prism Refractor"),
+        ("Caleb Wilson Bowman Chrome Auto Blue Ref /150", "Blue Refractor"),
+        ("Kyle Teel Bowman Chrome Green Refractors /99", "Green Refractor"),
+        ("Kyle Teel 2024 Topps Chrome Blue X Fractor", "Blue X-Fractor"),
+        ("2026 Topps Chrome Munetaka Murakami Logo Refractor #274", "Logofractor"),
+        # One word said twice is one word.
+        ("2025 Bowman's Best Crow-Armstrong Blue Lazer Refractors refractor /150", "Blue Lazer Refractor"),
+        # And a plain refractor stays plain.
+        ("2024 Topps Chrome Pete Crow-Armstrong #16 Refractor Rookie", "Refractor"),
+    ],
+)
+def test_named_refractors_are_not_collapsed(title, parallel):
+    assert card_identity.extract_card_identity(title).parallel.value == parallel
+
+
+@pytest.mark.parametrize("title", [
+    "Caleb Wilson Bowman Chrome Blue Ref: 12345",
+    "Josh Giddey Prizm Ref# 202",
+    "Kyle Teel Bowman Ref 4471",
+    "1990 Hoops NBA Ref card",
+    "NFL Ref trading card Pro Set",
+])
+def test_ref_that_is_not_a_refractor_is_not_folded(title):
+    assert "Refractor" not in (card_identity.extract_card_identity(title).parallel.value or "")
+
+
+@pytest.mark.parametrize("title, parallel", [
+    ("Caleb Wilson McDonald's Chrome Blue Lava Ref #10 PSA 10", "Blue Lava Refractor"),
+    ("Kyle Teel Bowman Chrome Purple Ref 194/250", "Purple Refractor"),
+])
+def test_a_refractor_before_a_card_number_or_serial_still_folds(title, parallel):
+    assert card_identity.extract_card_identity(title).parallel.value == parallel
+
+
+def test_parallel_aliases_do_not_widen_the_flagship_set():
+    # "X" as a familiar word let "Topps X <artist>" read as flagship Topps.
+    assert card_identity.extract_card_identity("2020 Topps X Steve Aoki #90 Andre Dawson").set_name.value is None
+
+
+
 def test_award_name_is_not_a_parallel_gold_glove():
     identity = card_identity.extract_card_identity("Michael Jordan Gold Glove Award unsigned photo card")
     assert identity.parallel.value is None
@@ -149,12 +426,14 @@ def test_unambiguous_single_word_parallel_is_high_confidence():
     assert identity.parallel.confidence == "high"
 
 
-def test_draft_pick_idiom_is_not_a_card_number_and_team_is_not_a_parallel():
+def test_draft_pick_idiom_is_not_a_card_number():
+    # "Green Wave /99" was asserted to be the Tulane team here; it is the
+    # numbered Green Wave parallel (a team is never numbered to 99).
     identity = card_identity.extract_card_identity(
         "Pete Crow-Armstrong 2025 Topps #1 Draft Pick Green Wave /99"
     )
     assert identity.card_number.value is None
-    assert identity.parallel.value is None
+    assert identity.parallel.value == "Green Wave"
     assert identity.print_run.value == 99
     assert identity.serial_number.value is None
 
@@ -204,6 +483,56 @@ def test_date_fraction_is_not_a_print_run():
     identity = card_identity.extract_card_identity("2024 Topps Now Aaron Judge sold 7/14/2024")
     assert identity.print_run.value is None
     assert identity.serial_number.value is None
+
+
+def test_date_with_a_spaced_year_is_not_a_print_run():
+    identity = card_identity.extract_card_identity("Topps Now Aaron Judge sold 7/14 2024")
+    assert identity.print_run.value is None
+    assert identity.serial_number.value is None
+
+
+def test_spaced_date_chain_is_not_a_print_run():
+    identity = card_identity.extract_card_identity("Aaron Judge sold 7 / 14 / 2024")
+    assert identity.print_run.value is None
+
+
+@pytest.mark.parametrize(
+    "title, serial, print_run",
+    [
+        # Corpus titles that read unnumbered before (high-dollar numbered cards).
+        ("2024 Topps Cosmic Chrome Caleb Williams Gold Interstellar Auto #/50 PSA 9", None, 50),
+        ("Caleb Wilson # /75 2025 Mcdonalds Chrome Auto Winning Tags Refractor Psa 10", None, 75),
+        ("Kyle Teel Prospect Jersey Auto 73/99 2024 Panini Three and Two Baseball", "73/99", 99),
+        ("KYLE TEEL PURPLE MOJO RC Chicago White Sox 056/250 2026 Bowman", "56/250", 250),
+        ("Rome Odunze RC Auto /5 2024 Panini Photogenic Rookie Photo Bomb Football Bears", None, 5),
+        ("2024 Bowman Chrome 1st Fuchsia Mojo Refractor KYLE TEEL #BCP-48 #/1", None, 1),
+    ],
+)
+def test_print_run_before_a_year_and_after_a_hash(title, serial, print_run):
+    identity = card_identity.extract_card_identity(title)
+    assert identity.serial_number.value == serial
+    assert identity.print_run.value == print_run
+
+
+def test_a_one_of_one_before_a_year_is_not_a_date():
+    identity = card_identity.extract_card_identity("Superfractor 1/1 2024 Topps Chrome Caleb Williams")
+    assert (identity.serial_number.value, identity.print_run.value) == ("1/1", 1)
+
+
+def test_a_rejected_date_or_grade_does_not_leave_its_denominator_behind():
+    identity = card_identity.extract_card_identity("Caleb Williams PSA 9 / 10 2024 Prizm")
+    assert identity.print_run.value is None
+
+
+def test_a_card_number_running_into_the_run_still_gives_the_bare_run():
+    identity = card_identity.extract_card_identity("Caleb Williams Blue Wave Prizm #301 /230")
+    assert identity.print_run.value == 230
+
+
+def test_hash_print_run_does_not_disturb_the_card_number():
+    identity = card_identity.extract_card_identity("2024 Bowman Chrome Kyle Teel #BCP-48 #/1")
+    assert identity.card_number.value == "BCP-48"
+    assert identity.print_run.value == 1
 
 
 def test_print_run_denominator_is_sanity_bounded():
@@ -689,7 +1018,9 @@ class TestSetVocabulary:
             ("2024 Topps Cosmic Chrome Pete Crow-Armstrong", "Cosmic Chrome"),
             ("2024 Topps Fire Caleb Williams", "Topps Fire"),
             ("2024-25 O-Pee-Chee Connor Bedard #201", "O-Pee-Chee"),
-            ("2024 Bowman Draft 1st Chrome Auto Konnor Griffin BDC-100", "Bowman Draft"),
+            # "Chrome" and a BDC- number: the Bowman Chrome Draft card, not
+            # paper Bowman Draft (one card, one key -- 26a).
+            ("2024 Bowman Draft 1st Chrome Auto Konnor Griffin BDC-100", "Bowman Chrome Draft"),
         ]:
             assert extract(title).set_name.value == expected, title
 
@@ -750,6 +1081,57 @@ class TestIsBase:
         # serial-numbered, which is why this is the guard that matters most.
         assert extract("2024 Panini Prizm Caleb Williams #301 RC /99").is_base.value is None
         assert extract("2024 Panini Prizm Caleb Williams #301 RC 23/99").is_base.value is None
+
+    @pytest.mark.parametrize("word", ["Jumbo", "Rainbow", "Color Wheel", "Oversized", "Filigree", "Stars"])
+    def test_audit_outlier_words_block_the_assertion(self, word):
+        # Words absent from the parallel vocabulary that the corpus showed
+        # behind base-bucket outliers (identity audit, 2026-10-16).
+        assert extract("2024 Topps Chrome Kyle Teel %s #16" % word).is_base.value is None
+
+    @pytest.mark.parametrize("title", [
+        # Paraphrased shapes from the contaminated base buckets.
+        "2026 Topps Update Kyle Teel RC #US259 Summer Holiday",
+        "Colson Montgomery 2026 Topps Update #US125 Jack O Lantern",
+        "Matas Buzelis 2024-25 Hoops Winter #16 Rookie",
+        "Connor Bedard 2023 Upper Deck Young Guns #451 Oversize",
+        "Kyle Teel 2026 Topps Update #US259 SandGlitter",
+        "Dick Butkus 2023 Panini Mosaic #37 Mosaic Prizm",
+        "Luther Burden III 2025 Panini Select Maroon #72",
+        "Connor Bedard 2023 O-Pee-Chee Retro #582",
+        "Pete Crow-Armstrong 2026 Bowman Chrome #ES-24 Miscut",
+        "Pete Crow-Armstrong 2024 Topps Chrome #16 Base Chrome + Paper",
+    ])
+    def test_review_outlier_shapes_block_the_assertion(self, title):
+        assert extract(title).is_base.value is None
+
+    def test_a_condition_plus_is_not_a_second_card(self):
+        assert card_identity._NOT_BASE_RE.search("1968 Topps Gale Sayers #75 VG-EX+") is None
+
+    @pytest.mark.parametrize("title", [
+        "1985 Donruss Andre Dawson #421 NM-MT",
+        "1991 Upper Deck Ryne Sandberg #132 graded BCCG",
+    ])
+    def test_a_slab_or_condition_grade_read_as_raw_is_not_base(self, title):
+        assert extract(title).is_base.value is None
+
+    @pytest.mark.parametrize("title", [
+        # Read as raw (and refused) until the grade parser learned these
+        # forms (ID-5); now graded, so the grade keys them.
+        "1990 Hoops Michael Jordan #65 PSA NM-MT 8",
+        "2024 Bowman Chrome Pete Crow-Armstrong #85 GEM MINT PTA 10",
+        "1968 Topps Gale Sayers #75 SGC Graded 3",
+    ])
+    def test_a_slab_the_parser_now_reads_keeps_its_base_call(self, title):
+        assert extract(title).is_base.value is True
+
+    def test_a_slab_the_grade_parser_reads_keeps_its_base_call(self):
+        # Its grade keys it, so it is a real graded base copy.
+        assert extract("2024 Panini Prizm Caleb Williams #301 RC PSA 10").is_base.value is True
+
+    def test_extra_not_base_words_do_not_widen_the_flagship_set(self):
+        # They block "base" but must not become familiar words that let an
+        # insert name read as flagship Topps.
+        assert extract("Kyle Teel 2026 Topps Stars Of The MLB #SMLB-28 Rookie").set_name.value is None
 
     def test_a_short_print_token_blocks_the_assertion(self):
         for title in [

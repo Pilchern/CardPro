@@ -26,7 +26,11 @@ from typing import List, Optional, Tuple
 
 # Plain data, extendable without code changes -- same spirit as the keyword
 # lists in card_identity.py.
-GRADERS = ["PSA", "BGS", "SGC", "CSG", "CGC", "HGA", "TAG"]
+# BVG is Beckett's vintage label; ISA / GMA / PTA / FCG / PXG / GMG are
+# off-brand graders. Their slabs key their own grader's market, never raw:
+# read as raw, a $500 BVG 8 sat in a $15-$69 raw bucket (identity audit,
+# ID-5).
+GRADERS = ["PSA", "BGS", "SGC", "CSG", "CGC", "HGA", "TAG", "BVG", "ISA", "GMA", "PTA", "FCG", "PXG", "GMG"]
 # Trailing qualifiers a grader prints on the label. They are always
 # upper-case abbreviations, which is what lets us tell "PSA 9 OC"
 # (off-centre) from the English word in "PSA 9 of 12" -- see _qualifier_of.
@@ -36,10 +40,23 @@ _GRADER_ALT = "|".join(GRADERS)
 # Optional "GEM MT"/"GEM MINT"/"MINT" filler is only ever accepted *after* a
 # grader token, so a bare "GEM MT 10" in a seller's hype text can't invent a
 # grade out of nothing.
+# Label words sellers put between the grader and the number: "PSA-10",
+# "SGC GEM 10", "SGC Graded 3", "PSA NM-MT 8", "CGC NM/MINT+ 8.5". And the
+# "GM" CGC prints straight after the number ("CGC 10GM").
 GRADE_RE = re.compile(
-    rf"\b({_GRADER_ALT})\s*(?:GEM\s*-?\s*(?:MT|MINT)\s*|MINT\s*|MT\s*)?(\d{{1,2}}(?:\.5)?)\b",
+    rf"\b({_GRADER_ALT})[\s-]*"
+    r"(?:(?:GEM\s*-?\s*(?:MT|MINT)|GEM|MINT|MT|GRADED|NM\s*-?\s*MT\+?|NM\s*/\s*MINT\+?)[\s-]*)?"
+    r"(\d{1,2}(?:\.5)?)(?:GM)?\b",
     re.IGNORECASE,
 )
+#: "PSA 9/10": a dual grade (card 9, autograph 10) or a 9 numbered /10 --
+#: the title cannot say which. It is certainly a slab, so it must leave the
+#: raw buckets; the conservative reading is graded with the grade UNKNOWN,
+#: which keys no grade bucket at all (comps.market_key -> None) rather than
+#: guessing PSA 9 for what might be a /10 card.
+_DUAL_GRADE_RE = re.compile(r"/10\b")
+#: "Graded 10" with no grader named: a slab whose market we cannot key.
+_GRADED_NO_GRADER_RE = re.compile(r"\bgraded\s*(\d{1,2}(?:\.5)?)\b", re.IGNORECASE)
 # "PSA Authentic", "SGC Authentic Altered", or a bare "Authentic Altered"
 # (which only ever describes a slab).
 AUTHENTIC_RE = re.compile(
@@ -179,7 +196,12 @@ def detect_grade_details(title: str) -> GradeInfo:
     """
     for match in GRADE_RE.finditer(title):
         grader, grade = match.group(1).upper(), match.group(2)
+        # "#PSA12" is a card number, and no grader issues a grade above 10.
+        if title[max(0, match.start() - 1):match.start()] == "#" or float(grade) > 10:
+            continue
         if _SERIAL_NOT_GRADE_RE.match(title, match.end()):
+            if grader != "TAG" and _DUAL_GRADE_RE.match(title, match.end()) and float(grade) <= 10:
+                return GradeInfo(card_type="graded", grader=grader, grade=None)
             continue
         if grader == "TAG":
             window = title[max(0, match.start() - _TAG_FALSE_FRIEND_WINDOW):match.start()]
@@ -208,6 +230,10 @@ def detect_grade_details(title: str) -> GradeInfo:
             qualifier=None,
             authentic_only=True,
         )
+
+    if _GRADED_NO_GRADER_RE.search(title):
+        # Same reasoning as the dual grade: a slab, market unknown.
+        return GradeInfo(card_type="graded", grader=None, grade=None)
 
     return GradeInfo(card_type="raw", grader=None, grade=None, qualifier=None, authentic_only=False)
 

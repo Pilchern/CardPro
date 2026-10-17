@@ -83,10 +83,12 @@ def _readable_price(record) -> float | None:
     return None if math.isnan(value) else value
 
 
-def is_new_or_price_drop(listing_id: str, price: float, seen: dict) -> bool:
+def is_new_or_price_drop(listing_id: str, price: float, seen: dict, min_drop_pct: float = 0.0) -> bool:
     """True if this listing has never been flagged, or its price dropped
-    since the last time it was. Does NOT mutate `seen` -- call
-    record_flagged() after you've decided to include it in the report.
+    since the last time it was -- by more than ``min_drop_pct`` percent when
+    one is given (a 1% trim on a card you already saw is not news). Does NOT
+    mutate `seen` -- call record_flagged() after you've decided to include
+    it in the report.
     """
     prior = seen.get(listing_id)
     if prior is None:
@@ -105,19 +107,35 @@ def is_new_or_price_drop(listing_id: str, price: float, seen: dict) -> bool:
             _field(prior, "price"),
         )
         return True
-    return price < prior_price
+    return price < prior_price * (1.0 - min_drop_pct / 100.0)
 
 
-def record_flagged(listing_id: str, price: float, seen: dict, today: str) -> None:
+def record_flagged(listing_id: str, price: float, seen: dict, today: str, *, shown_only: bool = False) -> None:
+    """Record that the user has been told about this listing at this price.
+
+    ``shown_only`` marks a card printed in a browse/review section, never as
+    a DEAL. The deal check (main.apply_dedupe) treats such a row as new, so a
+    card shown in COOL CARDS on Monday that becomes a deal on Tuesday at the
+    same price is still reported as a deal. Once a row has been a deal it
+    stays one. Rows written before this flag existed were all deals.
+    """
     prior = seen.get(listing_id)
     # A prior record that never had a readable first_seen still gets rewritten
     # rather than crashing the run: today is the honest answer to "when did we
     # first tell you about this", given the file no longer says.
-    seen[listing_id] = {
+    record = {
         "price": price,
         "first_seen": _field(prior, "first_seen") or today,
         "last_flagged": today,
     }
+    if shown_only and (prior is None or _field(prior, "shown_only") is True):
+        record["shown_only"] = True
+    seen[listing_id] = record
+
+
+def was_reported_as_deal(record) -> bool:
+    """A prior seen-row that told the user this was a DEAL (see record_flagged)."""
+    return record is not None and _field(record, "shown_only") is not True
 
 
 def _last_flagged_at(record) -> datetime | None:

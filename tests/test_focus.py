@@ -621,3 +621,41 @@ def test_a_cut_title_from_a_numbered_search_uses_the_numbered_ceiling():
         numbered_max_print_run=99, numbered_price_ceiling=200.0,
     )
     assert focus.omission_reason(listing, rules) is None
+
+
+# ---------------------------------------------------------------------------
+# net-gated deals and the capital ceiling
+# ---------------------------------------------------------------------------
+
+CAPITAL_RULES = focus.FocusRules(price_ceiling=40.0, deal_capital_ceiling=150.0)
+
+
+def test_an_opportunity_bypasses_the_cheap_ceiling_up_to_the_capital_ceiling():
+    deal = make_listing(price=120.0, pct_under_market=35.0, dollar_savings=65.0, is_opportunity=True)
+    assert focus.omission_reason(deal, CAPITAL_RULES) is None
+
+
+def test_the_capital_ceiling_is_all_in():
+    deal = make_listing(price=145.0, shipping_price=6.0, pct_under_market=35.0, dollar_savings=80.0,
+                        is_opportunity=True)
+    assert focus.omission_reason(deal, CAPITAL_RULES) == focus.ABOVE_CEILING
+
+
+def test_a_non_opportunity_still_faces_the_cheap_ceiling():
+    browse = make_listing(price=120.0, pct_under_market=20.0, dollar_savings=30.0)
+    assert focus.omission_reason(browse, CAPITAL_RULES) == focus.ABOVE_CEILING
+
+
+def test_capital_ceiling_off_by_default():
+    deal = make_listing(price=120.0, pct_under_market=35.0, dollar_savings=65.0, is_opportunity=True)
+    assert focus.omission_reason(deal, RULES) == focus.ABOVE_CEILING
+
+
+def test_unknown_shipping_counts_at_the_assumed_figure_for_the_capital_cap():
+    rules = focus.FocusRules(price_ceiling=40.0, deal_capital_ceiling=150.0, assumed_inbound_shipping=4.50)
+    near_cap = make_listing(price=148.0, shipping_price=None, pct_under_market=35.0, dollar_savings=80.0,
+                            is_opportunity=True)
+    assert focus.omission_reason(near_cap, rules) == focus.ABOVE_CEILING
+    free_ship = make_listing(price=148.0, shipping_price=0.0, pct_under_market=35.0, dollar_savings=80.0,
+                             is_opportunity=True)
+    assert focus.omission_reason(free_ship, rules) is None

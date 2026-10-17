@@ -80,7 +80,9 @@ class Listing:
     # Deal economics (economics.DealEconomics): acquisition cost, fees,
     # expected net proceeds, profit, ROI, and the assumptions behind them.
     economics: Optional[object] = None
-    max_rational_bid: Optional[float] = None  # auctions only -- highest bid that still keeps your margin
+    # Highest item price (bid or offer) that still nets economics.min_net_profit;
+    # any priced listing with a flag-eligible comp, auction or fixed price.
+    max_rational_bid: Optional[float] = None
     # False when max_rational_bid was computed with shipping unknown, which
     # makes it an upper bound that is too high by exactly the unknown
     # shipping. The report must say so rather than printing a ceiling as
@@ -106,6 +108,21 @@ class Listing:
     resale_uneconomic: bool = False  # fees + postage exceed the spread -- a collector buy, not a flip
 
     is_opportunity: bool = False
+    # Set on opportunities only: economics.deal_tier ("Strong" | "Maybe"),
+    # and net profit per hour of buying + selling time.
+    deal_tier: Optional[str] = None
+    profit_per_hour: Optional[float] = None
+    # Net profit if it sells at the LOW end of the comps (the lowest kept
+    # comp, same haircut) -- the other end of the range the summary shows.
+    net_profit_low: Optional[float] = None
+
+    # How long it has been up: listed_at is Browse's itemCreationDate (ISO
+    # 8601) on API listings. age_days is days since then, or since the
+    # corpus first saw the listing (age_basis "first seen") when eBay did not
+    # say -- an alert email carries no listing date.
+    listed_at: Optional[str] = None
+    age_days: Optional[int] = None
+    age_basis: Optional[str] = None
     is_price_drop: bool = False  # seen before, and cheaper than last time
     previous_price: Optional[float] = None  # what it was last time we saw it, for price drops
 

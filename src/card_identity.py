@@ -45,7 +45,10 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field as dataclass_field
+from datetime import date
 from typing import Optional
+
+from src import matcher
 
 # Extend freely -- these are just data, matched case-insensitively as
 # whole-word/phrase keywords against the title.
@@ -136,6 +139,19 @@ SET_KEYWORDS = [
     # bucket on purpose, since an insert is a different market from the
     # base card it inserts into.
     "Game Dated Moments", "Greatest Hits", "Silhouette",
+    # Identity audit ID-7, measured on the corpus (2026-10-16): products the
+    # vocabulary did not know, read as no set or as a different one.
+    # "Fleer Ultra" / "Fleer Metal" only with the brand: bare "Ultra" is also
+    # "Ultra Pro" (a toploader brand) and bare "Metal" is Leaf Metal or
+    # Metal Universe, both already their own sets.
+    "BBM", "Fleer Ultra", "Goodwin Champions", "UD Allure", "Allure", "Flair",
+    "Fleer Metal", "Pro Debut", "Stars & Stripes", "Stars and Stripes",
+    # Two products that were pooled into a bigger one: Bowman University is
+    # the college product (a player can have both a college and a pro Bowman
+    # Chrome card, at very different prices), and O-Pee-Chee Platinum is
+    # not O-Pee-Chee. Longest-first matching lets these win.
+    "Bowman University Chrome", "Bowman U Chrome", "Bowman Univ Chrome",
+    "Bowman University", "Bowman University Best", "O-Pee-Chee Platinum", "OPC Platinum",
 ]
 
 #: Spellings that mean the same product. Two names for one set means two comp
@@ -154,6 +170,12 @@ SET_ALIASES = {
     "Topps Series One": "Topps Series 1",
     "Topps Series Two": "Topps Series 2",
     "Rookies & Stars": "Panini Rookies and Stars",
+    "UD Allure": "Upper Deck Allure",
+    "Allure": "Upper Deck Allure",
+    "Stars and Stripes": "Stars & Stripes",
+    "Bowman U Chrome": "Bowman University Chrome",
+    "Bowman Univ Chrome": "Bowman University Chrome",
+    "OPC Platinum": "O-Pee-Chee Platinum",
 }
 
 #: A bare product line that more than one brand issues: "Chrome" is Topps
@@ -176,6 +198,15 @@ SET_ALIASES = {
 #:
 #: A title naming neither brand keeps the bare name rather than being
 #: assigned one at random -- unknown is never a guess.
+#: A named subset that identifies the card better than the product it is
+#: printed in: "2023-24 Upper Deck Series 2 Young Guns #451" and "2023 Young
+#: Guns #451" are one card and must key one bucket (the corpus held both).
+#: "Young Guns" is the key most titles already use.
+SUBSET_OVER_SET = {
+    "Upper Deck Series 1": "Young Guns",
+    "Upper Deck Series 2": "Young Guns",
+}
+
 BARE_SET_BY_BRAND = {
     "Chrome": (("Bowman", "Bowman Chrome"), ("Topps", "Topps Chrome")),
     "Sapphire": (
@@ -200,7 +231,49 @@ COMPOUND_PARALLELS = [
     # Refractor" came out as plain "Refractor" at high confidence, which is
     # the exact pooling the entry was added to prevent.
     "Aqua Vapor", "Rose Gold", "Press Proof", "Dragon Scale", "Logofractor",
-    "Rainbow Foil", "Speckle Refractor", "Snakeskin Refractor",
+    "Rainbow Foil", "Speckle Refractor", "Snakeskin Refractor", "Green Wave",
+    # Named parallels that were collapsed to a shorter one ("Fast Break
+    # Purple" -> "Fast Break", "Reactive Blue" -> "Blue", "Silver Portrait"
+    # -> "Silver"), pooling a scarcer card with a commoner one. Longest-first
+    # matching lets these beat their prefix.
+    "Fast Break Bronze", "Fast Break Blue", "Fast Break Red", "Fast Break Purple",
+    "Fast Break Pink", "Fast Break Neon Green", "Fast Break Gold", "Fast Break Black",
+    "Reactive Blue", "Reactive Yellow", "Reactive Purple", "Reactive Orange",
+    "Green White Purple", "Silver Portrait",
+    # Named refractors whose modifier is ordinary English on its own (so it
+    # cannot go in UNAMBIGUOUS_PARALLELS -- see the note there) but only
+    # ever a parallel in front of "Refractor". Each was collapsing to plain
+    # "Refractor" and pooling with it: "Prism Refractor" sat in the plain
+    # #16 Refractor bucket behind a "93% under" flag.
+    "Prism Refractor", "Leather Refractor", "Surge Refractor", "Pulse Refractor",
+    "Reflash Refractor", "Mini-Diamond Refractor",
+]
+
+#: Plurals, abbreviations and spellings sellers write for a named parallel,
+#: folded onto its one name before parallel extraction so they key one
+#: bucket. "Logofractors" read as no parallel at all, "Blue Ref" as a bare
+#: colour, "Blue Prism Refractors" as "Blue". Single words first, so a
+#: plural is folded before the phrases are matched. Not added to the
+#: vocabulary lists: those are also the flagship guard's familiar words, and
+#: "X" there let "Topps X Steve Aoki" read as flagship Topps.
+PARALLEL_ALIASES = {
+    "Refractors": "Refractor", "Refr": "Refractor", "Ref": "Refractor",
+    "X-Fractors": "X-Fractor", "Logofractors": "Logofractor",
+    "X Fractor": "X-Fractor", "Logo Refractor": "Logofractor",
+}
+#: Contexts where an alias is not the parallel: "Ref: 12345", "Ref# 202"
+#: and "Ref 4471" are a seller's reference number, "NBA Ref" a referee card.
+#: Not blocked: "Ref #10" (a card number after a space) and "Ref 194/250"
+#: (a serial) -- both real refractors in the corpus.
+_ALIAS_GUARDS = {"Ref": (r"(?<!nba )(?<!nfl )", r"(?!\s*:)(?!#)(?!\s*\d+(?!\d|\s*/))")}
+_PARALLEL_ALIAS_RES = [
+    (re.compile(
+        _ALIAS_GUARDS.get(alias, ("", ""))[0]
+        + r"\b" + r"[\s-]+".join(re.escape(w) for w in alias.split()) + r"\b"
+        + _ALIAS_GUARDS.get(alias, ("", ""))[1],
+        re.IGNORECASE,
+    ), name)
+    for alias, name in PARALLEL_ALIASES.items()
 ]
 
 UNAMBIGUOUS_PARALLELS = [
@@ -246,6 +319,8 @@ COLOR_PARALLEL_WORDS = [
 PARALLEL_QUALIFIER_WORDS = [
     "Cracked Ice", "Refractor", "Sparkle", "Shimmer", "Pulsar", "Prizm",
     "Holo", "Foil", "Wave", "Mojo", "Ice",
+    # Optic's Seismic family: "Red Seismic" was read as plain "Red".
+    "Seismic",
 ]
 
 # Kept as the single flat vocabulary for anything that just wants "all the
@@ -259,7 +334,9 @@ PARALLEL_KEYWORDS = COMPOUND_PARALLELS + UNAMBIGUOUS_PARALLELS + COLOR_PARALLEL_
 TEAM_AND_PHRASE_MASKS = [
     # Teams (colour-bearing)
     "White Sox", "Red Sox", "Red Wings", "Red Raiders", "Blue Jays", "Blue Jackets",
-    "Blue Devils", "Green Bay", "Green Wave", "Golden State", "Golden Knights",
+    # "Tulane Green Wave", not bare "Green Wave": that is also a Panini Prizm
+    # and Topps Chrome parallel, and every corpus hit (23) was the parallel.
+    "Blue Devils", "Green Bay", "Tulane Green Wave", "Golden State", "Golden Knights",
     "Golden Bears", "Black Knights", "Blackhawks", "Big Red", "Crimson Tide",
     "Scarlet Knights", "Syracuse Orange", "Reds", "Orioles", "Browns", "Cardinals",
     "Royals", "Blues", "Rangers",
@@ -267,13 +344,41 @@ TEAM_AND_PHRASE_MASKS = [
     "Silver Slugger", "Gold Glove", "Golden Spikes", "Green Jacket",
     # Set names containing a parallel word
     "Collector's Choice", "Collectors Choice",
+    # Set name containing an autograph word: every base card of Topps
+    # Signature Class read as an auto and was keyed with the autos. Still
+    # found as a set -- set lookup skips masks that are SET_KEYWORDS.
+    "Signature Class",
     # Events / places / idioms
     "Orange Bowl", "Rose Bowl", "White House", "Red Zone", "Blue Line",
     # Listing boilerplate that would otherwise read as a parallel
     "Your Choice",
 ]
 
-AUTOGRAPH_KEYWORDS = ["autograph", "autographed", "auto", "signed", "signature"]
+#: Products named "<line> Black", first issued in 2024. Read as "Prizm" /
+#: "Topps Chrome" with parallel "Black", they pooled a whole product with
+#: another product's Black parallel (every 2024+ corpus hit, 16 + 34, was the
+#: product). Before 2024 the same words in the same order are how sellers
+#: write the scarce Black PARALLEL ("2020 Panini Prizm Black 1/1"), so the
+#: phrase is read as the product only when the title's year is on or after
+#: the first issue; no year keeps the parallel reading.
+DATED_PRODUCTS = {"Prizm Black": 2024, "Topps Chrome Black": 2024}
+_DATED_PRODUCT_RES = [
+    (name, first_year, re.compile(rf"\b{re.escape(name)}\b", re.IGNORECASE))
+    for name, first_year in DATED_PRODUCTS.items()
+]
+
+AUTOGRAPH_KEYWORDS = ["autograph", "autographed", "auto", "signed", "signature", "rpa"]
+# The plurals are how insert-set names spell it -- "Rookie Autographs",
+# "Prospect AUTOS", "Horizon Signatures" -- all autos in the corpus, and all
+# were keyed with the plain cards. Kept OUT of AUTOGRAPH_KEYWORDS because
+# that list is also "familiar words" for the flagship-set guard, and an
+# insert-set name must stop "Topps Midnight - Horizon Signatures" being
+# asserted as flagship Topps. "rpa" is rookie patch auto.
+AUTOGRAPH_SET_WORDS = ["autographs", "autos", "signatures"]
+# eBay's own item-specifics tag, "(AU, RC)", and the bare token "AU". Not a
+# keyword because a truncated title ending "Au..." is as often "Authentic"
+# (SP Authentic) as "Auto", so a cut straight after it proves nothing.
+AU_TOKEN_RE = re.compile(r"\bAU\b(?!\s*(?:\u2026|\.\.\.))", re.IGNORECASE)
 MEMORABILIA_KEYWORDS = ["patch", "relic", "jersey", "memorabilia", "swatch", "game-used", "game used"]
 # Patch is a strict subset of memorabilia and is worth materially more than
 # a plain jersey swatch, so it gets its own field rather than being pooled.
@@ -281,6 +386,13 @@ PATCH_KEYWORDS = ["patch", "patches", "rpa", "logoman", "laundry tag", "letter p
 
 YEAR_RE = re.compile(r"\b(19\d{2}|20\d{2})(?:-\d{2})?\b")
 SEASON_RE = re.compile(r"\b((?:19|20)\d{2})-(\d{2})\b")
+# "25-26 Topps Chrome ...": a season written with two-digit years. Used only
+# when no four-digit year is present, and only for consecutive years, so a
+# card number ("#25-26", "BD-72"), a print run ("/25-26") or a score is not
+# read as a season: the lookbehind bars "#", letters, "/", "." and "-".
+# No season starts later than next year; anything past it is not a season.
+_MAX_SEASON_YEAR = date.today().year + 1
+SHORT_SEASON_RE = re.compile(r"(?<![#\w/.-])(\d{2})-(\d{2})(?![\w/-])")
 CARD_NUMBER_RE = re.compile(r"#([A-Za-z0-9-]{1,10})\b")
 # "Card No. 150" / "card number 301" -- the same fact, spelled out.
 # Deliberately no "#" alternative here: the hashed form is CARD_NUMBER_RE's
@@ -307,10 +419,21 @@ PREFIXED_CARD_NUMBER_RE = re.compile(
 # "BCP-83 /150" was read as copy 83 of 150, and the report then stated
 # "(83/150)" on a card whose title says no such thing. A serial that has
 # to borrow the card number for its numerator is not a serial.
-SERIAL_NUMBER_RE = re.compile(r"(?<![\w./-])(\d{1,4})\s*/\s*(\d{1,5})(?!\s*[/.]?\d)\b")
-# Bare "/99" or "/ 99" -- print run only, no serial. Must start at a space
-# or bracket so we don't fire on "9.5/10" or "w/99".
-BARE_PRINT_RUN_RE = re.compile(r"(?:(?<=\s)|(?<=\()|^)/\s*(\d{1,5})(?!\s*[/.]?\d)\b")
+#
+# The lookahead refuses a date chain ("12/25/2024", "12 / 25 / 2024") but
+# NOT a number after a space: it used to, and that dropped every serial
+# followed by the year ("73/99 2024 Panini", "/150 2025 ..."). A bare
+# "month/day year" is refused in _extract_serial_and_print_run instead.
+SERIAL_NUMBER_RE = re.compile(r"(?<![\w./-])(\d{1,4})\s*/\s*(\d{1,5})(?![/.]?\d)(?!\s*/\s*\d)\b")
+# Bare "/99", "/ 99" or "#/99" -- print run only, no serial. Must start at a
+# space, bracket or "#" so we don't fire on "9.5/10" or "w/99".
+BARE_PRINT_RUN_RE = re.compile(
+    r"(?:(?<=\s)|(?<=\()|(?<=#)|^)/\s*(\d{1,5})(?![/.]?\d)(?!\s*/\s*\d)\b"
+)
+# "7/14 2024": a month/day followed by a year, not copy 7 of 14.
+_DATE_YEAR_AFTER_RE = re.compile(r"\s+(?:19|20)\d{2}\b")
+# "7 / 14 / 2024": the "/ 2024" at the end of a date chain is not a bare run.
+_DATE_CHAIN_BEFORE_RE = re.compile(r"\d\s*/\s*\d{1,2}\s*$")
 LOT_OF_N_RE = re.compile(r"\blot\s+of\s+\d+\b", re.IGNORECASE)
 CARD_LOT_RE = re.compile(r"\b\d+\s*-?\s*card\s+lot\b", re.IGNORECASE)
 BARE_LOT_RE = re.compile(r"\blot\b", re.IGNORECASE)
@@ -500,6 +623,9 @@ def _parallel_run(masked_title: str):
         else:
             if not adjacent:
                 current, current_specific = [], False
+            if current and current[-1] == canonical:
+                previous_end = match.end()
+                continue  # "Refractors refractor": one word said twice
             current.append(canonical)
             current_specific = current_specific or word in _UNAMBIGUOUS_LOWER
             # Longer run wins; on a tie, the specific one does. Without the
@@ -513,6 +639,9 @@ def _parallel_run(masked_title: str):
     return (" ".join(best_words), best_specific) if best_words else (None, False)
 
 _COLOR_LOOKUP = {word.lower(): word for word in COLOR_PARALLEL_WORDS}
+_COLOR_BEFORE_RE = re.compile(
+    r"\b(" + "|".join(re.escape(c) for c in COLOR_PARALLEL_WORDS) + r")[\s-]+$", re.IGNORECASE
+)
 _QUALIFIER_LOOKUP = {word.lower(): word for word in PARALLEL_QUALIFIER_WORDS}
 _COLOR_QUALIFIER_RE = re.compile(
     r"\b(" + "|".join(re.escape(c) for c in sorted(COLOR_PARALLEL_WORDS, key=len, reverse=True)) + r")"
@@ -638,8 +767,16 @@ def _extract_parallel(masked_title: str) -> Field:
     jersey colour, a border, or a word from the player's team.
     """
     # 1. Named compound parallels ("Orange Ice", "Cracked Ice"), longest first.
+    #    A colour directly in front of a named refractor is part of its name:
+    #    "Magenta Speckle Refractor" is not "Speckle Refractor".
+    for alias, name in _PARALLEL_ALIAS_RES:
+        masked_title = alias.sub(name, masked_title)
     for name, pattern in _COMPOUND_PARALLEL_PATTERNS:
-        if pattern.search(masked_title):
+        match = pattern.search(masked_title)
+        if match:
+            colour = _COLOR_BEFORE_RE.search(masked_title, 0, match.start())
+            if colour and name.lower().endswith("fractor") and name.split()[0].lower() not in _COLOR_LOOKUP:
+                name = "{} {}".format(_COLOR_LOOKUP[colour.group(1).lower()], name)
             return Field(value=name, confidence="high", source="title")
 
     # 2. Colour immediately next to a parallel qualifier ("Green Prizm",
@@ -676,6 +813,39 @@ def _extract_parallel(masked_title: str) -> Field:
     return Field(value=None, confidence="none", source="title")
 
 
+def _chrome_or_subset(set_field: Field, parallel: Optional[str], title: str) -> Field:
+    """Two products that print one card under two names.
+
+    * A Young Guns card in Upper Deck Series 1/2 keys as "Young Guns" (see
+      SUBSET_OVER_SET).
+    * Bowman Draft's refractors are printed only on the Chrome card: "2020
+      Bowman Draft Refractor BD-72" is the Bowman Chrome Draft card, so a
+      refractor-family parallel, or "Chrome" in the title, keys it there.
+      Paper Bowman Draft (base, foils) stays "Bowman Draft".
+    """
+    name = set_field.value
+    subset = SUBSET_OVER_SET.get(name)
+    if subset and re.search(r"\b" + r"\s*".join(subset.lower().split()) + r"\b", title.lower()):
+        return Field(value=subset, confidence=set_field.confidence, source=set_field.source)
+    if name == "Bowman Draft" and (
+        (parallel and "fractor" in parallel.lower()) or re.search(r"\bchrome\b", title, re.IGNORECASE)
+    ):
+        name = "Bowman Chrome Draft"
+    # Sapphire Edition is its own product, as "Topps Chrome Sapphire" and
+    # "Bowman Chrome Sapphire" already are: a $340 Sapphire BD-72 keyed as
+    # plain Chrome Draft pooled with $40 base copies.
+    sapphire = {
+        "Bowman Chrome": "Bowman Chrome Sapphire", "Bowman Chrome Draft": "Bowman Chrome Draft Sapphire",
+        "Bowman Draft": "Bowman Chrome Draft Sapphire", "Topps Chrome": "Topps Chrome Sapphire",
+        "Topps Chrome Update": "Topps Chrome Update Sapphire",
+    }
+    if name in sapphire and re.search(r"\bsapphire\b", title, re.IGNORECASE):
+        name = sapphire[name]
+    if name != set_field.value:
+        return Field(value=name, confidence=set_field.confidence, source=set_field.source)
+    return set_field
+
+
 def _canonical_set(set_field: Field, title: str) -> Field:
     """One name per product, so one product means one comp bucket.
 
@@ -709,8 +879,45 @@ NOT_BASE_TOKENS = [
     "insert", "die cut", "die-cut", "case hit", "1st", "1of1", "one of one",
     "parallel", "numbered", "exclusive", "exclusives", "premium",
 ]
+# Measured on the corpus (identity audit, 2026-10-16): the outliers in base
+# buckets were parallels and oddities named with words absent from the
+# parallel vocabulary. Each makes a title "maybe not base". Conservative on
+# purpose: "stars" and "anniversary" also refuse the base cards of Rookies &
+# Stars / Platinum Anniversary, which costs coverage, not correctness. Kept
+# out of NOT_BASE_TOKENS because that list is also "familiar words" for the
+# flagship-set guard, where these would let "Topps Stars Of The MLB" read
+# as flagship Topps.
+_NOT_BASE_EXTRA_TOKENS = [
+    "jumbo", "oversized", "rainbow", "color wheel", "foil", "holo", "holofoil",
+    "border", "anniversary", "outburst", "spectrum", "mini", "logofractors",
+    "x-fractors", "refractors", "refr", "stars", "flex", "laser", "lazer",
+    "filigree", "filagree", "glitter", "diamante", "pulse", "platinum", "photo",
+    "image",
+    # Second pass (review of the base buckets, 2026-10-16): holiday and
+    # seasonal variations (Topps Update Holiday, Hoops Winter), "Mosaic
+    # Prizm" (Mosaic's own parallel), Select Maroon, Retro subsets, miscuts.
+    # Each checked on the corpus: every base-read hit was not a base card.
+    "holiday", "halloween", "winter", "oversize", "mosaic prizm", "maroon", "retro",
+    "miscut",
+]
 _NOT_BASE_RE = re.compile(
-    r"\b(" + "|".join(re.escape(t) for t in NOT_BASE_TOKENS) + r")\b", re.IGNORECASE
+    r"\b(" + "|".join(re.escape(t) for t in NOT_BASE_TOKENS + _NOT_BASE_EXTRA_TOKENS) + r")\b"
+    # Shapes a word list cannot say: "SandGlitter" (one word), "Jack
+    # O'Lantern" spelled any way, and " + " joining two cards in one
+    # listing ("Base Chrome + Paper"). The spaces matter: "NM+" and "EX+"
+    # are condition grades, not a second card.
+    r"|glitter|\bjack\s*o'?\s*-?\s*lantern\b|\s\+\s",
+    re.IGNORECASE,
+)
+# A grading word on a title the grade parser read as RAW is a slab or a
+# condition-graded card whose grade we could not read ("PSA NM-MT 8",
+# "GEM MINT PTA 10", "SGC Graded 3"). Either way it is not a raw base copy,
+# and keyed as one it drags a $1 bucket to $500 (1969 Sayers BVG 8).
+# Graded base cards the parser DID read keep is_base: their grade keys them.
+_GRADING_WORD_RE = re.compile(
+    r"\b(psa|bgs|sgc|cgc|csg|hga|bvg|isa|gma|pta|fcg|pxg|gmg|bccg|beckett|graded|"
+    r"gem\s*-?\s*mi?n?t|nm\s*-?\s*mt)\b",
+    re.IGNORECASE,
 )
 
 
@@ -1064,8 +1271,15 @@ def _extract_is_base(
     declare a deal. Measured on the live corpus, resolving this is the single
     largest available gain in comp coverage.
 
-    THIS FIELD DOES NOT KEY A COMP BUCKET, and the question of whether it
-    should is now CLOSED rather than open. The test this docstring used to
+    UPDATE 2026-10-16: it now keys the EXACT level only, as parallel "Base"
+    (comps._base_parallel), because exact also keys the card number -- the
+    missing key the paragraphs below name. Re-measured on the 8-week corpus:
+    0 of 115 deep exact Base buckets mix card numbers, against 146 of 193 at
+    same_card, which still refuses it. Everything below is why same_card
+    must keep refusing.
+
+    THIS FIELD DID NOT KEY A COMP BUCKET, and the question of whether it
+    should was CLOSED rather than open. The test this docstring used to
     name -- replay a corpus several weeks wide and confirm the buckets it
     creates contain what they claim to -- was run against the 27-day corpus
     in data/ebay_alert_price_history.json (2026-08-21 .. 2026-09-16), with
@@ -1133,6 +1347,8 @@ def _extract_is_base(
     if serial_number.value is not None or print_run.value is not None:
         return Field(value=None, confidence="none", source="title")
     if _NOT_BASE_RE.search(title):
+        return Field(value=None, confidence="none", source="title")
+    if _GRADING_WORD_RE.search(title) and matcher.detect_grade_details(title).card_type == "raw":
         return Field(value=None, confidence="none", source="title")
     return Field(value=True, confidence="medium", source="title")
 
@@ -1207,18 +1423,36 @@ def _extract_serial_and_print_run(title: str):
     """
     unknown = Field(value=None, confidence="none", source="title")
 
+    # Spans the serial pass rejected as a DATE: the bare-run pass below must
+    # not then read the same "/10" on its own ("PSA 9 / 10 2024"). Not the
+    # numerator > denominator case: that is a card number running into a
+    # real run ("#301 /230"), and the bare "/230" is the right answer.
+    rejected = []
     for match in SERIAL_NUMBER_RE.finditer(title):
         numerator, denominator = int(match.group(1)), int(match.group(2))
         if not _valid_print_run(denominator) or numerator > denominator:
             continue
         if 1900 <= denominator <= 2099 and numerator <= 31:
+            rejected.append(match.span())
             continue  # "12/2024" is a date, not a serial
+        if (
+            numerator <= 12 and denominator <= 31 and (numerator, denominator) != (1, 1)
+            and _DATE_YEAR_AFTER_RE.match(title, match.end())
+        ):
+            # "7/14 2024" is a date too. "1/1 2024" is not: New Year's Day
+            # never appears in a card title, a one-of-one does all the time.
+            rejected.append(match.span())
+            continue
         serial = Field(value=f"{numerator}/{denominator}", confidence="high", source="title")
         return serial, Field(value=denominator, confidence="high", source="title")
 
     for match in BARE_PRINT_RUN_RE.finditer(title):
         denominator = int(match.group(1))
         if not _valid_print_run(denominator):
+            continue
+        if _DATE_CHAIN_BEFORE_RE.search(title[: match.start()]):
+            continue
+        if any(start <= match.start() < end for start, end in rejected):
             continue
         return unknown, Field(value=denominator, confidence="high", source="title")
 
@@ -1275,6 +1509,23 @@ def extract_card_identity(title: str) -> CardIdentity:
         if year_match
         else Field(value=None, confidence="none", source="title")
     )
+    short_season = None
+    if not year_match:
+        for match in SHORT_SEASON_RE.finditer(title):
+            first, second = int(match.group(1)), int(match.group(2))
+            century = 2000 if first <= 50 else 1900
+            if century + first > _MAX_SEASON_YEAR:
+                continue  # "49-50" is not the 2049-50 season
+            if (first + 1) % 100 == second:
+                year_field = Field(value=century + first, confidence="medium", source="title")
+                short_season = "{}-{}".format(century + first, match.group(2))
+                break
+    dated_product = None
+    for name, first_year, pattern in _DATED_PRODUCT_RES:
+        if year_field.value is not None and year_field.value >= first_year and pattern.search(masked):
+            dated_product = name
+            masked = pattern.sub(lambda match: " " * len(match.group(0)), masked)
+            break
 
     # "2023-24 Upper Deck" is one hockey/basketball season, and flattening it
     # to 2023 loses the distinction between the 2023-24 and 2022-23 issues.
@@ -1284,7 +1535,7 @@ def extract_card_identity(title: str) -> CardIdentity:
     season_field = (
         Field(value=f"{season_match.group(1)}-{season_match.group(2)}", confidence="high", source="title")
         if season_match
-        else Field(value=None, confidence="none", source="title")
+        else Field(value=short_season, confidence="medium" if short_season else "none", source="title")
     )
 
     serial_field, print_run_field = _extract_serial_and_print_run(title)
@@ -1303,6 +1554,8 @@ def extract_card_identity(title: str) -> CardIdentity:
     card_number_field = _extract_card_number(title)
     set_masked = mask_for_set_lookup(title)
     set_field = _canonical_set(_keyword_field(set_masked, SET_KEYWORDS), set_masked)
+    if dated_product is not None:
+        set_field = Field(value=dated_product, confidence="high", source="title")
     if set_field.value is None:
         # ONLY here, with the ordinary vocabulary lookup already empty, so
         # the flagship can never outrank a named product. See
@@ -1311,6 +1564,7 @@ def extract_card_identity(title: str) -> CardIdentity:
             title, set_masked, manufacturer_field.value, card_number_field.value
         )
     parallel_field = _extract_parallel(masked)
+    set_field = _chrome_or_subset(set_field, parallel_field.value, title)
 
     # Everything above read the title as if it were whole. Where eBay cut it,
     # any field whose evidence runs into the cut is a fragment wearing a
@@ -1345,7 +1599,14 @@ def extract_card_identity(title: str) -> CardIdentity:
         card_number=card_number_field,
         serial_number=serial_field,
         print_run=print_run_field,
-        is_autograph=Field(bool(_find_keyword(masked, AUTOGRAPH_KEYWORDS)), "high", "title"),
+        is_autograph=Field(
+            bool(
+                _find_keyword(masked, AUTOGRAPH_KEYWORDS + AUTOGRAPH_SET_WORDS)
+                or AU_TOKEN_RE.search(masked)
+            ),
+            "high",
+            "title",
+        ),
         is_memorabilia=Field(is_memorabilia, "high", "title"),
         is_patch=Field(is_patch, "high", "title"),
         is_lot=Field(is_lot, lot_confidence, "title"),

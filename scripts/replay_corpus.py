@@ -51,6 +51,15 @@ def replay_new(observations, min_comps, today):
             set_name=obs.get("set_name"),
             parallel=obs.get("parallel"),
             card_number=obs.get("card_number"),
+            # The printing variant, as main.evaluate_listings passes it.
+            # Without it every lookup asked for the plain card, so the replay
+            # could not see an autograph or print-run fix at all.
+            is_autograph=obs.get("is_autograph") or False,
+            relic=obs.get("relic"),
+            print_run=obs.get("print_run"),
+            is_serial_numbered=obs.get("is_serial_numbered") or False,
+            title_truncated=bool(obs.get("title_truncated")),
+            is_base=obs.get("is_base"),
             exclude_id=obs.get("id"),
         )
         if match is None:
@@ -166,6 +175,10 @@ def reextract(observations) -> list:
             grader=grade_info.grader,
             grade=grade_info.grade,
             qualifier=grade_info.qualifier,
+            is_autograph=identity.is_autograph.value,
+            relic="patch" if identity.is_patch.value else ("relic" if identity.is_memorabilia.value else None),
+            print_run=identity.print_run.value,
+            is_serial_numbered=identity.is_serial_numbered.value,
         )
         updated.append(fresh)
     return updated

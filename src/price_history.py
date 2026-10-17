@@ -255,6 +255,11 @@ def record(
     observation = {
         "price": price,
         "date": today,
+        # The latest sighting. `date` stays the FIRST sighting (recency
+        # weighting and the stale gate read it), so retention needs its own
+        # field: pruning on `date` deleted a listing still live after
+        # max_age_days and re-recorded it the next day as a fresh comp.
+        "last_seen": today,
         "id": listing_id,
         "year": year,
         "set_name": set_name,
@@ -448,14 +453,21 @@ def observed_dates(history: dict) -> set:
 
 
 def prune_old(history: dict, max_age_days: int, today: datetime) -> dict:
-    cutoff = today - timedelta(days=max_age_days)
+    """Drop rows not SEEN within max_age_days: last_seen when the row has
+    one, else its (first-seen) date. Compared as calendar dates -- a
+    datetime cutoff carries the run's time of day and dropped every row
+    dated exactly on the cutoff day."""
+    today_date = today.date() if isinstance(today, datetime) else today
+    cutoff = today_date - timedelta(days=max_age_days)
     pruned: dict = {}
     for key, observations in history.items():
         kept = []
         for obs in observations:
             try:
-                obs_date = datetime.strptime(obs["date"], "%Y-%m-%d").replace(tzinfo=timezone.utc)
-            except (KeyError, ValueError):
+                obs_date = datetime.strptime(
+                    obs.get("last_seen") or obs["date"], "%Y-%m-%d"
+                ).date()
+            except (KeyError, ValueError, TypeError):
                 continue
             if obs_date >= cutoff:
                 kept.append(obs)

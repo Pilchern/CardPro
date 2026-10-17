@@ -229,6 +229,7 @@ def test_missing_new_sections_fall_back_to_safe_defaults(tmp_path, monkeypatch):
     assert cfg.valuation_stale_after_days == 45
     assert cfg.require_flag_eligible_comp is True
     assert cfg.resale_haircut_pct == 5.0
+    assert cfg.min_net_profit == 15.0
     assert cfg.auction_ending_soon_hours == 24
 
 
@@ -336,3 +337,17 @@ def test_focus_absent_means_the_old_unfiltered_report(tmp_path, monkeypatch):
 def test_focus_can_be_switched_off_explicitly(tmp_path, monkeypatch):
     cfg = _load_with(tmp_path, monkeypatch, settings_extra={"focus": {"enabled": False}})
     assert cfg.focus_rules.enabled is False
+
+
+def test_the_grading_block_loads_and_is_off(tmp_path, monkeypatch):
+    import json
+    from pathlib import Path as _Path
+
+    shipped = json.loads((_Path(__file__).resolve().parents[1] / "config" / "settings.json").read_text())
+    assert shipped["grading"]["enabled"] is False
+    cfg = _load_with(tmp_path, monkeypatch, settings_extra={"grading": shipped["grading"]})
+    assert cfg.grading["psa_standard"] == 59.99 and cfg.grading["enabled"] is False
+    assert cfg.grading["bgs_express"] is None  # unsourced, kept null
+    other = tmp_path / "no_grading"
+    other.mkdir()
+    assert _load_with(other, monkeypatch).grading == {}

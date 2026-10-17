@@ -65,14 +65,16 @@ never a guessed match.
 """
 from __future__ import annotations
 
+import dataclasses
 import math
+import re
 import statistics
 from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
-from src import card_identity
+from src import card_identity, matcher
 
 # (label, min_inclusive, max_exclusive). Last tier's max is unbounded.
 PRICE_TIERS = [
@@ -316,6 +318,12 @@ CONFIDENCE_LADDER = ("high", "medium", "low")
 #: "sold" is the market's. Today 100% of this project's corpus is "asking".
 BASIS_ASKING = "asking"
 BASIS_SOLD = "sold"
+#: SOLD observations in a flag-eligible bucket at which the bucket is valued
+#: from its sales alone (see CompEngine.lookup).
+SOLD_TAKEOVER_MIN = 2
+#: Two sales may stand alone only if they agree: the higher at most this
+#: multiple of the lower. Otherwise the bucket stays pooled with the asks.
+SOLD_PAIR_MAX_RATIO = 1.5
 
 
 def _downgrade(confidence: str, steps: int = 1) -> str:
@@ -343,6 +351,43 @@ def _clean_upper(value) -> Optional[str]:
     """
     text = _clean(value)
     return text.upper() if text is not None else None
+
+
+def _clean_card_number(value) -> Optional[str]:
+    """A card number as a bucket key: "#BD-72", "BD72" and "bd 72" are one
+    card. Sellers punctuate the printed number however they like, and every
+    spelling was its own exact bucket -- splitting a card's comps three ways
+    and leaving a hand-entered sold comp unmatched by a hyphen. Applied to
+    stored rows and to the listing alike, so old rows need no migration.
+    """
+    text = _clean(value)
+    if text is None:
+        return None
+    return re.sub(r"[\s#-]+", "", text).upper() or None
+
+
+#: The parallel a base card keys under -- at the exact level only (see
+#: _key_same_card and _base_parallel).
+BASE_PARALLEL = "Base"
+
+
+def _base_parallel(parallel, is_base, card_number, card_type, year) -> Optional[str]:
+    """``parallel``, or "Base" for a base card that can key an exact bucket.
+
+    Base cards were the largest class of rows that could never reach a
+    flag-eligible level: parallel None means both "base" and "unread". With
+    is_base (the closed-world guard in card_identity) AND a card number the
+    two cannot be confused at the exact level -- 0 of 115 deep Base buckets
+    mixed card numbers on the corpus. Raw pre-1980 cards are left out: their
+    base buckets are priced by condition, not identity ($15-$69 for one
+    1969 Topps #51), so a cheap copy is not a cheap price.
+    """
+    cleaned = _clean(parallel)
+    if cleaned is not None or not is_base or card_number is None:
+        return cleaned
+    if card_type == "raw" and (year is None or year < 1980):
+        return None
+    return BASE_PARALLEL
 
 
 def _clean_year(value) -> Optional[int]:
@@ -429,6 +474,11 @@ def printing_variant(
     return (bool(is_autograph), relic_value.lower() if relic_value else None, numbering)
 
 
+#: One parse per stored title per run, shared by the two readers below
+#: (it is the expensive part of building the engine).
+_parse_title = lru_cache(maxsize=16384)(card_identity.extract_card_identity)
+
+
 @lru_cache(maxsize=16384)
 def _variant_from_title(title: str) -> Optional[tuple]:
     """The variant re-read from a stored listing title.
@@ -439,18 +489,46 @@ def _variant_from_title(title: str) -> Optional[tuple]:
     it to age out. Cached because a run looks up hundreds of listings
     against a corpus of thousands of rows, and the same title is read once.
     """
-    return card_identity.printing_variant(card_identity.extract_card_identity(title), title)
+    return card_identity.printing_variant(_parse_title(title), title)
+
+
+@lru_cache(maxsize=16384)
+def _identity_from_title(title: str) -> Optional[dict]:
+    """The bucket-key fields of a stored row, re-read from its title with
+    today's parser -- the same reasoning as ``_variant_from_title``, for the
+    fields the variant does not cover (a set or parallel fix reaches the
+    corpus on the next run, not when the row ages out). None when today's parser
+    would refuse the listing outright (lot, reprint...), so the row stops
+    being a comp. Callers copy the dict; the cache shares it.
+    """
+    identity = _parse_title(title)
+    if card_identity.is_excluded_from_deals(identity):
+        return None
+    grade = matcher.detect_grade_details(title)
+    return {
+        "year": identity.year.value, "set_name": identity.set_name.value,
+        "parallel": identity.parallel.value, "card_number": identity.card_number.value,
+        "card_type": grade.card_type, "grader": grade.grader, "grade": grade.grade,
+        "qualifier": grade.qualifier, "is_base": identity.is_base.value,
+    }
 
 
 def variant_of_observation(obs: dict) -> Optional[tuple]:
     """The printing variant of one stored observation.
 
-    Explicit fields win when they are there; a row recorded before they
-    existed is re-read from its stored title; a row with neither is taken at
-    face value as a plain card, because that is what every field it does
-    carry says and refusing it would delete the older half of the corpus
-    from the only levels that can flag a deal.
+    A stored title wins: it is re-read with today's parser, so a parser fix
+    reaches every stored row on the next run instead of only the rows
+    written after it (the explicit fields are what the parser said on the
+    day, and used to win -- 165 real autos kept reading as plain cards for
+    as long as the corpus kept them). A row without a title falls back to
+    its explicit fields; a row with neither is taken at face value as a
+    plain card, because that is what every field it does carry says and
+    refusing it would delete the older half of the corpus from the only
+    levels that can flag a deal.
     """
+    title = obs.get("title")
+    if title:
+        return None if obs.get("title_truncated") else _variant_from_title(str(title))
     if "is_autograph" in obs or "relic" in obs:
         return printing_variant(
             is_autograph=obs.get("is_autograph"),
@@ -459,9 +537,6 @@ def variant_of_observation(obs: dict) -> Optional[tuple]:
             is_serial_numbered=obs.get("is_serial_numbered"),
             title_truncated=bool(obs.get("title_truncated")),
         )
-    title = obs.get("title")
-    if title:
-        return _variant_from_title(str(title))
     return printing_variant(print_run=obs.get("print_run"))
 
 
@@ -494,6 +569,12 @@ def _key_exact(f: dict) -> Optional[tuple]:
 
 def _key_same_card(f: dict) -> Optional[tuple]:
     if None in (f["year"], f["set_name"], f["parallel"], f["market"], f["variant"]):
+        return None
+    if f["parallel"] == BASE_PARALLEL:
+        # "Base" says nothing about WHICH card: a product's base card and its
+        # dozen unparalleled inserts all read as base, and 146 of 193 deep
+        # Base buckets at this level mixed card numbers (identity audit
+        # 2026-10-16). Only exact, which keys the card number, may use it.
         return None
     return (f["player"], f["year"], f["set_name"], f["parallel"], f["market"], f["variant"])
 
@@ -835,9 +916,9 @@ def compute_comp_stats(
     card_numbers = set()
     for point in kept:
         number = point.get("_fields", {}).get("card_number") or point.get("card_number")
-        cleaned = _clean(number)
+        cleaned = _clean_card_number(number)
         if cleaned is not None:
-            card_numbers.add(cleaned.upper())
+            card_numbers.add(cleaned)
     distinct_card_numbers = len(card_numbers)
 
     distinct_dates = len({p["_date"].date() for p in kept})
@@ -903,8 +984,7 @@ def assess_comp_match(
     # removes itself, the remaining points are all the base card, and the
     # bucket then looks perfectly clean to the one listing it is about to
     # misvalue.
-    listing_number = _clean(card_number)
-    listing_number = listing_number.upper() if listing_number else None
+    listing_number = _clean_card_number(card_number)
     wrong_card = stats.is_mixed_card_numbers or bool(
         listing_number is not None
         and stats.card_numbers
@@ -1051,6 +1131,15 @@ class CompEngine:
         parsed_date = _parse_date(obs.get("date"))
         if parsed_date is None:
             return None
+        if obs.get("title"):
+            fresh = _identity_from_title(str(obs["title"]))
+            if fresh is None:
+                return None
+            if obs.get("title_truncated") and fresh["grade"] is not None:
+                # A grade read off a cut title is probably wrong ("PSA 1..."),
+                # the same reason record_observations refuses to store one.
+                return None
+            obs = {**obs, **fresh}
 
         card_type = _clean(obs.get("card_type"))
         fields = {
@@ -1059,8 +1148,11 @@ class CompEngine:
             "price": price,
             "year": _clean_year(obs.get("year")),
             "set_name": _clean(obs.get("set_name")),
-            "parallel": _clean(obs.get("parallel")),
-            "card_number": _clean(obs.get("card_number")),
+            "parallel": _base_parallel(
+                obs.get("parallel"), obs.get("is_base"), _clean_card_number(obs.get("card_number")),
+                card_type.lower() if card_type else None, _clean_year(obs.get("year")),
+            ),
+            "card_number": _clean_card_number(obs.get("card_number")),
             "market": market_key(card_type, obs.get("grader"), obs.get("grade"), obs.get("qualifier")),
             # An autograph, a patch and a /50 print run are three different
             # cards wearing one set of identity fields -- see
@@ -1098,6 +1190,7 @@ class CompEngine:
         print_run: Optional[int] = None,
         is_serial_numbered: Optional[bool] = False,
         title_truncated: bool = False,
+        is_base: Optional[bool] = None,
         exclude_id: Optional[str] = None,
     ) -> Optional[CompMatch]:
         """First level that both applies and still has min_comps_required
@@ -1118,8 +1211,11 @@ class CompEngine:
             "price": price,
             "year": _clean_year(year),
             "set_name": _clean(set_name),
-            "parallel": _clean(parallel),
-            "card_number": _clean(card_number),
+            "parallel": _base_parallel(
+                parallel, is_base, _clean_card_number(card_number),
+                cleaned_type.lower() if cleaned_type else None, _clean_year(year),
+            ),
+            "card_number": _clean_card_number(card_number),
             "market": market_key(card_type, grader, grade, qualifier),
             "variant": printing_variant(
                 is_autograph=is_autograph,
@@ -1139,11 +1235,31 @@ class CompEngine:
             points = self._buckets[spec.name].get(key)
             if not points:
                 continue
+            min_comps = self.min_comps_required
+            if spec.flag_eligible:
+                # Real sales outrank asks: once a card-level bucket holds two
+                # SOLD prices it is valued from those alone, basis SOLD, rather
+                # than pooled with asks that only cap what it might fetch. Two
+                # sales are a thinner sample than three asks, and the report
+                # says so; they are still the better evidence. One sale is
+                # not enough to stand alone and stays pooled.
+                sold = [p for p in points if p["basis"] == BASIS_SOLD and p["id"] != exclude_id]
+                prices = [p["price"] for p in sold]
+                if len(sold) >= 3 or (
+                    len(sold) >= SOLD_TAKEOVER_MIN and max(prices) <= SOLD_PAIR_MAX_RATIO * min(prices)
+                ):
+                    points, min_comps = sold, SOLD_TAKEOVER_MIN
             stats = self._stats_for(spec.name, key, points, exclude_id)
-            if stats is None or stats.sample_size < self.min_comps_required:
+            if stats is None or stats.sample_size < min_comps:
                 continue
+            if min_comps == SOLD_TAKEOVER_MIN and stats.sample_size < 3:
+                # Two sales: the weighted median IS the newer one, and the
+                # dispersion gate cannot trip on two points. So the pair must
+                # agree (above), and the card is valued at the LOWER sale --
+                # one $90 sale must not make a $15 card read as a $90 one.
+                stats = dataclasses.replace(stats, median=stats.minimum)
             return assess_comp_match(
-                stats, spec.name, self.min_comps_required, card_number=fields["card_number"]
+                stats, spec.name, min_comps, card_number=fields["card_number"]
             )
         return None
 

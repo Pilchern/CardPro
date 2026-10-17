@@ -36,8 +36,9 @@ No network, no clock, no writes. Pure function of what it is handed.
 """
 from __future__ import annotations
 
+import statistics
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional
 
 from src import comps
 
@@ -51,6 +52,11 @@ DEFAULT_LIMIT = 5
 #: comp entered for a one-off is a lookup spent on a card that may never
 #: appear again.
 DEFAULT_MIN_LISTINGS = 2
+
+#: A listing older than this (days up) counts half toward a lookup's value:
+#: the cards still listed weeks later are the ones the market already
+#: passed on.
+RECENT_DAYS = 14
 
 
 @dataclass(frozen=True)
@@ -66,6 +72,11 @@ class CompRequest:
     sold_on_file: int
     still_needed: int
     example_url: Optional[str]
+    card_number: Optional[str] = None
+    #: comps.printing_variant: (autograph, relic, numbering).
+    variant: Optional[tuple] = None
+    median_ask: Optional[float] = None
+    score: float = 0.0
 
     @property
     def market_label(self) -> str:
@@ -103,6 +114,16 @@ class CompRequest:
             parts.append('--set "{}"'.format(self.set_name))
         if self.parallel:
             parts.append('--parallel "{}"'.format(self.parallel))
+        if self.card_number:
+            parts.append("--card-number {}".format(self.card_number))
+        if self.variant:
+            autograph, relic, numbering = self.variant
+            if autograph:
+                parts.append("--auto")
+            if relic:
+                parts.append("--relic {}".format(relic))
+            if numbering and numbering[0] == "numbered":
+                parts.append("--print-run {}".format(numbering[1]))
         if self.market and self.market[0] == "graded":
             parts.append("--grader {} --grade {}".format(self.market[1], self.market[2]))
             if self.market[3]:
@@ -123,7 +144,8 @@ class CompRequest:
             str(self.year) if self.year else None,
             self.set_name,
             self.player,
-            self.parallel,
+            self.parallel if self.parallel != comps.BASE_PARALLEL else None,
+            "#" + self.card_number if self.card_number else None,
         ]
         if self.market and self.market[0] == "graded":
             parts.append("{} {}".format(self.market[1], self.market[2]))
@@ -132,55 +154,53 @@ class CompRequest:
         return " ".join(p for p in parts if p)
 
 
-def _identity_key(
-    player: str,
-    year,
-    set_name,
-    parallel,
-    market: tuple,
-) -> tuple:
-    return (player, year, set_name, parallel, market)
+def _identity_key(player, year, set_name, parallel, card_number, market, variant) -> Optional[tuple]:
+    """The EXACT comp key (comps._key_exact): a sold comp entered from a
+    suggestion has to land in the bucket of the listings it was suggested
+    for, and same_card without the card number or the variant pooled a
+    base card with its inserts and its autos -- a suggestion that could
+    never be matched. None when any part is unknown."""
+    if None in (year, set_name, parallel, card_number, market, variant) or not set_name:
+        return None
+    return (player, year, set_name, parallel, card_number, market, variant)
 
 
 def _listing_identity(listing) -> Optional[tuple]:
-    """The same_card key for a listing, or None if it has no complete one.
-
-    Mirrors comps._key_same_card deliberately rather than sharing code with
-    it: that function consumes prepared observation dicts and this consumes
-    Listing objects. What must not drift is the RULE -- year, set, parallel
-    and a known market are all required, because that is exactly the key a
-    sold comp would have to match to be usable.
-    """
+    """The exact key for a listing, the way CompEngine.lookup builds it."""
     identity = getattr(listing, "card_identity", None)
     if identity is None:
         return None
     # CardIdentity fields are Field objects carrying value + confidence, not
     # bare values; .value is the extracted answer and None means "unknown".
     year = identity.year.value
-    set_name = identity.set_name.value
-    parallel = identity.parallel.value
-    if year is None or not set_name or not parallel:
-        return None
-    market = comps.market_key(
-        listing.card_type, listing.grader, listing.grade, listing.qualifier
+    card_number = comps._clean_card_number(identity.card_number.value)
+    relic = "patch" if identity.is_patch.value else ("relic" if identity.is_memorabilia.value else None)
+    return _identity_key(
+        listing.player, year, identity.set_name.value,
+        comps._base_parallel(identity.parallel.value, identity.is_base.value, card_number,
+                             listing.card_type, year),
+        card_number,
+        comps.market_key(listing.card_type, listing.grader, listing.grade, listing.qualifier),
+        comps.printing_variant(
+            is_autograph=identity.is_autograph.value, relic=relic, print_run=identity.print_run.value,
+            is_serial_numbered=identity.is_serial_numbered.value,
+            title_truncated=bool(getattr(listing, "title_truncated", False)),
+        ),
     )
-    if market is None:
-        return None
-    return _identity_key(listing.player, year, set_name, parallel, market)
 
 
 def _observation_identity(obs: dict) -> Optional[tuple]:
     year = obs.get("year")
-    set_name = obs.get("set_name")
-    parallel = obs.get("parallel")
-    if year is None or not set_name or not parallel:
-        return None
-    market = comps.market_key(
-        obs.get("card_type"), obs.get("grader"), obs.get("grade"), obs.get("qualifier")
+    card_number = comps._clean_card_number(obs.get("card_number"))
+    card_type = obs.get("card_type")
+    return _identity_key(
+        obs.get("player"), year, obs.get("set_name"),
+        comps._base_parallel(obs.get("parallel"), obs.get("is_base"), card_number,
+                             card_type.lower() if card_type else None, year),
+        card_number,
+        comps.market_key(card_type, obs.get("grader"), obs.get("grade"), obs.get("qualifier")),
+        comps.variant_of_observation(obs),
     )
-    if market is None:
-        return None
-    return _identity_key(obs.get("player"), year, set_name, parallel, market)
 
 
 def unidentified_count(listings) -> int:
@@ -202,6 +222,9 @@ def build_requests(
     min_comps_required: int = 3,
     min_listings: int = DEFAULT_MIN_LISTINGS,
     limit: int = DEFAULT_LIMIT,
+    max_price: Optional[Callable[[float, bool], float]] = None,
+    capital_ceiling: Optional[float] = None,
+    all_in: Callable[[float], float] = lambda price: price,
 ) -> list[CompRequest]:
     """Rank the card identities worth a 130point lookup.
 
@@ -212,17 +235,38 @@ def build_requests(
     comps are dropped -- they are done, and asking for more would make the
     list never shrink, which is how a good suggestion turns into nagging.
 
-    Ordering is: most listings unlocked first, then fewest sales still
-    needed (finish the cheap ones), then the identity itself so the output
-    is stable run to run rather than reshuffling on dict order.
+    ``max_price(median_ask, graded)`` is the economics MAX: the most you
+    could pay and still net the profit floor if the card sold at that
+    median. An identity where it is 0 is dropped -- a sold comp for a card
+    no buy price can make money on unlocks nothing you would act on.
+
+    ``capital_ceiling`` (focus.deal_capital_ceiling, all-in) keeps the list
+    inside the spending freeze: price stops counting toward a lookup's
+    value above it, and an identity is dropped when even its cheapest
+    plausible deal could not fit -- the MAX at the median AND the cheapest
+    ask seen are both above it, all-in (``all_in`` adds shipping and tax).
+    Ranked by raw ask, $1,000 cards took every slot and the first identity
+    under $50 ranked 73rd.
+
+    Ordering is by value of the lookup: listings waiting, weighted by
+    recency (a listing over RECENT_DAYS old counts half), times their median
+    ask capped at the capital ceiling; then fewest sales still needed; then
+    the identity, so the output is stable run to run rather than
+    reshuffling on dict order.
     """
     waiting: dict[tuple, int] = {}
+    weight: dict[tuple, float] = {}
+    asks: dict[tuple, list] = {}
     example: dict[tuple, str] = {}
     for listing in listings:
         key = _listing_identity(listing)
         if key is None:
             continue
         waiting[key] = waiting.get(key, 0) + 1
+        age = getattr(listing, "age_days", None)
+        weight[key] = weight.get(key, 0.0) + (0.5 if age is not None and age > RECENT_DAYS else 1.0)
+        if getattr(listing, "price", None) is not None:
+            asks.setdefault(key, []).append(listing.price)
         if key not in example and getattr(listing, "url", None):
             example[key] = listing.url
 
@@ -241,7 +285,17 @@ def build_requests(
         still_needed = max(0, min_comps_required - have)
         if still_needed == 0:
             continue
-        player, year, set_name, parallel, market = key
+        player, year, set_name, parallel, card_number, market, variant = key
+        median_ask = statistics.median(asks[key]) if asks.get(key) else None
+        best_buy = max_price(median_ask, market[0] == "graded") if (max_price and median_ask) else None
+        if best_buy is not None and best_buy <= 0:
+            continue
+        if (
+            capital_ceiling and median_ask is not None
+            and (best_buy is None or all_in(best_buy) > capital_ceiling)
+            and all_in(min(asks[key])) > capital_ceiling
+        ):
+            continue  # no deal on this card could fit the spending cap
         requests.append(
             CompRequest(
                 player=player,
@@ -253,17 +307,22 @@ def build_requests(
                 sold_on_file=have,
                 still_needed=still_needed,
                 example_url=example.get(key),
+                card_number=card_number,
+                variant=variant,
+                median_ask=median_ask,
+                score=weight[key] * min(median_ask or 0.0, capital_ceiling or float("inf")),
             )
         )
 
     requests.sort(
         key=lambda r: (
-            -r.listings_waiting,
+            -r.score,
             r.still_needed,
             r.player,
             r.year or 0,
             r.set_name or "",
             r.parallel or "",
+            r.card_number or "",
             r.market,
         )
     )

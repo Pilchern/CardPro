@@ -79,6 +79,10 @@ def identity_from_title(title: str) -> dict:
         "grader": grade_info.grader,
         "grade": grade_info.grade,
         "qualifier": grade_info.qualifier,
+        # The printing variant: absent on the title means the plain card.
+        "is_autograph": True if identity.is_autograph.value else None,
+        "relic": "patch" if identity.is_patch.value else ("relic" if identity.is_memorabilia.value else None),
+        "print_run": identity.print_run.value,
     }
     return {key: value for key, value in read.items() if value is not None}
 
@@ -96,6 +100,9 @@ def build_sale(args: argparse.Namespace) -> dict:
         ("grader", args.grader.upper() if args.grader else None),
         ("grade", args.grade),
         ("qualifier", args.qualifier.upper() if args.qualifier else None),
+        ("is_autograph", True if args.is_autograph else None),
+        ("relic", args.relic),
+        ("print_run", args.print_run),
         ("price", args.price),
         ("shipping", args.shipping),
         ("date", args.date),
@@ -166,6 +173,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--grader", help="PSA / BGS / SGC / CSG. Omit for raw.")
     parser.add_argument("--grade", help='Numeric grade as shown, e.g. "10" or "9.5". Required with --grader.')
     parser.add_argument("--qualifier", help='Grade qualifier, e.g. "OC" (off-centre). Rare.')
+    parser.add_argument("--auto", dest="is_autograph", action="store_true", default=None,
+                        help="The card is autographed (keys it with the autos, not the plain card).")
+    parser.add_argument("--relic", choices=("patch", "relic"),
+                        help="Memorabilia: patch, or relic for a plain swatch.")
+    parser.add_argument("--print-run", dest="print_run", type=int,
+                        help="Serial numbering, the N in /N (e.g. 50 for /50).")
     parser.add_argument("--shipping", type=float, help="Shipping paid, if any. Never folded into the price.")
     parser.add_argument("--source", default="130point", help="Where you saw it (default: 130point).")
     parser.add_argument("--note", help="Anything worth remembering about this sale.")
@@ -391,7 +404,8 @@ def main(argv=None) -> int:
             if matched:
                 args.player = matched[0]
         print("Read from the title:")
-        for key in ("year", "set_name", "parallel", "card_number", "grader", "grade", "qualifier"):
+        for key in ("year", "set_name", "parallel", "card_number", "grader", "grade", "qualifier",
+                    "is_autograph", "relic", "print_run"):
             print("  {:<12} {}".format(key, read.get(key, "-- not found")))
         print("  {:<12} {}".format("player", args.player or "-- not found"))
         print("Check that against the card before this is trusted over every asking price.")

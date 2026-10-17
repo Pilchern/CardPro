@@ -14,7 +14,7 @@ import argparse
 import importlib
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from logging.handlers import RotatingFileHandler
 from types import SimpleNamespace
 from unittest import mock
@@ -171,6 +171,13 @@ def alert_item(url, price, title=IDENTIFIED_TITLE, **extra):
 TODAY = datetime(2026, 8, 22, tzinfo=timezone.utc)
 
 
+# The deal gate's net-profit floor as shipped, read from the real settings so
+# these tests follow it rather than restating it.
+SHIPPED_MIN_NET_PROFIT = json.loads(
+    (main_module.ROOT_DIR / "config" / "settings.json").read_text()
+)["economics"]["min_net_profit"]
+
+
 def fake_cfg(**overrides):
     """A config object with only what evaluate_listings/record_observations
     actually read. Keeps these tests independent of the JSON config files."""
@@ -193,6 +200,22 @@ def fake_cfg(**overrides):
         supplies_cost=1.0,
         sales_tax_pct=0.0,
         resale_haircut_pct=5.0,
+        # The refinements below are off (or equal to the flat figures) so the
+        # hand-worked numbers in these tests stay simple; the shipped values
+        # are tested in test_economics.py and by the targeted tests below.
+        resale_haircut_asking_pct=5.0,
+        fee_small_order_fixed=0.30,
+        fee_small_order_max=10.0,
+        outbound_shipping_envelope=None,
+        envelope_max_sale=20.0,
+        supplies_graded_cost=None,
+        assumed_inbound_shipping=None,
+        # Off by default here so the gross-discount tests keep testing only
+        # the gross gates. The shipped floor (SHIPPED_MIN_NET_PROFIT) is
+        # asserted by TestNetProfitGate and the shipped-floor siblings below.
+        min_net_profit=float("-inf"),
+        min_net_profit_pct_of_value=0.0,
+        minutes_per_flip=25.0,
         auction_required_margin_pct=25.0,
         auction_ending_soon_hours=24,
         immediate_alert_min_savings_dollars=150.0,
@@ -466,8 +489,8 @@ class TestEvaluateListings:
 
     def test_a_context_only_comp_never_produces_a_max_bid(self):
         """The max bid is the one number in the report that tells you to
-        spend money -- "the most you can pay and still keep your margin.
-        Above this, stop." On the live corpus it was being computed from
+        spend money -- "the most you can pay ... Above this, stop." On the
+        live corpus it was being computed from
         price-bracket medians, putting a $729.31 ceiling on a $125 card two
         lines under "Market: not established"."""
         observations = [observation(400.0, "o%d" % i) for i in range(6)]
@@ -625,14 +648,79 @@ class TestApplyDedupe:
         assert listing.previous_price == 200.0
         assert stats.price_drops == 1
 
-    def test_non_opportunities_pass_through_untouched(self):
-        # Auctions and needs-review items must not be deduped away: an
-        # auction that's still live is still worth seeing.
+    def test_a_card_not_shown_before_passes_through(self):
         stats = observability.RunStats()
         auction = make_listing(EXACT_TITLE, 50.0, listing_id="A1", listing_type="auction")
         kept = main_module.apply_dedupe([auction], {}, "2026-08-22", stats)
         assert kept == [auction]
         assert stats.duplicates_suppressed == 0
+
+
+    SEEN = {"C1": {"price": 100.0, "first_seen": "2026-08-21", "last_flagged": "2026-08-21"}}
+
+    def _card(self, price, **overrides):
+        return make_listing(EXACT_TITLE, price, listing_id="C1", listing_type="fixed_price", **overrides)
+
+    def test_a_card_shown_before_is_left_out_and_counted(self):
+        stats = observability.RunStats()
+        kept = main_module.apply_dedupe([self._card(100.0)], dict(self.SEEN), "2026-08-22", stats)
+        assert kept == []
+        assert stats.previously_shown_suppressed == 1
+
+    def test_it_comes_back_on_a_five_percent_drop_and_not_less(self):
+        stats = observability.RunStats()
+        assert main_module.apply_dedupe([self._card(94.0)], dict(self.SEEN), "2026-08-22", stats)
+        assert not main_module.apply_dedupe([self._card(97.0)], dict(self.SEEN), "2026-08-22", stats)
+
+    def test_a_target_hit_is_always_shown(self):
+        hit = self._card(100.0, target_hit=object())
+        kept = main_module.apply_dedupe([hit], dict(self.SEEN), "2026-08-22", observability.RunStats())
+        assert kept == [hit]
+
+    def test_a_browse_card_that_becomes_a_deal_at_the_same_price_is_reported(self):
+        # Review probe: printed in WATCH on day 1, a deal on day 2 at $40.
+        seen = {}
+        browse = self._card(40.0)
+        main_module.record_shown([browse], frozenset({"C1"}), seen, "2026-10-15")
+        assert seen["C1"]["shown_only"] is True
+        deal = self._card(40.0)
+        deal.is_opportunity = True
+        stats = observability.RunStats()
+        assert main_module.apply_dedupe([deal], seen, "2026-10-16", stats) == [deal]
+        assert deal.is_opportunity is True and stats.duplicates_suppressed == 0
+        assert "shown_only" not in seen["C1"]  # now it has been a deal
+
+    def test_once_a_deal_always_a_deal(self):
+        seen = {}
+        deal = self._card(40.0)
+        deal.is_opportunity = True
+        main_module.apply_dedupe([deal], seen, "2026-10-15", observability.RunStats())
+        main_module.record_shown([self._card(40.0)], frozenset({"C1"}), seen, "2026-10-16")
+        again = self._card(40.0)
+        again.is_opportunity = True
+        stats = observability.RunStats()
+        main_module.apply_dedupe([again], seen, "2026-10-17", stats)
+        assert again.is_opportunity is False and stats.duplicates_suppressed == 1
+
+    def test_a_seen_row_from_before_the_flag_counts_as_a_deal(self):
+        deal = self._card(100.0)
+        deal.is_opportunity = True
+        stats = observability.RunStats()
+        main_module.apply_dedupe([deal], dict(self.SEEN), "2026-08-22", stats)
+        assert stats.duplicates_suppressed == 1
+
+    def test_an_alert_only_act_now_is_recorded_as_a_deal(self):
+        seen = {}
+        act_now = self._card(40.0)
+        act_now.is_opportunity = True
+        main_module.record_shown([act_now], frozenset({"C1"}), seen, "2026-10-15")
+        assert "shown_only" not in seen["C1"]
+
+    def test_only_printed_cards_are_recorded_as_seen(self):
+        seen = {}
+        shown, hidden = self._card(50.0), make_listing(EXACT_TITLE, 60.0, listing_id="C2")
+        main_module.record_shown([shown, hidden], frozenset({"C1"}), seen, "2026-08-22")
+        assert set(seen) == {"C1"} and seen["C1"]["price"] == 50.0
 
 
 class TestBrowseFields:
@@ -707,6 +795,145 @@ class TestBrowsePaging:
         assert len(items) == 1 and len(calls) == 1
         assert calls[0]["filter"] == "buyingOptions:{AUCTION}"
         assert "sort" not in calls[0]
+
+
+    def test_a_min_price_adds_a_price_filter(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(ebay_client.requests, "get", self._fake_get([{"itemSummaries": []}], calls))
+        ebay_client.search_active_listings("x", "t", "261328", "EBAY_US", sort="newlyListed", min_price=20.0)
+        assert calls[0]["filter"] == "buyingOptions:{FIXED_PRICE|AUCTION},price:[20],priceCurrency:USD"
+
+    def test_no_min_price_means_no_price_filter(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(ebay_client.requests, "get", self._fake_get([{"itemSummaries": []}], calls))
+        ebay_client.search_active_listings("x", "t", "261328", "EBAY_US")
+        assert "price" not in calls[0]["filter"]
+
+    def test_only_the_newest_pass_gets_the_floor(self, project, monkeypatch):
+        from src import config as config_module
+        cfg = config_module.load_config()
+        cfg.ebay_auction_pages_per_player = 1
+        searches = []
+        monkeypatch.setattr(project.ebay_client, "search_active_listings",
+                            lambda query, **kwargs: searches.append(kwargs) or [])
+        project.fetch_ebay_active(cfg, ["Caleb Williams"], "t", observability.RunStats())
+        by_sort = {search["sort"]: search for search in searches}
+        assert by_sort["newlyListed"]["min_price"] == 20.0
+        assert "min_price" not in by_sort["endingSoonest"]
+
+
+    def test_a_non_200_is_reported_back_to_the_caller(self, monkeypatch):
+        class Down:
+            status_code = 429
+            text = "Too many requests"
+        monkeypatch.setattr(ebay_client.requests, "get", lambda *a, **k: Down())
+        failures = []
+        assert ebay_client.search_active_listings("x", "t", "261328", "EBAY_US", failures=failures) == []
+        assert failures == ["429 Too many requests"]
+
+    def test_a_refused_search_reaches_the_email_as_a_warning(self, project, monkeypatch):
+        from src import config as config_module
+        cfg = config_module.load_config()
+        def refuse(query, failures=None, **kwargs):
+            if query == "Kyle Teel":
+                failures.append("500 Internal Server Error")
+            return []
+        monkeypatch.setattr(project.ebay_client, "search_active_listings", refuse)
+        stats = observability.RunStats()
+        project.fetch_ebay_active(cfg, ["Caleb Williams", "Kyle Teel"], "t", stats)
+        warning = " ".join(stats.warnings)
+        assert "for 1 player(s) (Kyle Teel)" in warning
+        assert "their listings are missing" in warning  # every Kyle Teel search failed
+        assert "500 Internal Server Error" in warning
+        assert stats.breakage_warnings == []
+
+    def test_one_failed_pass_says_some_listings_may_be_missing(self, project, monkeypatch):
+        from src import config as config_module
+        cfg = config_module.load_config()
+        cfg.ebay_auction_pages_per_player = 1
+        def auction_pass_refused(query, failures=None, sort=None, **kwargs):
+            if sort == "endingSoonest":
+                failures.append("429 Too many requests")
+            return []
+        monkeypatch.setattr(project.ebay_client, "search_active_listings", auction_pass_refused)
+        stats = observability.RunStats()
+        project.fetch_ebay_active(cfg, ["Caleb Williams"], "t", stats)
+        warning = " ".join(stats.warnings)
+        assert "refused 1 of 2 searches" in warning
+        assert "some listings may be missing" in warning
+        assert stats.breakage_warnings == []
+
+    def test_every_search_refused_marks_the_run_broken(self, project, monkeypatch):
+        from src import config as config_module
+        cfg = config_module.load_config()
+        def refuse_all(query, failures=None, **kwargs):
+            failures.append("401 Unauthorized")
+            return []
+        monkeypatch.setattr(project.ebay_client, "search_active_listings", refuse_all)
+        stats = observability.RunStats()
+        project.fetch_ebay_active(cfg, ["Caleb Williams", "Kyle Teel"], "t", stats)
+        assert stats.breakage_warnings and "refused 2 of 2 searches" in stats.breakage_warnings[0]
+
+    def test_no_warning_when_every_search_succeeds(self, project, monkeypatch):
+        from src import config as config_module
+        cfg = config_module.load_config()
+        monkeypatch.setattr(project.ebay_client, "search_active_listings", lambda query, **kw: [])
+        stats = observability.RunStats()
+        project.fetch_ebay_active(cfg, ["Caleb Williams"], "t", stats)
+        assert not any("refused" in w for w in stats.warnings)
+
+
+class TestListingAge:
+    TODAY = date(2026, 10, 16)
+
+    def test_an_api_listing_is_aged_from_ebays_creation_date(self):
+        listing = make_listing(EXACT_TITLE, 20.0, listing_id="A", listed_at="2026-10-14T08:00:00.000Z")
+        main_module.annotate_listing_age([listing], {}, self.TODAY)
+        assert (listing.age_days, listing.age_basis) == (2, "listed")
+
+    def test_an_alert_listing_is_aged_from_the_corpus_first_sighting(self):
+        listing = make_listing(EXACT_TITLE, 20.0, listing_id="B")
+        history = {"Caleb Williams|graded": [{"id": "B", "date": "2026-10-10", "price": 20.0}]}
+        main_module.annotate_listing_age([listing], history, self.TODAY)
+        assert (listing.age_days, listing.age_basis) == (6, "first seen")
+
+    def test_an_unreadable_creation_date_falls_back_and_nothing_known_is_none(self):
+        bad = make_listing(EXACT_TITLE, 20.0, listing_id="B", listed_at="yesterday")
+        unknown = make_listing(EXACT_TITLE, 20.0, listing_id="C")
+        history = {"x": [{"id": "B", "date": "2026-10-15"}]}
+        main_module.annotate_listing_age([bad, unknown], history, self.TODAY)
+        assert (bad.age_days, bad.age_basis) == (1, "first seen")
+        assert unknown.age_days is None
+
+    def test_an_older_first_sighting_beats_a_fresh_ebay_date(self):
+        # Review probe: created 2 days ago (a relist), first seen 20 days ago.
+        listing = make_listing(EXACT_TITLE, 20.0, listing_id="X", listed_at="2026-10-14T23:30:00.000Z")
+        history = {"P|raw": [{"id": "X", "date": "2026-09-26"}]}
+        main_module.annotate_listing_age([listing], history, self.TODAY)
+        assert (listing.age_days, listing.age_basis) == (20, "first seen")
+
+    def test_origin_date_is_preferred_over_creation_date(self, project, monkeypatch):
+        from src import config as config_module
+        cfg = config_module.load_config()
+        item = {"itemId": "v1|123456789012|0", "legacyItemId": "123456789012",
+                "itemWebUrl": "https://www.ebay.com/itm/123456789012", "title": EXACT_TITLE,
+                "price": {"value": "20.00"}, "buyingOptions": ["FIXED_PRICE"],
+                "itemOriginDate": "2026-09-01T10:00:00.000Z",
+                "itemCreationDate": "2026-10-15T10:00:00.000Z"}
+        monkeypatch.setattr(project.ebay_client, "search_active_listings", lambda query, **kw: [item])
+        [listing] = project.fetch_ebay_active(cfg, ["Caleb Williams"], "t", observability.RunStats())
+        assert listing.listed_at == "2026-09-01T10:00:00.000Z"
+
+    def test_browse_creation_date_reaches_the_listing(self, project, monkeypatch):
+        from src import config as config_module
+        cfg = config_module.load_config()
+        item = {"itemId": "v1|123456789012|0", "legacyItemId": "123456789012",
+                "itemWebUrl": "https://www.ebay.com/itm/123456789012", "title": EXACT_TITLE,
+                "price": {"value": "20.00"}, "buyingOptions": ["FIXED_PRICE"],
+                "itemCreationDate": "2026-10-15T10:00:00.000Z"}
+        monkeypatch.setattr(project.ebay_client, "search_active_listings", lambda query, **kw: [item])
+        [listing] = project.fetch_ebay_active(cfg, ["Caleb Williams"], "t", observability.RunStats())
+        assert listing.listed_at == "2026-10-15T10:00:00.000Z"
 
 
 class TestCorpusSizeWarning:
@@ -802,6 +1029,70 @@ class TestBothSources:
         assert "Sources: 2 from the eBay API, 1 from alert emails, 0 in both" in sent[0]
 
 
+class TestAlertOnly:
+    """--alert-only: an intra-day poll that emails only an ACT NOW, marks
+    only what it sent, and leaves the digest's run marker alone."""
+
+    ITEM = "https://www.ebay.com/itm/111111111111"
+
+    def _wire(self, main, monkeypatch, act_now_ids=frozenset()):
+        import dataclasses
+        monkeypatch.setattr(main.ebay_client, "get_app_token", lambda *_: "t")
+        monkeypatch.setattr(main.ebay_client, "search_active_listings", fake_active)
+        real_build = main.report.build_model
+        monkeypatch.setattr(
+            main.report, "build_model",
+            lambda *a, **k: dataclasses.replace(real_build(*a, **k), act_now_ids=frozenset(act_now_ids)),
+        )
+        sent = []
+        monkeypatch.setattr(main.emailer, "send_email",
+                            lambda subject, body, *rest, html_body=None: sent.append((subject, body)))
+        return sent
+
+    def test_a_poll_with_no_act_now_sends_nothing_and_touches_no_state(self, project, monkeypatch, tmp_path):
+        sent = self._wire(project, monkeypatch)
+        project.run(argparse.Namespace(dry_run=False, alert_only=True))
+        assert sent == []
+        assert not (tmp_path / "data" / "seen_listings.json").exists()
+        assert not (tmp_path / "data" / "last_run.json").exists()
+        assert (tmp_path / "data" / "ebay_alert_price_history.json").exists()  # corpus kept
+
+    def test_the_alert_email_carries_only_the_act_now_section(self, project, monkeypatch):
+        import dataclasses
+        from collections import OrderedDict
+        sent = self._wire(project, monkeypatch)
+        real_build = project.report.build_model
+
+        def with_two_sections(*a, **k):
+            model = real_build(*a, **k)
+            sections = OrderedDict([(project.report.SECTION_ACT_NOW, ["ACT-NOW-CARD"]),
+                                    (project.report.SECTION_COOL_CARDS, ["COOL-CARD"])])
+            return dataclasses.replace(model, act_now_ids=frozenset({self.ITEM}), sections=sections)
+
+        monkeypatch.setattr(project.report, "build_model", with_two_sections)
+        monkeypatch.setattr(project.report, "render_text",
+                            lambda model: " ".join(str(c) for cards in model.sections.values() for c in cards))
+        monkeypatch.setattr(project.report_html, "render", lambda model: "")
+        project.run(argparse.Namespace(dry_run=False, alert_only=True))
+        assert sent[0][1] == "ACT-NOW-CARD"
+
+    def test_a_poll_with_an_act_now_sends_once_and_the_digest_does_not_repeat_it(
+        self, project, monkeypatch, tmp_path
+    ):
+        sent = self._wire(project, monkeypatch, act_now_ids={self.ITEM})
+        project.run(argparse.Namespace(dry_run=False, alert_only=True))
+        assert len(sent) == 1 and "ACT NOW" in sent[0][0]
+        seen = json.loads((tmp_path / "data" / "seen_listings.json").read_text())
+        assert set(seen) == {self.ITEM}
+        assert not (tmp_path / "data" / "last_run.json").exists()
+
+        digest = self._wire(project, monkeypatch)
+        project.run(argparse.Namespace(dry_run=False))
+        assert len(digest) == 1
+        assert self.ITEM not in digest[0][1]
+        assert (tmp_path / "data" / "last_run.json").exists()
+
+
 class TestFlagEligibilityOverride:
     """`valuation.require_flag_eligible_comp` was loaded from config but
     never read -- setting it to false silently did nothing. It is a real
@@ -831,11 +1122,21 @@ class TestFlagEligibilityOverride:
         cfg = fake_cfg(require_flag_eligible_comp=False)
         main_module.evaluate_listings([listing], engine_for(observations), cfg, stats)
 
+        # Gross gates only (net floor off in fake_cfg): see the sibling below.
         assert listing.is_opportunity is True
         assert listing.comp_match.level == "price_tier"
         warning = " ".join(stats.warnings)
         assert "require_flag_eligible_comp is FALSE" in warning
         assert "cannot be evidence about price" in warning
+
+    def test_override_still_cannot_beat_the_shipped_net_floor(self):
+        # $25 against a $50 median nets a few dollars: under the shipped
+        # floor this is not an opportunity, override or not.
+        observations, listing = self._context_only_setup()
+        cfg = fake_cfg(require_flag_eligible_comp=False, min_net_profit=SHIPPED_MIN_NET_PROFIT)
+        main_module.evaluate_listings([listing], engine_for(observations), cfg, observability.RunStats())
+        assert listing.is_opportunity is False
+        assert listing.rejection_reason == reasons.Reason.BELOW_MIN_NET_PROFIT
 
     def test_override_does_not_warn_when_left_on(self):
         stats = observability.RunStats()
@@ -857,6 +1158,8 @@ class TestCheapCards:
         return spread_observations(median, **fields)
 
     def test_a_cheap_card_with_a_real_attribute_can_now_be_an_opportunity(self):
+        # Gross cheap-card rules only (net floor off in fake_cfg); the shipped
+        # floor rejects this card -- see the shipped-floor test below.
         listing = make_listing(
             "2024 Panini Prizm Caleb Williams Silver #301 RC", 4.0,
             listing_id="CH1", listing_type="fixed_price",
@@ -920,6 +1223,8 @@ class TestCheapCards:
         assert listing.is_cheap is False
 
     def test_cheap_buys_are_marked_as_uneconomic_to_flip(self):
+        # Gross cheap-card rules only (net floor off in fake_cfg); the shipped
+        # floor rejects this card -- see the shipped-floor test below.
         # Postage and fees eat the spread at this price. That is arithmetic,
         # not a warning -- the report says "collector buy" rather than showing
         # a scary ROI on a card nobody would flip.
@@ -942,6 +1247,27 @@ class TestCheapCards:
         main_module.evaluate_listings([listing], engine_for(self._cheap_comps()), cfg, stats)
         assert listing.is_cheap is False
         assert listing.is_opportunity is True  # 67% off clears the ordinary 30% bar
+
+    # The three tests above that end in is_opportunity True test the GROSS
+    # cheap-card rules with the net floor off. Under the shipped floor no
+    # fixed-price cheap card or collector buy is an opportunity: a $12 card
+    # cannot net $15 at any purchase price.
+    @pytest.mark.parametrize(
+        "overrides",
+        [{}, {"cheap_cards_enabled": False, "min_savings_dollars": 3.0}],
+        ids=["cheap_rules_on", "cheap_rules_off"],
+    )
+    def test_at_the_shipped_net_floor_a_cheap_card_is_never_an_opportunity(self, overrides):
+        listing = make_listing(
+            "2024 Panini Prizm Caleb Williams Silver #301 RC", 4.0,
+            listing_id="CH9", listing_type="fixed_price",
+        )
+        cfg = fake_cfg(min_net_profit=SHIPPED_MIN_NET_PROFIT, **overrides)
+        main_module.evaluate_listings([listing], engine_for(self._cheap_comps()), cfg, observability.RunStats())
+        assert listing.pct_under_market >= 50  # clears every gross bar
+        assert listing.resale_uneconomic is True
+        assert listing.is_opportunity is False
+        assert listing.rejection_reason == reasons.Reason.BELOW_MIN_NET_PROFIT
 
 
 class TestSoldCompsWiring:
@@ -1017,6 +1343,228 @@ class TestOneCardHasOneAcquisitionCost:
         with_tax = self._evaluated(8.0)
         without = self._evaluated(0.0)
         assert with_tax.dollar_savings < without.dollar_savings
+
+
+class TestNetProfitGate:
+    """The gross-discount gates ignore what fees, postage and supplies take
+    out of a flip; most corpus flags that cleared them netted under $15."""
+
+    def _evaluated(self, market, price):
+        listing = make_listing(EXACT_TITLE, price, listing_type="fixed_price")
+        stats = observability.RunStats()
+        main_module.evaluate_listings(
+            [listing], engine_for(spread_observations(market)), fake_cfg(min_net_profit=15.0), stats
+        )
+        return listing, stats
+
+    def test_a_big_gross_discount_that_nets_under_the_floor_is_rejected(self):
+        # 33% off and $20 saved clear both gross gates; selling at $57 after
+        # the haircut, ~$7.85 fees and $6 out leave ~$3.15 profit.
+        listing, stats = self._evaluated(60.0, 40.0)
+        assert listing.pct_under_market >= 30
+        assert listing.dollar_savings >= 10
+        assert listing.economics.expected_profit < 15
+        assert listing.is_opportunity is False
+        assert listing.rejection_reason == reasons.Reason.BELOW_MIN_NET_PROFIT
+        assert stats.rejections.counts() == {reasons.Reason.BELOW_MIN_NET_PROFIT: 1}
+
+    def test_a_deal_that_nets_the_floor_passes(self):
+        listing, _ = self._evaluated(400.0, 200.0)
+        assert listing.economics.expected_profit >= 15
+        assert listing.is_opportunity is True
+        assert listing.rejection_reason is None
+
+
+class TestValueScaledProfitFloor:
+    """required net = max(min_net_profit, pct x estimated value)."""
+
+    def test_the_floor_is_the_larger_of_flat_and_share(self):
+        cfg = fake_cfg(min_net_profit=15.0, min_net_profit_pct_of_value=0.10)
+        assert main_module.required_net_profit(cfg, 60.0) == 15.0
+        assert main_module.required_net_profit(cfg, 1000.0) == pytest.approx(100.0)
+
+    def _evaluated(self, price, market, pct):
+        listing = make_listing(EXACT_TITLE, price, listing_type="fixed_price")
+        cfg = fake_cfg(min_net_profit=15.0, min_net_profit_pct_of_value=pct, resale_haircut_asking_pct=20.0)
+        main_module.evaluate_listings([listing], engine_for(spread_observations(market)), cfg,
+                                      observability.RunStats())
+        return listing
+
+    def test_a_dear_card_needs_a_proportionate_net(self):
+        # $1,000 asking median, 20% haircut, bought at $640: nets ~$48 -- over $15, under $100.
+        flat = self._evaluated(640.0, 1000.0, 0.0)
+        scaled = self._evaluated(640.0, 1000.0, 0.10)
+        assert 15.0 < flat.economics.expected_profit < 100.0
+        assert flat.is_opportunity is True
+        assert scaled.is_opportunity is False
+        assert scaled.rejection_reason == reasons.Reason.BELOW_MIN_NET_PROFIT
+
+    def test_the_max_is_solved_for_the_same_scaled_floor(self):
+        listing = self._evaluated(640.0, 1000.0, 0.10)
+        at_max = self._evaluated(listing.max_rational_bid, 1000.0, 0.10)
+        assert at_max.economics.expected_profit == pytest.approx(100.0)
+
+    def test_a_cheap_card_still_needs_the_flat_floor(self):
+        assert self._evaluated(20.0, 80.0, 0.10).max_rational_bid == pytest.approx(
+            self._evaluated(20.0, 80.0, 0.0).max_rational_bid)
+
+
+class TestMaxPriceOnEveryPricedListing:
+    """One MAX per listing with a flag-eligible comp: the highest item price
+    that still nets min_net_profit. Fixed price too, not only auctions."""
+
+    def _evaluated(self, price, listing_type, **cfg_overrides):
+        listing = make_listing(EXACT_TITLE, price, listing_type=listing_type, bid_count=1)
+        cfg = fake_cfg(**dict(
+            dict(min_net_profit=SHIPPED_MIN_NET_PROFIT, auction_required_margin_pct=0.0), **cfg_overrides
+        ))
+        main_module.evaluate_listings(
+            [listing], engine_for(spread_observations(400.0)), cfg, observability.RunStats()
+        )
+        return listing
+
+    def test_a_fixed_price_listing_gets_a_max(self):
+        listing = self._evaluated(390.0, "fixed_price")
+        assert listing.max_rational_bid is not None and listing.max_rational_bid > 0
+
+    def test_a_flagged_deal_is_always_at_or_under_its_max(self):
+        listing = self._evaluated(200.0, "fixed_price")
+        assert listing.is_opportunity is True
+        assert listing.price <= listing.max_rational_bid
+
+    def test_buying_at_the_max_nets_the_floor(self):
+        max_price = self._evaluated(390.0, "fixed_price").max_rational_bid
+        at_max = self._evaluated(max_price, "fixed_price")
+        assert at_max.economics.expected_profit == pytest.approx(SHIPPED_MIN_NET_PROFIT)
+
+    def test_auctions_and_fixed_price_share_one_rule(self):
+        auction = self._evaluated(20.0, "auction")
+        fixed = self._evaluated(20.0, "fixed_price")
+        assert auction.max_rational_bid == pytest.approx(fixed.max_rational_bid)
+
+    def test_the_auction_margin_is_an_extra_floor_only_for_auctions(self):
+        auction = self._evaluated(20.0, "auction", auction_required_margin_pct=25.0)
+        fixed = self._evaluated(20.0, "fixed_price", auction_required_margin_pct=25.0)
+        assert auction.max_rational_bid < fixed.max_rational_bid
+
+
+class TestDealTierWiring:
+    def test_an_asking_comp_opportunity_is_maybe_with_profit_per_hour(self):
+        listing = make_listing(EXACT_TITLE, 200.0, listing_type="fixed_price")
+        main_module.evaluate_listings(
+            [listing], engine_for(spread_observations(400.0)), fake_cfg(min_net_profit=15.0),
+            observability.RunStats(),
+        )
+        assert listing.is_opportunity is True
+        assert listing.deal_tier == "Maybe"
+        assert listing.profit_per_hour == pytest.approx(listing.economics.expected_profit / (25 / 60))
+
+    def test_the_low_end_net_uses_the_lowest_comp(self):
+        listing = make_listing(EXACT_TITLE, 200.0, listing_type="fixed_price")
+        rows = spread_observations(400.0)
+        rows[0]["price"] = 300.0
+        main_module.evaluate_listings([listing], engine_for(rows), fake_cfg(min_net_profit=15.0),
+                                      observability.RunStats())
+        assert listing.net_profit_low < listing.economics.expected_profit
+
+    def test_no_profit_per_hour_without_minutes(self):
+        listing = make_listing(EXACT_TITLE, 200.0, listing_type="fixed_price")
+        main_module.evaluate_listings([listing], engine_for(spread_observations(400.0)),
+                                      fake_cfg(min_net_profit=15.0, minutes_per_flip=0.0),
+                                      observability.RunStats())
+        assert listing.is_opportunity is True and listing.profit_per_hour is None
+
+    def test_a_sold_comp_opportunity_is_strong(self):
+        listing = make_listing(EXACT_TITLE, 200.0, listing_type="fixed_price")
+        sold = spread_observations(400.0, basis=comps.BASIS_SOLD)
+        main_module.evaluate_listings(
+            [listing], engine_for(sold), fake_cfg(min_net_profit=15.0), observability.RunStats()
+        )
+        assert listing.deal_tier == "Strong"
+
+    def test_a_rejected_listing_has_no_tier(self):
+        listing = make_listing(EXACT_TITLE, 390.0, listing_type="fixed_price")
+        main_module.evaluate_listings(
+            [listing], engine_for(spread_observations(400.0)), fake_cfg(), observability.RunStats()
+        )
+        assert listing.is_opportunity is False
+        assert listing.deal_tier is None
+
+
+class TestBaseCardsAtExact:
+    def test_a_base_card_is_valued_against_base_copies_of_its_number(self):
+        title = "2024 Panini Prizm Caleb Williams #301 RC"
+        rows = spread_observations(
+            40.0, card_type="raw", grader=None, grade=None, parallel=None, is_base=True,
+        )
+        listing = make_listing(title, 30.0, listing_type="fixed_price")
+        assert listing.card_identity.is_base.value is True
+        main_module.evaluate_listings([listing], engine_for(rows), fake_cfg(), observability.RunStats())
+        assert listing.comp_level_matched == "exact"
+        assert listing.comp_match.flag_eligible is True
+
+
+class TestFeeModelWiring:
+    """The pipeline's choices that the fee model cannot make on its own:
+    which haircut (by comp basis), what unknown inbound shipping costs, and
+    whether the card ships as a slab."""
+
+    def _evaluated(self, observations, title=EXACT_TITLE, price=200.0, **cfg_overrides):
+        listing = make_listing(title, price, listing_type="fixed_price")
+        main_module.evaluate_listings(
+            [listing], engine_for(observations), fake_cfg(**cfg_overrides), observability.RunStats()
+        )
+        return listing
+
+    def test_asking_comps_take_the_asking_haircut(self):
+        listing = self._evaluated(spread_observations(400.0), resale_haircut_asking_pct=20.0)
+        assert listing.economics.expected_sale_price == pytest.approx(320.0)
+
+    def test_sold_comps_take_the_sold_haircut(self):
+        sold = spread_observations(400.0, basis=comps.BASIS_SOLD)
+        listing = self._evaluated(sold, resale_haircut_asking_pct=20.0)
+        assert listing.economics.expected_sale_price == pytest.approx(380.0)
+
+    def test_two_sales_value_the_card_with_the_sold_haircut(self):
+        asks = spread_observations(400.0)
+        sold = [observation(300.0, "s1", date="2026-08-10", basis=comps.BASIS_SOLD),
+                observation(300.0, "s2", date="2026-08-18", basis=comps.BASIS_SOLD)]
+        listing = self._evaluated(asks + sold, resale_haircut_asking_pct=20.0, resale_haircut_pct=5.0)
+        assert listing.comp_match.stats.basis == comps.BASIS_SOLD
+        assert listing.economics.expected_sale_price == pytest.approx(300.0 * 0.95)
+
+    def test_unknown_inbound_shipping_is_assumed_not_zero(self):
+        listing = self._evaluated(spread_observations(400.0), assumed_inbound_shipping=4.50)
+        assert listing.economics.acquisition_cost == pytest.approx(204.50)
+        assert listing.economics.shipping_known is False
+        assert any("$4.50 is assumed" in a for a in listing.economics.assumptions)
+
+    def test_unknown_shipping_also_lowers_the_max_bid(self):
+        def max_bid(assumed):
+            listing = make_listing(EXACT_TITLE, 20.0, listing_type="auction", bid_count=1)
+            main_module.evaluate_listings(
+                [listing], engine_for(spread_observations(400.0)),
+                fake_cfg(assumed_inbound_shipping=assumed), observability.RunStats(),
+            )
+            return listing.max_rational_bid
+
+        assert max_bid(4.50) == pytest.approx(max_bid(None) - 4.50)
+
+    def test_a_slab_ships_as_a_slab(self):
+        listing = self._evaluated(
+            spread_observations(15.0), price=5.0,
+            outbound_shipping_envelope=0.82, supplies_graded_cost=1.0, supplies_cost=0.5,
+        )
+        # PSA 10 under $20: still a tracked mailer and slab supplies.
+        assert listing.economics.outbound_costs == pytest.approx(5.0 + 1.0)
+
+    def test_a_cheap_raw_card_goes_in_an_envelope(self):
+        raw = spread_observations(15.0, card_type="raw", grader=None, grade=None)
+        listing = self._evaluated(
+            raw, title="2024 Panini Prizm Caleb Williams Silver #301", price=5.0,
+            outbound_shipping_envelope=0.82, supplies_graded_cost=1.0, supplies_cost=0.5,
+        )
+        assert listing.economics.outbound_costs == pytest.approx(0.82 + 0.5)
 
 
 # ---------------------------------------------------------------------------

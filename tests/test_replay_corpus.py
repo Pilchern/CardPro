@@ -159,6 +159,12 @@ class TestReextract:
         fresh = replay_corpus.reextract([stale])[0]
         assert (fresh["card_type"], fresh["grader"], fresh["grade"]) == ("graded", "PSA", "10")
 
+    def test_the_variant_fields_are_reparsed_too(self):
+        stale = obs(title="2024 Topps Chrome - Rookie Autographs Caleb Williams #RA-CWI /99",
+                    is_autograph=False, print_run=None)
+        fresh = replay_corpus.reextract([stale])[0]
+        assert (fresh["is_autograph"], fresh["print_run"]) == (True, 99)
+
     def test_price_and_date_are_never_touched(self):
         stale = obs(title="2024 Panini Prizm Caleb Williams #301", price=25.0, date="2026-08-21")
         fresh = replay_corpus.reextract([stale])[0]

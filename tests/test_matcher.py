@@ -276,3 +276,59 @@ class TestAGradeIsNotASerialNumber:
         info = matcher.detect_grade_details("Caleb Williams PSA 9 /99 Silver")
 
         assert (info.grader, info.grade) == ("PSA", "9")
+
+
+# --- ID-5: slabs that used to read as raw ---------------------------------
+
+@pytest.mark.parametrize(
+    "title, grader, grade",
+    [
+        # Paraphrased corpus shapes.
+        ("Bedard Game Magicians #25 SGC GEM 10", "SGC", "10"),
+        ("Caleb Williams Topps Now #2 CGC 10GM rookie", "CGC", "10"),
+        ("Colson Montgomery PSA-10 Bowman", "PSA", "10"),
+        ("Josh Giddey Select Maroon PSA- 8 Die-Cut", "PSA", "8"),
+        ("1968 Topps Gale Sayers #75 SGC Graded 3 VG", "SGC", "3"),
+        ("1990 Hoops Jordan #65 PSA NM-MT 8", "PSA", "8"),
+        ("1984 Topps Sandberg #596 CGC NM/MINT+ 8.5", "CGC", "8.5"),
+        ("1969 Topps Gale Sayers #51 BVG 8", "BVG", "8"),
+        ("Loveland Prizm Draft Picks #67 GMA 10", "GMA", "10"),
+        ("Crow-Armstrong True Rookie GEM MINT PTA 10", "PTA", "10"),
+        ("Teel Bowman Prospects Graded PXG 10", "PXG", "10"),
+        ("Burden Optic Holo #275 FCG 9.0", "FCG", "9"),
+        ("Bedard Topps Now Stickers ISA 10", "ISA", "10"),
+        ("Crow-Armstrong Bowman #85 GMG Graded 10 Gem Mint", "GMG", "10"),
+    ],
+)
+def test_slab_spellings_read_as_graded(title, grader, grade):
+    info = matcher.detect_grade_details(title)
+    assert (info.card_type, info.grader, info.grade) == ("graded", grader, grade)
+
+
+def test_a_dual_grade_is_a_slab_with_an_unknown_grade():
+    # Card 9 / auto 10, or a 9 numbered /10: the title cannot say which, so
+    # no grade bucket -- but certainly not raw.
+    info = matcher.detect_grade_details("Kyle Teel Rookie Auto PSA 9/10 Bowman Chrome")
+    assert (info.card_type, info.grader, info.grade) == ("graded", "PSA", None)
+
+
+def test_graded_with_no_grader_is_a_slab_with_no_market():
+    info = matcher.detect_grade_details("Graded 10 Caleb Wilson Topps Now RC")
+    assert (info.card_type, info.grader, info.grade) == ("graded", None, None)
+
+
+def test_a_grade_with_a_spaced_print_run_is_still_that_grade():
+    assert matcher.detect_grade_details("Caleb Williams PSA 9 /99").grade == "9"
+
+
+def test_a_tag_one_of_one_is_still_not_a_slab():
+    assert matcher.detect_grade_details("Bedard laundry tag 1/1 patch").card_type == "raw"
+    assert matcher.detect_grade_details("Bedard TAG 1/1 patch").card_type == "raw"
+
+
+def test_a_grader_word_inside_a_card_number_is_not_a_grade():
+    assert matcher.detect_grade_details("Caleb Williams Insert #PTA12 rookie").card_type == "raw"
+
+
+def test_no_grade_above_ten():
+    assert matcher.detect_grade_details("Kyle Teel 2024 Bowman ISA 15 card lot").card_type == "raw"

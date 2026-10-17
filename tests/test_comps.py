@@ -834,7 +834,10 @@ class TestConcentrationGate:
         correlation this gate exists to catch."""
         obs = [_ob(p, obs_id="s%d" % i, basis="sold", **_IDENTITY)
                for i, p in enumerate((95.0, 98.0, 100.0, 102.0, 105.0))]
-        obs[0]["basis"] = "asking"
+        # One sale cannot stand alone (two or more would value the bucket
+        # from the sales only -- see TestSoldTakeover), so it stays pooled.
+        for row in obs[1:]:
+            row["basis"] = "asking"
         match = _engine(obs).lookup(player="Caleb Williams", card_type="raw", price=50.0, **_IDENTITY)
         assert match.stats.basis == "asking"
         assert match.stats.is_concentrated is True
@@ -911,7 +914,8 @@ class TestConfidence:
 
     def test_one_asking_point_makes_the_whole_bucket_asking(self):
         obs = self._five("sold")
-        obs[0]["basis"] = "asking"
+        for row in obs[1:]:  # one sale stays pooled with the asks
+            row["basis"] = "asking"
         match = _engine(obs).lookup(player="Caleb Williams", card_type="raw", price=50.0, **_IDENTITY)
         assert match.stats.basis == "asking"
         assert match.confidence == "medium"
@@ -1075,6 +1079,147 @@ def test_year_matches_across_int_and_string_representations():
     assert match.level == "exact"
 
 
+def test_card_number_spellings_key_one_exact_bucket():
+    """BD-72, BD72 and #bd-72 are one printed number; three spellings used
+    to be three exact buckets (corpus: Crow-Armstrong 2020 Bowman Draft
+    Refractor held "BD-72" and "BD72" apart)."""
+    ident = dict(year=2020, set_name="Bowman Draft", parallel="Refractor")
+    obs = [
+        _ob(95.0, days_ago=14, card_number="BD-72", **ident),
+        _ob(100.0, days_ago=7, card_number="BD72", **ident),
+        _ob(105.0, days_ago=0, card_number="#bd-72", **ident),
+    ]
+    match = _engine(obs).lookup(
+        player="Caleb Williams", card_type="raw", price=40.0, card_number="bd 72", **ident
+    )
+    assert match.level == "exact"
+    assert match.stats.sample_size == 3
+    assert match.flag_eligible is True
+    assert "mixed_card_numbers" not in match.blocked_reasons
+
+
+def test_a_sold_comp_typed_without_the_hyphen_matches_the_listing():
+    from src import sold_comps
+
+    ident = dict(player="Caleb Williams", year=2020, set_name="Bowman Draft", parallel="Refractor")
+    sales = [
+        sold_comps.to_observation(dict(ident, card_number="BD72", price=p, date=_days_ago(d), source="130point"))
+        for p, d in ((95.0, 14), (100.0, 7), (105.0, 0))
+    ]
+    match = _engine(sales).lookup(
+        card_type="raw", price=40.0, card_number="BD-72", **ident
+    )
+    assert match.level == "exact"
+    assert match.stats.basis == comps.BASIS_SOLD
+
+
+class TestBaseAtExactOnly:
+    """A base card keys the exact level as parallel "Base"; same_card never
+    accepts it (146 of 193 deep same_card Base buckets mixed card numbers)."""
+
+    BASE_ROW = dict(year=2024, set_name="Prizm", parallel=None, card_number="301", is_base=True)
+
+    def _lookup(self, obs, **listing):
+        fields = dict(year=2024, set_name="Prizm", card_number="301", is_base=True)
+        fields.update(listing)
+        return _engine(obs).lookup(player="Caleb Williams", card_type="raw", price=4.0, **fields)
+
+    def test_base_cards_with_a_card_number_match_at_exact(self):
+        match = self._lookup(_spread((9.0, 10.0, 11.0), **self.BASE_ROW))
+        assert match.level == "exact"
+        assert match.flag_eligible is True
+
+    def test_base_never_keys_same_card(self):
+        # Rows without a card number cannot use the sentinel; the listing with
+        # one finds nothing flag-eligible rather than a pooled "Base" bucket.
+        rows = _spread((9.0, 10.0, 11.0), **dict(self.BASE_ROW, card_number=None))
+        match = self._lookup(rows)
+        assert match is None or match.flag_eligible is False
+        assert comps._key_same_card(dict(
+            player="x", year=2024, set_name="Prizm", parallel="Base", market=("raw",),
+            variant=comps.printing_variant(),
+        )) is None
+
+    def test_unknown_base_status_is_not_base(self):
+        match = self._lookup(_spread((9.0, 10.0, 11.0), **self.BASE_ROW), is_base=None)
+        assert match is None or match.level not in ("exact", "same_card")
+
+    def test_raw_pre_1980_cards_do_not_key_base(self):
+        # Condition, not identity, prices these: one 1969 Topps #51 raw ran $15-$69.
+        assert comps._base_parallel(None, True, "51", "raw", 1969) is None
+        assert comps._base_parallel(None, True, "51", "graded", 1969) == "Base"
+        assert comps._base_parallel(None, True, "51", "raw", 1990) == "Base"
+
+    def test_a_named_parallel_is_never_overwritten(self):
+        assert comps._base_parallel("Silver", True, "301", "raw", 2024) == "Silver"
+
+
+class TestSoldTakeover:
+    """Two or more SOLD prices in a card-level bucket value it alone."""
+
+    IDENT = dict(year=2024, set_name="Prizm", parallel="Silver", card_number="301")
+
+    def _sales(self, prices):
+        from src import sold_comps
+
+        return [
+            sold_comps.to_observation(dict(
+                player="Caleb Williams", price=p, date=_days_ago(7 * i), source="130point", **self.IDENT,
+            ))
+            for i, p in enumerate(prices)
+        ]
+
+    def _lookup(self, obs):
+        return _engine(obs).lookup(player="Caleb Williams", card_type="raw", price=40.0, **self.IDENT)
+
+    def test_two_sales_outrank_a_bucket_of_asks(self):
+        asks = _spread((150.0, 160.0, 170.0, 180.0), **self.IDENT)
+        match = self._lookup(asks + self._sales((100.0, 110.0)))
+        assert match.level == "exact"
+        assert match.stats.basis == "sold"
+        assert match.stats.sample_size == 2
+        assert 100.0 <= match.stats.median <= 110.0
+        assert match.flag_eligible is True
+
+    def test_two_sales_that_disagree_fall_back_to_the_pooled_asks(self):
+        # Review repro: an old $10 sale and a new $90 one read as a SOLD $90
+        # against $15 asks. A pair must agree within 1.5x to stand alone.
+        asks = _spread((14.0, 15.0, 16.0, 15.0), **self.IDENT)
+        match = self._lookup(asks + self._sales((90.0, 10.0)))
+        assert match.stats.basis == "asking"
+
+    def test_an_agreeing_pair_is_valued_at_the_lower_sale(self):
+        asks = _spread((150.0, 160.0, 170.0, 180.0), **self.IDENT)
+        match = self._lookup(asks + self._sales((140.0, 100.0)))  # newer first
+        assert match.stats.basis == "sold"
+        assert match.stats.median == 100.0
+
+    def test_three_sales_keep_the_weighted_median(self):
+        match = self._lookup(self._sales((120.0, 110.0, 100.0)))
+        assert (match.stats.basis, match.stats.sample_size) == ("sold", 3)
+        assert match.stats.median > match.stats.minimum  # not floored to the lowest
+
+    def test_one_sale_stays_pooled_with_the_asks(self):
+        asks = _spread((150.0, 160.0, 170.0, 180.0), **self.IDENT)
+        match = self._lookup(asks + self._sales((100.0,)))
+        assert match.stats.basis == "asking"
+        # Pooled: all five went into the stats (the lone sale may be trimmed).
+        assert match.stats.sample_size + match.stats.trimmed_count == 5
+
+    def test_context_levels_never_take_over(self):
+        # same_set (parallel unknown) is context-only; it keeps pooling.
+        obs = _spread((150.0, 160.0, 170.0), year=2024, set_name="Prizm") + self._sales((100.0, 110.0))
+        match = _engine(obs).lookup(player="Caleb Williams", card_type="raw", price=40.0,
+                                    year=2024, set_name="Prizm")
+        assert match.level == "same_set"
+        assert match.stats.sample_size == 5
+
+
+def test_card_number_normalisation_keeps_different_numbers_apart():
+    assert comps._clean_card_number("BD-72") != comps._clean_card_number("BD-27")
+    assert comps._clean_card_number(" # ") is None
+
+
 def test_unparseable_year_is_unknown_not_coerced():
     assert comps._clean_year("2023-24 season") is None
 
@@ -1166,10 +1311,49 @@ class TestPrintingVariant:
             {"title": "2026 Topps Chrome Colson Montgomery Logofractor RC Auto …"}
         ) is None
 
-    def test_explicit_fields_win_over_the_stored_title(self):
+    def test_the_stored_title_wins_over_stale_explicit_fields(self):
+        """Explicit fields used to win, so a parser fix (e.g. "Autographs"
+        read as an auto) reached a stored row only when it aged out, 90 days
+        later. The title is what the fields were parsed FROM."""
         assert comps.variant_of_observation(
-            {"title": "a title that says nothing", "is_autograph": True, "relic": "patch"}
+            {"title": "2024 Topps Chrome - Rookie Autographs Caleb Williams #RA-CWI",
+             "is_autograph": False, "relic": None}
+        ) == (True, None, ("unnumbered",))
+
+    def test_explicit_fields_are_used_when_there_is_no_title(self):
+        assert comps.variant_of_observation(
+            {"is_autograph": True, "relic": "patch"}
         ) == (True, "patch", ("unnumbered",))
+
+    def test_a_stored_truncation_flag_still_bars_the_row(self):
+        # eBay's alert marked it cut even where the text shows no ellipsis.
+        assert comps.variant_of_observation(
+            {"title": "2024 Topps Chrome Caleb Williams Refractor", "title_truncated": True}
+        ) is None
+
+    def test_engine_rereads_stored_identity_fields_from_the_title(self):
+        """Same reasoning for set and parallel: a row stored as Prizm /
+        "Black" before Prizm Black was known keys as today's parser reads it."""
+        stale = _ob(
+            50.0, title="2024-25 Panini Prizm Black Hyper Prizm Matas Buzelis #41",
+            year=2024, set_name="Prizm", parallel="Black Hyper", card_number="41",
+        )
+        fields = _engine([])._prepare(stale)["_fields"]
+        assert (fields["set_name"], fields["parallel"]) == ("Prizm Black", "Hyper")
+
+    def test_a_row_todays_parser_would_block_stops_being_a_comp(self):
+        lot = _ob(50.0, title="Lot of 5 Caleb Williams Prizm rookies", year=2024, set_name="Prizm")
+        assert _engine([])._prepare(lot) is None
+
+    def test_a_truncated_row_with_a_reread_grade_stops_being_a_comp(self):
+        # Mirrors record_observations: "PSA 1..." is probably a PSA 10.
+        cut = _ob(50.0, title="2024 Panini Prizm Caleb Williams Silver #301 PSA 1", title_truncated=True)
+        assert _engine([])._prepare(cut) is None
+
+    def test_a_row_without_a_title_keeps_its_stored_fields(self):
+        sold = _ob(50.0, year=2024, set_name="Prizm", parallel="Silver", card_number="301")
+        fields = _engine([])._prepare(sold)["_fields"]
+        assert (fields["set_name"], fields["parallel"], fields["card_number"]) == ("Prizm", "Silver", "301")
 
     def test_row_with_neither_field_nor_title_is_taken_as_a_plain_card(self):
         """Refusing it would delete the older half of a six-month corpus
