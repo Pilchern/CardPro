@@ -3,6 +3,8 @@
 ## Shipped
 | Date | Item | Branch / PR | Evidence |
 |---|---|---|---|
+| 2026-10-20 | B4 actionable auctions: Browse itemEndDate 3-27 h window, MAX-first ranking, no-MAX cap 3, absolute end time, subject counts MAX auctions only | auto-improve/b4-actionable-auctions / PR #31 (merged by PM on green CI) | R1 research; review SHIP after base merge + DST-fallback removal |
+| 2026-10-20 | B12 dedupe records only printed cards; opportunities exempt from browse cap | auto-improve/b12-dedupe-after-trim / PR #30 (merged by PM, 2d8ccdf) | reviewer repro: 3 of 8 cut deals lost forever; SHIP |
 | 2026-10-20 | B2 email trim: browse cap 5, CHEAP FINDS off, 'No deals' subject; WATCH + MAX auctions exempt | auto-improve/b2-email-trim / PR #29 (merged by PM, 0d95b77) | 40 -> ~19-23 cards; 2 reviews (caught WATCH/dedupe loss) |
 | 2026-10-20 | B11 ARCH-NOTES matches code after #25-#27 | auto-improve/b11-arch-notes / PR #28 (merged by PM, 51064c0) | spot-checked vs settings.json + main.py |
 | 2026-10-20 | B1 schedule 12:47 UTC primary, both crons skip-if-ran-today | auto-improve/b1-earlier-schedule / PR #26 (merged by PM on Nick's instruction, 03b01c5) | 52-run lateness data; 2 reviews |
