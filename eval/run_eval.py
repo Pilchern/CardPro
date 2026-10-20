@@ -61,7 +61,11 @@ def offline_config():
     os.environ.setdefault("GMAIL_APP_PASSWORD", "not-a-real-password")
     os.environ.pop("EBAY_CLIENT_ID", None)
     os.environ.pop("EBAY_CLIENT_SECRET", None)
-    return load_config()
+    cfg = load_config()
+    # load_config's load_dotenv can put .env's eBay credentials back.
+    cfg.ebay_client_id = None
+    cfg.ebay_client_secret = None
+    return cfg
 
 
 def listing_from_row(cfg, row, player, listing_type=None):

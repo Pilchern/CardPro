@@ -9,16 +9,15 @@ asserting facts about a file that changes daily").
 """
 from __future__ import annotations
 
-import io
 import contextlib
-
-from scripts import replay_corpus
+import io
 import json
 from datetime import datetime, timezone
 
 import pytest
 
 from eval import run_eval
+from scripts import replay_corpus
 from src import config as config_module
 from src import price_history
 
