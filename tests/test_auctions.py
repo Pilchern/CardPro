@@ -260,16 +260,14 @@ class TestEndsText:
     def test_unknown_is_none(self, stamp):
         assert report.ends_text(stamp) is None
 
-    def test_the_fallback_rule_matches_the_tz_database(self):
-        zoneinfo = pytest.importorskip("zoneinfo")
-        try:
-            chicago = zoneinfo.ZoneInfo("America/Chicago")
-        except Exception:
-            pytest.skip("no tz database on this machine")
-        moment = datetime(2025, 1, 1, tzinfo=timezone.utc)
-        while moment.year < 2029:
-            assert report._us_central_by_rule(moment).utcoffset() == moment.astimezone(chicago).utcoffset(), moment
-            moment += timedelta(minutes=30)
+    def test_without_a_tz_database_it_prints_utc_and_says_so(self, monkeypatch):
+        import zoneinfo
+
+        def missing(_key):
+            raise zoneinfo.ZoneInfoNotFoundError("no tz database")
+
+        monkeypatch.setattr(zoneinfo, "ZoneInfo", missing)
+        assert report.ends_text("2026-10-21T00:14:00.000Z") == "Wed 12:14 AM UTC"
 
 
 class TestAuctionCard:

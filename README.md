@@ -1392,6 +1392,12 @@ opportunity is included in the report again only if:
 - its price has dropped further since the last time it was flagged (these
   show up under `PRICE DROPS`).
 
+A listing is written to that file only after the email is built and trimmed,
+and only if the email actually printed it. A deal cut for length
+(`focus.max_listings` / `focus.max_per_section`) is not recorded, so it comes
+back on the next run; the footer counts these. A failed send or a dry run
+records nothing.
+
 Auctions, target hits and needs-review entries are **not** deduped -- an
 auction that's still live needs to keep appearing until it closes.
 

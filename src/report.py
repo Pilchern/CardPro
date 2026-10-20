@@ -50,7 +50,7 @@ import re
 import textwrap
 from collections import OrderedDict
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from typing import Optional
 
 from src import desirability, focus, reasons
@@ -1119,31 +1119,20 @@ END_TIME_ZONE = "America/Chicago"
 END_TIME_LABEL = "CT"
 
 
-def _us_central(moment: datetime) -> datetime:
-    """``moment`` (aware) in US Central time.
+def _us_central(moment: datetime) -> tuple:
+    """``(moment in US Central time, "CT")``.
 
     zoneinfo reads the system tz database, which GitHub's Ubuntu runners
-    ship (/usr/share/zoneinfo); where it is missing (Windows without the
-    tzdata package) the US rule since 2007 is applied by hand rather than
-    the email failing: CDT (UTC-5) from 2 a.m. on the second Sunday of
-    March to 2 a.m. on the first Sunday of November, else CST (UTC-6).
+    ship (/usr/share/zoneinfo). Where it is missing (Windows without the
+    tzdata package) the time is printed in UTC, labelled so, rather than the
+    email failing or guessing at daylight saving.
     """
     try:
         from zoneinfo import ZoneInfo  # Python 3.9+
 
-        return moment.astimezone(ZoneInfo(END_TIME_ZONE))
+        return moment.astimezone(ZoneInfo(END_TIME_ZONE)), END_TIME_LABEL
     except Exception:  # ImportError, or ZoneInfoNotFoundError (a KeyError)
-        return _us_central_by_rule(moment)
-
-
-def _us_central_by_rule(moment: datetime) -> datetime:
-    utc = moment.astimezone(timezone.utc)
-    march = datetime(utc.year, 3, 8, 8, tzinfo=timezone.utc)  # 2 a.m. CST
-    march += timedelta(days=(6 - march.weekday()) % 7)
-    november = datetime(utc.year, 11, 1, 7, tzinfo=timezone.utc)  # 2 a.m. CDT
-    november += timedelta(days=(6 - november.weekday()) % 7)
-    hours = -5 if march <= utc < november else -6
-    return utc.astimezone(timezone(timedelta(hours=hours)))
+        return moment.astimezone(timezone.utc), "UTC"
 
 
 def ends_text(ends_at) -> Optional[str]:
@@ -1159,10 +1148,10 @@ def ends_text(ends_at) -> Optional[str]:
         return None
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=timezone.utc)
-    local = _us_central(moment)
+    local, label = _us_central(moment)
     hour = local.hour % 12 or 12
     return "{} {}:{:02d} {} {}".format(
-        local.strftime("%a"), hour, local.minute, "AM" if local.hour < 12 else "PM", END_TIME_LABEL
+        local.strftime("%a"), hour, local.minute, "AM" if local.hour < 12 else "PM", label
     )
 
 
@@ -2584,7 +2573,8 @@ def _focus_line(rules) -> str:
     return textwrap.fill(line, width=_WRAP_WIDTH)
 
 
-def _focus_footer(selection, trimmed: int, rules, cheap_finds_hidden: int = 0) -> str:
+def _focus_footer(selection, trimmed: int, rules, cheap_finds_hidden: int = 0,
+                  opportunities_cut: int = 0) -> str:
     """What focus removed, in plain numbers, with the setting that would
     bring it back. A cap you cannot see the effect of is a cap you stop
     trusting -- and the fix for "I think it hid something good" has to be a
@@ -2652,6 +2642,15 @@ def _focus_footer(selection, trimmed: int, rules, cheap_finds_hidden: int = 0) -
                 " or focus.browse_max_per_section" if browse_capped else ""
             )
         )
+        if opportunities_cut:
+            sentence += (
+                " {} of them {}, not recorded as sent, so {} be re-sent on the next "
+                "run.".format(
+                    opportunities_cut,
+                    "was an opportunity" if opportunities_cut == 1 else "were opportunities",
+                    "it will" if opportunities_cut == 1 else "they will",
+                )
+            )
         parts.append(sentence)
     return "".join(parts)
 
@@ -2816,9 +2815,12 @@ def build_model(
         sections[SECTION_AUCTIONS] = with_max + without_max[:auction_no_max_cap]
         elsewhere = {deal.id for key in SECTION_ORDER for deal in sections[key]}
         auctions_over_cap = len(cut_ids - elsewhere)
+    untrimmed = sections
     sections, trimmed = focus.trim(
         sections, BUDGET_ORDER, focus_rules, no_leftovers=BUDGET_NO_LEFTOVERS,
-        browse=BROWSE_SECTIONS, browse_exempt=_has_max,
+        # An opportunity is never held to the browse cap: it is a deal, not
+        # something to browse, wherever it was classified.
+        browse=BROWSE_SECTIONS, browse_exempt=lambda d: _has_max(d) or d.is_opportunity,
     )
 
     has_decision_content = any(sections[key] for key in DECISION_SECTIONS)
@@ -2849,6 +2851,11 @@ def build_model(
             shown_above.setdefault(deal.id, _plain_title(SECTION_TITLES[key]))
 
     shown = {deal.id for key in SECTION_ORDER for deal in sections[key]}
+    # Deals the length cap cut. They are not in shown_ids, so the seen file
+    # does not record them and the next run reports them again.
+    opportunities_cut = len(
+        {deal.id for deals in untrimmed.values() for deal in deals if deal.is_opportunity} - shown
+    )
     # Everything CardPro saw is accounted for in exactly one of these
     # buckets: printed, left out by focus, trimmed for length, or reviewed
     # and simply not close. A shorter email is only worth having if you can
@@ -2881,7 +2888,7 @@ def build_model(
             " {} reviewed and fitted no section -- they had a usable comp and were simply not "
             "close.".format(_plural(not_shown, "other listing was", "other listings were"))
         )
-    thresholds += _focus_footer(selection, trimmed, focus_rules, cheap_finds_hidden)
+    thresholds += _focus_footer(selection, trimmed, focus_rules, cheap_finds_hidden, opportunities_cut)
     thresholds += _auction_footer(
         ending_too_soon, auction_min_hours_left, auctions_over_cap, auction_no_max_cap
     )
