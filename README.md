@@ -410,11 +410,7 @@ straight top-down cap means a 40-opportunity morning prints zero auctions,
 and "the day was so good you saw none of the thing you bid on" is a bug
 wearing a ranking's clothes. `LOW CONFIDENCE / NEEDS REVIEW` never takes
 leftovers: it says of itself that it is not a recommendation, and on a
-quiet day it is also the biggest section CardPro produces. The browse
-sections (cool cards, young core, watch, needs review, price drops, cheap
-auctions) are held to `browse_max_per_section` through both passes, and
-`CHEAP FINDS` is off unless `cheap_finds_enabled` is set; on a no-deal day
-the subject starts "No deals · ".
+quiet day it is also the biggest section CardPro produces.
 
 **Nothing is dropped silently.** Every group removed is counted in the
 thresholds footer, with the setting that would bring it back:
@@ -436,8 +432,7 @@ one section.
 | `require_auction_bidding_room` | Drop auctions already bid past your max rational bid. | `true` | Set `false` if you want to watch auctions you can't profitably win. |
 | `max_listings` | Hard cap on distinct listings in one email. | `40` | 25 for a phone-sized digest, 60+ if you read it at a desk. |
 | `max_per_section` | Each section's first-pass share, and the hard cap for `NEEDS REVIEW`. | `10` | Raise it if one section keeps getting cut short; `0` disables the per-section pass entirely (pure top-down). |
-| `browse_max_per_section` | Hard cap (both passes) for the browse sections: `CHEAP AUCTIONS`, `COOL CARDS`, `YOUNG CORE`, `WATCH`, `NEEDS REVIEW`, `PRICE DROPS`. Deals, ACT NOW, target hits, auctions and offers keep `max_per_section`. | `5` | Raise it (or `0` for off) when you want more to browse on a no-deal day. |
-| `cheap_finds_enabled` | Whether `CHEAP FINDS` prints. Off by default: a $1 card must sell for ~$33 to net $15, so they are never flips. The footer counts how many it hid. | `false` | `true` if you collect pocket-change rookies. |
+| `browse_max_per_section` / `cheap_finds_enabled` | Browse-section cap / show `CHEAP FINDS`; see `focus._browse_comment` in `config/settings.json`. | `5` / `false` | More to browse on a no-deal day. |
 
 On that same August corpus, this takes the email from **4,255 lines to
 215** without changing a single valuation.

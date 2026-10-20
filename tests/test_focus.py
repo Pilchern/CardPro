@@ -397,6 +397,17 @@ def test_browse_sections_hold_their_own_cap_through_the_leftover_pass():
     assert trimmed == 7
 
 
+def test_browse_exempt_cards_do_not_count_against_the_browse_cap():
+    rules = focus.FocusRules(max_listings=40, max_per_section=10, browse_max_per_section=2)
+    sections = sections_of(watch=8)
+    exempt = {"watch-0", "watch-1", "watch-2"}
+    kept, trimmed = focus.trim(
+        sections, ORDER, rules, browse=("watch",), browse_exempt=lambda d: d.id in exempt
+    )
+    assert ids(kept["watch"]) == ["watch-0", "watch-1", "watch-2", "watch-3", "watch-4"]
+    assert trimmed == 3
+
+
 def test_browse_cap_of_zero_means_browse_sections_get_the_normal_share():
     rules = focus.FocusRules(max_listings=40, max_per_section=10, browse_max_per_section=0)
     kept, _ = focus.trim(sections_of(watch=12), ORDER, rules, browse=("watch",))

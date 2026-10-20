@@ -1324,19 +1324,15 @@ def test_subject_falls_back_to_opportunities_then_targets_then_auctions():
     assert report.build_report([opportunity], 30, RUN_DATE)[0] == "1 opportunity (Aug 10)"
 
     target = make_listing(is_opportunity=False, pct_under_market=1.0, target_hit=make_target_hit())
-    assert report.build_report([target], 30, RUN_DATE)[0] == "No deals \u00b7 1 target card hit (Aug 10)"
+    assert report.build_report([target], 30, RUN_DATE)[0] == "1 target card hit (Aug 10)"
 
     auction = make_listing(listing_type="auction", is_opportunity=False, pct_under_market=1.0)
     assert report.build_report([auction], 30, RUN_DATE)[0] == "No deals \u00b7 1 auction to review (Aug 10)"
 
-
-def test_a_zero_deal_subject_leads_with_no_deals_and_a_deal_day_does_not():
-    # The phone preview is often all that is read. "10 auctions to review"
-    # on a zero-deal day reads like ten things worth money.
-    auction = make_listing(listing_type="auction", is_opportunity=False, pct_under_market=1.0)
-    assert report.build_report([auction], 30, RUN_DATE)[0].startswith("No deals \u00b7 ")
-    assert report.build_report([cheap_auction()], 30, RUN_DATE)[0].startswith("No deals \u00b7 ")
-    assert "No deals" not in report.build_report([make_listing()], 30, RUN_DATE)[0]
+    # A target hit outranks the no-deal prefix even with an auction beside it.
+    target_and_auction = [target, make_listing(
+        id="2", listing_type="auction", is_opportunity=False, pct_under_market=1.0)]
+    assert report.build_report(target_and_auction, 30, RUN_DATE)[0] == "1 target card hit (Aug 10)"
 
 
 def test_subject_says_no_opportunities_when_there_is_nothing():
@@ -2405,6 +2401,32 @@ class TestShorterEmailOnNoDealDays:
         shown = sum(1 for i in range(30) if "http://example.com/{}  ".format(i) in body)
         assert shown == 5
         assert "focus.browse_max_per_section" in flat(body)
+
+    def test_watch_is_not_a_browse_section(self):
+        # WATCH holds low-confidence opportunities; dedupe records every
+        # opportunity as reported before the report is built, so one cut by
+        # the browse cap would be suppressed on later days without ever
+        # being shown.
+        deals = [
+            make_cheap(id=str(i), url="http://example.com/{}".format(i),
+                       dollar_savings=40.0 + i, comp_match=make_match(confidence="low"))
+            for i in range(8)
+        ]
+        model = report.build_model(deals, 30, RUN_DATE, focus_rules=self.RULES)
+        assert list(model.sections) == [report.SECTION_WATCH]
+        assert model.shown_ids == frozenset(str(i) for i in range(8))
+
+    def test_cheap_auctions_with_a_max_are_exempt_from_the_browse_cap_and_lead(self):
+        with_max = [cheap_auction(id="max-{}".format(i), url="http://example.com/max-{}".format(i),
+                                  max_rational_bid=5.0) for i in range(4)]
+        without = [cheap_auction(id="nomax-{}".format(i), url="http://example.com/nomax-{}".format(i))
+                   for i in range(8)]
+        day = without + with_max
+        ordered = report.classify_sections(day)[report.SECTION_CHEAP_AUCTIONS]
+        assert [d.id for d in ordered[:4]] == ["max-{}".format(i) for i in range(4)]
+        model = report.build_model(day, 30, RUN_DATE, focus_rules=self.RULES)
+        assert {"max-{}".format(i) for i in range(4)} <= model.shown_ids
+        assert sum(1 for i in model.shown_ids if i.startswith("nomax-")) == 5
 
     def test_deals_keep_the_full_section_share(self):
         deals = [
