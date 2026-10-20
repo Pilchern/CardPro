@@ -14,7 +14,13 @@ This measures whether the ENGINE behaves correctly, not whether the market
 values are right -- no data source available to this project can tell us
 that yet.
 
-    python -m scripts.replay_corpus [--legacy] [--min-comps N]
+The headline "WOULD FLAG" count is the PRODUCTION deal gate: each titled
+row is rebuilt as a Listing and decided by main.evaluate_listings with the
+shipped config and an engine built as main.run builds it, valued as of the
+latest observation date. The old gross-discount-only count (30% and $10 off
+the median, the pre-10-16 rule) follows on a secondary line.
+
+    python -m scripts.replay_corpus [--legacy] [--min-comps N] [--reextract]
 """
 from __future__ import annotations
 
@@ -27,13 +33,20 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src import card_identity, comps, matcher, price_history  # noqa: E402
+from src import card_identity, comps, matcher, observability, price_history  # noqa: E402
+from src import main as pipeline  # noqa: E402
+from eval import run_eval  # noqa: E402
 
 CORPUS = Path(__file__).resolve().parent.parent / "data" / "ebay_alert_price_history.json"
 
 
-def replay_new(observations, min_comps, today):
-    engine = comps.CompEngine(observations, min_comps_required=min_comps, today=today)
+def replay_new(observations, min_comps, today, engine=None):
+    """Comp-level statistics, plus the GROSS-discount-only would-flag list
+    (30% and $10 off the median, nothing netted out). That list is the
+    pre-10-16 gate, kept for comparability and because eval/build_candidates
+    draws its "engine_flag" stratum from it; the headline count is
+    replay_production_gate below."""
+    engine = engine or comps.CompEngine(observations, min_comps_required=min_comps, today=today)
     levels = collections.Counter()
     confidences = collections.Counter()
     blocked = collections.Counter()
@@ -77,6 +90,52 @@ def replay_new(observations, min_comps, today):
             flagged.append((savings, pct, match, obs))
 
     return engine, levels, confidences, blocked, flagged
+
+
+def replay_production_gate(observations, engine, cfg):
+    """The production decision: rows rebuilt by eval's listing_from_row and
+    handed to main.evaluate_listings, so every gate the daily run applies is
+    applied here, in order. Returns ([(listing, required_net)] most
+    profitable first, stats, rows that could not be rebuilt)."""
+    rebuilt = [run_eval.listing_from_row(cfg, o, o["player"]) if o.get("title") else None
+               for o in observations]
+    listings = [listing for listing in rebuilt if listing is not None]
+    stats = observability.RunStats()
+    pipeline.evaluate_listings(listings, engine, cfg, stats)
+    flagged = sorted(
+        ((l, pipeline.required_net_profit(cfg, l.comp_median)) for l in listings if l.is_opportunity),
+        key=lambda item: item[0].economics.expected_profit, reverse=True,
+    )
+    return flagged, stats, len(observations) - len(listings)
+
+
+def report_production_gate(flagged, stats, skipped, gross_count, days, cfg) -> None:
+    print(f"  WOULD FLAG: {len(flagged)}  (production gate: main.evaluate_listings, "
+          f"net >= required net; {days} corpus day(s))")
+    print(f"  caveat: in-sample (each row valued against the whole corpus), unknown inbound "
+          f"shipping assumed ${cfg.assumed_inbound_shipping or 0:.2f}, single-player rebuild "
+          f"(multi-player gate can't fire)")
+    print(f"  gross-discount only (pre-10-16 gate, 30% and $10 off median): {gross_count}")
+    if skipped:
+        print(f"  not gated (no title, or title no longer names the player): {skipped}")
+    rejected = {
+        reason: n for reason, n in stats.rejections.counts().items()
+        if reason in ("below_discount_threshold", "below_min_savings", "below_min_net_profit")
+    }
+    if rejected:
+        print("  flag-eligible but rejected by:", rejected)
+    for listing, required in flagged:
+        e = listing.economics
+        print(
+            "    net ${:>7.2f} (needs ${:>6.2f})  gross ${:>7.2f} ({:>3.0f}%) via {:<9s} "
+            "median ${:<8.2f} n={:<3d} conf={:<6s} <- ${:.2f} {} | {}".format(
+                e.expected_profit, required, listing.dollar_savings, listing.pct_under_market,
+                listing.comp_level_matched, listing.comp_median, listing.comp_sample_size,
+                listing.comp_confidence, listing.price, listing.player, listing.title,
+            )
+        )
+    if not flagged:
+        print("    (nothing -- no card in this corpus clears the production deal gate)")
 
 
 def replay_legacy(observations, min_comps):
@@ -356,9 +415,9 @@ def report_identity_coverage(observations, min_comps):
     print()
 
 
-def main() -> None:
+def main(argv=None) -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--min-comps", type=int, default=3)
+    parser.add_argument("--min-comps", type=int, help="override valuation.min_comps_required")
     parser.add_argument("--legacy", action="store_true", help="also show what the v1 engine did")
     parser.add_argument(
         "--reextract",
@@ -366,7 +425,7 @@ def main() -> None:
         help="re-derive identity from the stored titles before replaying, so the KPI "
              "measures the parser as it is now rather than as it was when each row was written",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if not CORPUS.exists():
         print(f"No corpus at {CORPUS} -- nothing to replay.")
@@ -375,12 +434,19 @@ def main() -> None:
     with open(CORPUS) as f:
         history = json.load(f)
     observations = price_history.deduped_observations(history)
-    today = datetime.now(timezone.utc)
+    cfg = run_eval.offline_config()
+    if args.min_comps is not None:
+        cfg.valuation_min_comps_required = args.min_comps
+    min_comps = cfg.valuation_min_comps_required
 
     print(f"Corpus: {CORPUS}")
     print(f"  distinct listings: {len(observations)}")
     dates = sorted({o.get("date") for o in observations if o.get("date")})
     print(f"  date range: {dates[0]} .. {dates[-1]}" if dates else "  date range: unknown")
+    # As of the newest row, not the clock, so a re-run next week reads the same.
+    today = datetime.strptime(dates[-1], "%Y-%m-%d").replace(tzinfo=timezone.utc) if dates \
+        else datetime.now(timezone.utc)
+    print(f"  valued as of: {today:%Y-%m-%d} (latest observation date)")
     basis = collections.Counter(o.get("basis", "asking") for o in observations)
     print(f"  basis: {dict(basis)}")
     report_title_coverage(observations)
@@ -390,10 +456,10 @@ def main() -> None:
         observations = refreshed
     print()
 
-    report_identity_coverage(observations, args.min_comps)
+    report_identity_coverage(observations, min_comps)
 
     if args.legacy:
-        table, levels, flagged = replay_legacy(observations, args.min_comps)
+        table, levels, flagged = replay_legacy(observations, min_comps)
         print("--- v1 engine (hierarchical, price-tier fallback) ---")
         print("  buckets:", {lvl: len(table[lvl]) for lvl in comps.COMP_LEVELS})
         print("  level used:", dict(levels))
@@ -407,23 +473,16 @@ def main() -> None:
             )
         print()
 
-    engine, levels, confidences, blocked, flagged = replay_new(observations, args.min_comps, today)
+    engine = run_eval.build_engine(cfg, observations, today)
+    engine, levels, confidences, blocked, gross_flagged = replay_new(observations, min_comps, today, engine)
     print("--- CardPro 2.0 engine ---")
     print("  buckets:", engine.coverage())
     print("  level used:", dict(levels))
     print("  confidence:", dict(confidences))
     print("  quality gates hit:", dict(blocked))
     print("  skipped observations (unusable):", engine.skipped_observations())
-    print(f"  WOULD FLAG: {len(flagged)}")
-    for savings, pct, match, obs in sorted(flagged, reverse=True, key=lambda f: f[0])[:8]:
-        print(
-            "    ${:>8.2f} ({:>3.0f}%) via {:<11s} median ${:<8.2f} n={:<3d} conf={:<6s} <- ${:.2f} {}".format(
-                savings, pct, match.level, match.stats.median, match.stats.sample_size,
-                match.confidence, obs["price"], obs["player"],
-            )
-        )
-    if not flagged:
-        print("    (nothing -- no card in this corpus can be honestly called underpriced)")
+    flagged, stats, skipped = replay_production_gate(observations, engine, cfg)
+    report_production_gate(flagged, stats, skipped, len(gross_flagged), len(dates), cfg)
 
 
 if __name__ == "__main__":
