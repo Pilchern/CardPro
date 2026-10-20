@@ -832,12 +832,17 @@ One-time setup:
    Never paste these into a chat with an AI assistant -- only into GitHub's
    secret form, which is write-only (nobody, including repo admins, can
    read a secret's value back afterward).
-2. That's it -- the workflow is already in the repo. It runs daily at
-   15:00 UTC (~10am US Central, after eBay's ~14:00 UTC alert burst; drifts to ~9am in winter since
-   GitHub Actions cron doesn't follow DST -- not worth a second seasonal
-   schedule to fix a one-hour drift).
+2. That's it -- the workflow is already in the repo. It is scheduled daily
+   at 12:47 UTC, with a backup at 15:47 UTC; both pass `--skip-if-ran-today`.
+   GitHub starts scheduled runs late (2.14 h minimum, ~4.7 h median,
+   measured), so the scan starts after eBay's 13:55-14:25 UTC alert burst,
+   typically ~17:30 UTC. The backup starts before midnight UTC even at the
+   worst measured delay, so "today" doesn't roll over between the two.
+   Cron is UTC and doesn't follow DST.
 3. To trigger a run immediately instead of waiting for the schedule: repo
-   **Actions tab -> Daily Card Deal Scan -> Run workflow**.
+   **Actions tab -> Daily Card Deal Scan -> Run workflow**. A manual run
+   marks the day as done, so that day's scheduled runs skip. Avoid manual
+   runs before ~14:30 UTC or the alert burst lands a day late.
 
 What the job does, in order: installs `requirements-dev.txt`, **runs the
 test suite**, runs the scan, then persists state. The test step is a gate,
@@ -848,7 +853,7 @@ is a trade worth making, and a failure there means no report today and a red
 job you get told about.
 
 The job also has a `concurrency` group and a 15-minute timeout. The group
-stops a manual dispatch racing the 15:00 cron run: two jobs checked out at
+stops a manual dispatch racing the daily cron run: two jobs checked out at
 the same commit means the second push is rejected, and by then the email has
 gone out and the day's observations exist only on a runner about to be
 deleted. `cancel-in-progress` stays `false` -- killing a run mid-flight is

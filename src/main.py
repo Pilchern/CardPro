@@ -1461,10 +1461,11 @@ def run(args: argparse.Namespace) -> None:
     dedupe.save_seen(cfg.seen_listings_path, seen)
     # Last, and only on the path where the email actually went out -- also
     # not to be merged with the corpus save above. The marker's one job is to
-    # answer "did today's scan complete", and the 19:00 backup run keys off
-    # it via --skip-if-ran-today. Writing it before the send would let a
-    # failed send record a run that never reached anybody, and the backup run
-    # would then skip the one day it exists for.
+    # answer "did today's scan complete", and both scheduled runs (12:47
+    # primary, 15:47 backup) key off it via --skip-if-ran-today. Writing it
+    # before the send would let a failed send record a run that never reached
+    # anybody, and the scheduled runs would then skip the one day they exist
+    # for.
     run_marker.save(cfg.last_run_path, today_str, len(listings))
     logger.info("Done")
 
