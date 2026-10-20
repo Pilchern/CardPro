@@ -39,7 +39,7 @@ import logging
 import traceback
 import sys
 from collections import OrderedDict, defaultdict
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
@@ -159,7 +159,7 @@ def setup_logging() -> None:
 
 def _build_listing(cfg, *, listing_id, source, title, price, url, players, shipping_price=None,
                    listing_type="unknown", bid_count=None, time_left_text=None, has_best_offer=False,
-                   search_query=None, listed_at=None):
+                   search_query=None, listed_at=None, ends_at=None):
     """One Listing with identity fully extracted. Returns None when no
     watchlist player is in the title or, failing that, in the saved search
     the listing matched -- the caller records the reason."""
@@ -198,6 +198,7 @@ def _build_listing(cfg, *, listing_id, source, title, price, url, players, shipp
         listing_type=listing_type,
         bid_count=bid_count,
         time_left_text=time_left_text,
+        ends_at=ends_at,
         listed_at=listed_at,
         has_best_offer=has_best_offer,
         negative_signals=tuple(identity.negative_signals.value or ()),
@@ -218,7 +219,13 @@ def fetch_ebay_active(cfg, players, token, stats) -> list:
     player filled a 200-item best-match page, with as few as 3 auctions in
     it. Then soonest-ending auctions, because those are what the auction
     sections act on and newest-first reaches them only on the day they were
-    listed. The same item from both passes is one listing."""
+    listed. The same item from both passes is one listing.
+
+    The auction pass is windowed (auction_window): only auctions ending
+    auctions.min_hours_left..max_hours_left from now. Ending-soonest with no
+    window returned auctions closing within the hour, gone before the email
+    was read; the window makes each auction land on about one daily email
+    with time left to bid."""
     listings = []
     seen_ids = set()
     capped = []
@@ -234,7 +241,8 @@ def fetch_ebay_active(cfg, players, token, stats) -> list:
         # pass keeps every price: a cheap current bid is the point of it.
         dict(sort="newlyListed", max_pages=cfg.ebay_newest_pages_per_player,
              min_price=cfg.ebay_newest_min_price),
-        dict(sort="endingSoonest", buying_options=("AUCTION",), max_pages=cfg.ebay_auction_pages_per_player),
+        dict(sort="endingSoonest", buying_options=("AUCTION",), max_pages=cfg.ebay_auction_pages_per_player,
+             ending_between=auction_window(cfg, now)),
     ]
     for player in players:
         for search in passes:
@@ -278,6 +286,7 @@ def fetch_ebay_active(cfg, players, token, stats) -> list:
                     listing_type=_browse_listing_type(buying_options),
                     bid_count=item.get("bidCount"),
                     time_left_text=ebay_client.time_left_text(item, now),
+                    ends_at=item.get("itemEndDate"),
                     has_best_offer="BEST_OFFER" in buying_options,
                     # itemOriginDate survives a relist; itemCreationDate is
                     # reset by one, so it is only the fallback.
@@ -316,6 +325,26 @@ def fetch_ebay_active(cfg, players, token, stats) -> list:
             )
         )
     return listings
+
+
+def auction_window(cfg, now: datetime) -> Optional[tuple]:
+    """(start, end) for the Browse auction pass: auctions ending between
+    auctions.min_hours_left and auctions.max_hours_left from `now`. Either
+    bound None leaves that side open; both None is no window at all.
+
+    Defaults 3 and 27: under 3 h an auction may close before the email is
+    read (the run starts 2-7 h late and Nick reads on his phone), and a 24 h
+    span offset by those 3 h means a daily run sees each auction on about one
+    email, the last one with time left. Ending-soonest within the window
+    still puts the most urgent of them first."""
+    low = getattr(cfg, "auction_min_hours_left", None)
+    high = getattr(cfg, "auction_max_hours_left", None)
+    if low is None and high is None:
+        return None
+    return (
+        now + timedelta(hours=low) if low is not None else None,
+        now + timedelta(hours=high) if high is not None else None,
+    )
 
 
 def _browse_listing_id(item: dict) -> str:
@@ -1398,6 +1427,8 @@ def run(args: argparse.Namespace) -> None:
         cheap_find_ceiling=cfg.cheap_find_ceiling,
         cheap_auction_floor=cfg.cheap_auction_floor,
         cheap_auction_ceiling=cfg.cheap_auction_ceiling,
+        auction_min_hours_left=cfg.auction_min_hours_left,
+        auction_no_max_cap=cfg.auction_no_max_cap,
     )
     alert_only = getattr(args, "alert_only", False)
     if not alert_only:

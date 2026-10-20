@@ -12,7 +12,7 @@ test on 2026-10-15: OAuth works, Trading Card Singles is category 261328,
 every watchlist player fills a 200-item page, and Marketplace Insights
 (sold prices) returns 404 -- not granted. When `EBAY_CLIENT_ID` /
 `EBAY_CLIENT_SECRET` are set, each run reads the Browse API (newest
-listings plus soonest-ending auctions) AND the saved-search alert emails
+listings plus auctions ending 3-27 h out, soonest first) AND the saved-search alert emails
 (see "eBay via saved-search email alerts" below), keeps an item both
 sources saw once (the API copy, whose title is never truncated), and
 records both into the same comp corpus. The email's SYSTEM HEALTH footer
@@ -1252,6 +1252,15 @@ gate. They get their own section and their own math.
 |---|---|---|---|
 | `required_margin_pct` | Max rational bid is the highest you could bid and still keep this much margin against estimated market value, after fees and shipping. | `25` | Raise it to bid more conservatively, lower it if you're happy on thinner margins. |
 | `ending_soon_hours` | What counts as urgent. **Only** used for ordering the auction section -- never to relax any quality gate. | `24` | Widen it if you check email less than daily. |
+| `min_hours_left` / `max_hours_left` | The Browse auction pass asks eBay (`itemEndDate` filter) only for auctions ending this many hours after the fetch, so each auction lands on about one daily email with time left to bid. An alert-email auction whose countdown is already under `min_hours_left` is left out of the email and counted in the footer (target hits are always kept). `null` opens that side. | `3` / `27` | Raise `min_hours_left` if you read the email later in the day. |
+| `no_max_cap` | `AUCTIONS ENDING SOON` lists every auction with a MAX first (most room under the MAX first), then at most this many without one, soonest first; the rest are counted in the footer. `0` = no cap. | `3` | Raise it to browse more auctions CardPro cannot value. |
+
+Each auction card prints its close as a Central clock time ("ends Tue 7:14 PM
+CT") on the Bidding and Max bid lines, from Browse's `itemEndDate`; an
+alert-email auction has no end date and keeps the countdown. A no-deal
+subject counts only auctions with room under their MAX ("No deals · 2
+auctions with room under MAX"); with none, it falls through to the next thing
+there is.
 
 The pocket-change band that splits `CHEAP AUCTIONS` off from
 `AUCTIONS ENDING SOON` lives in `settings.json` → `report`, because it is a

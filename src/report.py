@@ -50,7 +50,7 @@ import re
 import textwrap
 from collections import OrderedDict
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Optional
 
 from src import desirability, focus, reasons
@@ -1114,6 +1114,47 @@ def _target_text(deal: Listing) -> str:
     return '"{}" -- the card you asked for is listed, but above every price band you set'.format(name)
 
 
+#: The zone auction end times print in, and its label. One owner, in Central.
+END_TIME_ZONE = "America/Chicago"
+END_TIME_LABEL = "CT"
+
+
+def _us_central(moment: datetime) -> tuple:
+    """``(moment in US Central time, "CT")``.
+
+    zoneinfo reads the system tz database, which GitHub's Ubuntu runners
+    ship (/usr/share/zoneinfo). Where it is missing (Windows without the
+    tzdata package) the time is printed in UTC, labelled so, rather than the
+    email failing or guessing at daylight saving.
+    """
+    try:
+        from zoneinfo import ZoneInfo  # Python 3.9+
+
+        return moment.astimezone(ZoneInfo(END_TIME_ZONE)), END_TIME_LABEL
+    except Exception:  # ImportError, or ZoneInfoNotFoundError (a KeyError)
+        return moment.astimezone(timezone.utc), "UTC"
+
+
+def ends_text(ends_at) -> Optional[str]:
+    """An auction's close as a phone-readable local time, "Tue 7:14 PM CT",
+    from Browse's itemEndDate. None when unknown or unreadable -- the card
+    then falls back to the countdown. A countdown is true only at fetch
+    time, and the email is read hours later; a clock time stays true."""
+    if not ends_at:
+        return None
+    try:
+        moment = datetime.fromisoformat(str(ends_at).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    local, label = _us_central(moment)
+    hour = local.hour % 12 or 12
+    return "{} {}:{:02d} {} {}".format(
+        local.strftime("%a"), hour, local.minute, "AM" if local.hour < 12 else "PM", label
+    )
+
+
 def _auction_card(index: int, deal: Listing, ending_soon_hours: float = DEFAULT_ENDING_SOON_HOURS) -> str:
     """Auctions get their own shape on purpose.
 
@@ -1134,8 +1175,11 @@ def _auction_card(index: int, deal: Listing, ending_soon_hours: float = DEFAULT_
     fields.append(("Current bid", bid_text))
 
     bids = _plural(deal.bid_count, "bid") if deal.bid_count is not None else "bid count unknown"
-    time_left = deal.time_left_text or "time left unknown"
-    bidding = "{}, {} remaining".format(bids, time_left)
+    ends = ends_text(getattr(deal, "ends_at", None))
+    if ends:
+        bidding = "{}, ends {}".format(bids, ends)
+    else:
+        bidding = "{}, {} remaining".format(bids, deal.time_left_text or "time left unknown")
     hours_left = _parse_time_left_hours(deal.time_left_text)
     if hours_left is not None and hours_left <= ending_soon_hours:
         bidding += " -- inside your {:.0f}h ending-soon window".format(ending_soon_hours)
@@ -1145,7 +1189,8 @@ def _auction_card(index: int, deal: Listing, ending_soon_hours: float = DEFAULT_
         fields.append(("Context", CONTEXT_ONLY_TEXT))
 
     if deal.max_rational_bid is not None:
-        fields.append(("Max bid", _max_text(deal, "bid")))
+        # The close beside the ceiling: the two numbers a bid needs.
+        fields.append(("Max bid", _max_text(deal, "bid", ends=ends)))
     else:
         fields.append(
             ("Max bid",
@@ -1166,7 +1211,7 @@ def _auction_card(index: int, deal: Listing, ending_soon_hours: float = DEFAULT_
     return _card(index, deal, fields)
 
 
-def _max_text(deal: Listing, verb: str) -> str:
+def _max_text(deal: Listing, verb: str, ends: Optional[str] = None) -> str:
     """The one MAX line: what you may pay for the item ("bid", "offer",
     "pay") and still net your profit minimum. It replaced a Best Offer
     "maximum" set at 30% under market gross, which on a raw card is a price
@@ -1174,8 +1219,10 @@ def _max_text(deal: Listing, verb: str) -> str:
     if deal.max_rational_bid <= 0:
         return "none -- no price nets your profit minimum against this market value. Walk away."
     text = (
-        "{} -- the most you can {} for the card and still net your profit minimum after "
-        "fees, postage and tax. Above this, stop.".format(_money(deal.max_rational_bid), verb)
+        "{}{} -- the most you can {} for the card and still net your profit minimum after "
+        "fees, postage and tax. Above this, stop.".format(
+            _money(deal.max_rational_bid), ", ends {}".format(ends) if ends else "", verb
+        )
     )
     if not getattr(deal, "max_rational_bid_shipping_known", True):
         # Computed with an ASSUMED postage (economics.assumed_inbound_
@@ -1453,12 +1500,17 @@ def _parse_time_left_hours(text) -> Optional[float]:
 
 
 def _auction_sort_key(deal: Listing):
-    """Auctions sort by urgency: a known time left first, soonest first,
-    then by discount at the current bid. An unreadable countdown sorts last
-    rather than being guessed at zero, which would put the listing we know
-    least about at the top of the list."""
+    """Auctions with a MAX lead, most bidding room first (current bid / MAX
+    ascending): those are the bids CardPro can size. The rest sort by
+    urgency: a known time left first, soonest first, then by discount at the
+    current bid. An unreadable countdown sorts last rather than being
+    guessed at zero, which would put the listing we know least about at the
+    top of the list."""
     hours = _parse_time_left_hours(deal.time_left_text)
+    has_max = _has_max(deal)
     return (
+        not has_max,
+        (deal.price or 0.0) / deal.max_rational_bid if has_max else 0.0,
         deal.time_left_text is None,
         hours if hours is not None else float("inf"),
         -(deal.pct_under_market or 0.0),
@@ -1470,6 +1522,21 @@ def _has_max(deal: Listing) -> bool:
     """Whether the card prints a usable MAX (a bid or offer that still nets
     your minimum)."""
     return (deal.max_rational_bid or 0.0) > 0.0
+
+
+def _room_under_max(deal: Listing) -> bool:
+    """A MAX, and the current bid at or under it: a bid you can still make."""
+    return _has_max(deal) and deal.price is not None and deal.price <= deal.max_rational_bid
+
+
+def _ends_too_soon(deal: Listing, min_hours_left: Optional[float]) -> bool:
+    """An auction whose known time left is under ``min_hours_left``: it may
+    close before the email is read. A target hit is never dropped (you named
+    the card), and an unknown countdown is not guessed at."""
+    if not min_hours_left or not deal.is_auction or deal.target_hit is not None:
+        return False
+    hours = _parse_time_left_hours(deal.time_left_text)
+    return hours is not None and hours < min_hours_left
 
 
 def _cheap_auction_sort_key(deal: Listing):
@@ -1992,7 +2059,10 @@ def _subject(sections, date_short: str, stats=None) -> str:
     act_now = len(sections[SECTION_ACT_NOW])
     opportunities = len(sections[SECTION_TOP_OPPORTUNITIES])
     targets = len(sections[SECTION_TARGET_HITS])
-    auctions = len(sections[SECTION_AUCTIONS])
+    # Only auctions you can bid on: a MAX, with the bid still under it. An
+    # auction with no MAX is something to look at, not a bid to make, and
+    # "10 auctions to review" over ten of those promised what was not there.
+    auctions = sum(1 for deal in sections[SECTION_AUCTIONS] if _room_under_max(deal))
     cheap_auctions = len(sections[SECTION_CHEAP_AUCTIONS])
 
     if act_now:
@@ -2005,7 +2075,7 @@ def _subject(sections, date_short: str, stats=None) -> str:
     if targets:
         return "{} ({})".format(_plural(targets, "target card hit"), date_short)
     # From here down there is no deal and no target hit, and the subject says
-    # so first ("No deals · 10 auctions to review"), then what there is.
+    # so first ("No deals · 2 auctions with room under MAX"), then what there is.
     # Ahead of the breakage warning is deliberate for bids: a bid you can
     # lose for a dollar is still something to look at. Below it, no deal does
     # not mean nothing to look at -- "No opportunities today" above a dozen
@@ -2014,7 +2084,7 @@ def _subject(sections, date_short: str, stats=None) -> str:
     cheap = len(sections[SECTION_CHEAP_FINDS])
     breakage = getattr(stats, "breakage_warnings", None)
     if auctions:
-        body = "{} to review".format(_plural(auctions, "auction"))
+        body = "{} with room under MAX".format(_plural(auctions, "auction"))
     elif cheap_auctions:
         body = "{} to bid on".format(_plural(cheap_auctions, "cheap auction"))
     elif breakage:
@@ -2585,6 +2655,26 @@ def _focus_footer(selection, trimmed: int, rules, cheap_finds_hidden: int = 0,
     return "".join(parts)
 
 
+def _auction_footer(ending_too_soon: int, min_hours_left: Optional[float],
+                    over_cap: int, no_max_cap: int) -> str:
+    """The two auction cuts, counted with the setting that undoes each."""
+    parts = []
+    if ending_too_soon:
+        parts.append(
+            " {} left out: under {:g}h left, so likely closed before you read this. Lower "
+            "auctions.min_hours_left to see them.".format(
+                _plural(ending_too_soon, "auction was", "auctions were"), min_hours_left
+            )
+        )
+    if over_cap:
+        parts.append(
+            " {} without a MAX left out of AUCTIONS ENDING SOON (at most {} print, soonest "
+            "first, after every auction with a MAX). Raise auctions.no_max_cap to see "
+            "more.".format(_plural(over_cap, "auction"), no_max_cap)
+        )
+    return "".join(parts)
+
+
 def _join_blocks(blocks) -> str:
     return "\n\n".join(block for block in blocks if block)
 
@@ -2650,6 +2740,8 @@ def build_model(
     cheap_find_ceiling: float = DEFAULT_CHEAP_FIND_CEILING,
     cheap_auction_floor: float = DEFAULT_CHEAP_AUCTION_FLOOR,
     cheap_auction_ceiling: float = DEFAULT_CHEAP_AUCTION_CEILING,
+    auction_min_hours_left: Optional[float] = None,
+    auction_no_max_cap: int = 0,
 ) -> ReportModel:
     """Decide the whole report. See ReportModel for why this is separate
     from rendering it. Arguments are build_report's, unchanged."""
@@ -2684,8 +2776,15 @@ def build_model(
         )
 
     selection = focus.select(deals, focus_rules)
+    # An auction already closing inside auctions.min_hours_left (an alert
+    # email's countdown; the Browse pass never fetches one) is left out
+    # before classification, so it cannot fall into another section, and
+    # counted in the footer.
+    classifiable = [d for d in selection.kept if not _ends_too_soon(d, auction_min_hours_left)]
+    remaining_ids = {d.id for d in classifiable}
+    ending_too_soon = len({d.id for d in selection.kept} - remaining_ids)
     sections = classify_sections(
-        selection.kept,
+        classifiable,
         threshold_pct=threshold_pct,
         immediate_min_savings=immediate_min_savings,
         immediate_min_discount_pct=immediate_min_discount_pct,
@@ -2704,6 +2803,18 @@ def build_model(
         sections[SECTION_CHEAP_FINDS] = []
         elsewhere = {deal.id for key in SECTION_ORDER for deal in sections[key]}
         cheap_finds_hidden = len(hidden_ids - elsewhere)
+    # AUCTIONS keeps every auction with a MAX (sorted first) and at most
+    # auction_no_max_cap without one; the rest are counted, not dropped
+    # silently. Auctions are never opportunities, so dedupe has recorded
+    # none of these -- a cut card simply is not marked shown.
+    auctions_over_cap = 0
+    if auction_no_max_cap > 0:
+        with_max = [d for d in sections[SECTION_AUCTIONS] if _has_max(d)]
+        without_max = [d for d in sections[SECTION_AUCTIONS] if not _has_max(d)]
+        cut_ids = {d.id for d in without_max[auction_no_max_cap:]}
+        sections[SECTION_AUCTIONS] = with_max + without_max[:auction_no_max_cap]
+        elsewhere = {deal.id for key in SECTION_ORDER for deal in sections[key]}
+        auctions_over_cap = len(cut_ids - elsewhere)
     untrimmed = sections
     sections, trimmed = focus.trim(
         sections, BUDGET_ORDER, focus_rules, no_leftovers=BUDGET_NO_LEFTOVERS,
@@ -2751,7 +2862,7 @@ def build_model(
     # tell which of those happened.
     not_shown = (
         len({deal.id for deal in deals}) - len(shown) - selection.omitted_total - trimmed
-        - cheap_finds_hidden
+        - cheap_finds_hidden - ending_too_soon - auctions_over_cap
     )
     thresholds = (
         "Thresholds: an opportunity needs {:.0f}%+ under market AND at least {} saved; "
@@ -2778,6 +2889,9 @@ def build_model(
             "close.".format(_plural(not_shown, "other listing was", "other listings were"))
         )
     thresholds += _focus_footer(selection, trimmed, focus_rules, cheap_finds_hidden, opportunities_cut)
+    thresholds += _auction_footer(
+        ending_too_soon, auction_min_hours_left, auctions_over_cap, auction_no_max_cap
+    )
 
     return ReportModel(
         subject=_subject(sections, date_short, stats),
@@ -2845,6 +2959,8 @@ def build_report(
     cheap_find_ceiling: float = DEFAULT_CHEAP_FIND_CEILING,
     cheap_auction_floor: float = DEFAULT_CHEAP_AUCTION_FLOOR,
     cheap_auction_ceiling: float = DEFAULT_CHEAP_AUCTION_CEILING,
+    auction_min_hours_left: Optional[float] = None,
+    auction_no_max_cap: int = 0,
 ) -> tuple:
     """Returns ``(subject, body)`` -- the plain-text email.
 
@@ -2892,6 +3008,8 @@ def build_report(
         cheap_find_ceiling=cheap_find_ceiling,
         cheap_auction_floor=cheap_auction_floor,
         cheap_auction_ceiling=cheap_auction_ceiling,
+        auction_min_hours_left=auction_min_hours_left,
+        auction_no_max_cap=auction_no_max_cap,
     )
     return model.subject, render_text(model)
 

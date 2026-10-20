@@ -1326,8 +1326,11 @@ def test_subject_falls_back_to_opportunities_then_targets_then_auctions():
     target = make_listing(is_opportunity=False, pct_under_market=1.0, target_hit=make_target_hit())
     assert report.build_report([target], 30, RUN_DATE)[0] == "1 target card hit (Aug 10)"
 
-    auction = make_listing(listing_type="auction", is_opportunity=False, pct_under_market=1.0)
-    assert report.build_report([auction], 30, RUN_DATE)[0] == "No deals \u00b7 1 auction to review (Aug 10)"
+    auction = make_listing(listing_type="auction", is_opportunity=False, pct_under_market=1.0,
+                           max_rational_bid=150.0)
+    assert report.build_report([auction], 30, RUN_DATE)[0] == (
+        "No deals \u00b7 1 auction with room under MAX (Aug 10)"
+    )
 
     # A target hit outranks the no-deal prefix even with an auction beside it.
     target_and_auction = [target, make_listing(
