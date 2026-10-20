@@ -832,10 +832,12 @@ One-time setup:
    Never paste these into a chat with an AI assistant -- only into GitHub's
    secret form, which is write-only (nobody, including repo admins, can
    read a secret's value back afterward).
-2. That's it -- the workflow is already in the repo. It runs daily at
-   15:00 UTC (~10am US Central, after eBay's ~14:00 UTC alert burst; drifts to ~9am in winter since
-   GitHub Actions cron doesn't follow DST -- not worth a second seasonal
-   schedule to fix a one-hour drift).
+2. That's it -- the workflow is already in the repo. It is scheduled daily
+   at 11:47 UTC, with a `--skip-if-ran-today` backup at 15:47 UTC. GitHub
+   starts scheduled runs 3-7 h late (median 4.7 h, measured), so the scan
+   actually starts ~16:30 UTC, after eBay's 13:55-14:25 UTC alert burst,
+   and the backup stays before midnight UTC so it never sends a second
+   email. Cron is UTC and doesn't follow DST.
 3. To trigger a run immediately instead of waiting for the schedule: repo
    **Actions tab -> Daily Card Deal Scan -> Run workflow**.
 
@@ -848,7 +850,7 @@ is a trade worth making, and a failure there means no report today and a red
 job you get told about.
 
 The job also has a `concurrency` group and a 15-minute timeout. The group
-stops a manual dispatch racing the 15:00 cron run: two jobs checked out at
+stops a manual dispatch racing the daily cron run: two jobs checked out at
 the same commit means the second push is rejected, and by then the email has
 gone out and the day's observations exist only on a runner about to be
 deleted. `cancel-in-progress` stays `false` -- killing a run mid-flight is

@@ -41,8 +41,8 @@ Longer narrative: `docs/PROJECT_STATUS.md`, `docs/AUDIT_2026_09.md`, `docs/CARDP
 
 ## Scheduling
 
-`.github/workflows/daily-scan.yml`: cron `0 15 * * *` + backup `0 19 * * *` (`--skip-if-ran-today`), timeout 15 min, pytest gate, state commit with rebase-retry. `tests.yml` runs CI on 3.9/3.12.
-Measured from 100 GitHub runs (fact): the 15:00 cron fired 22/22 days (09-24..10-15), 3.2-7.3 h late (median 4.7 h); the 19:00 backup skipped 19/22 days and twice re-scanned after midnight UTC (second email). No dropped runs. Repo is public, so Actions minutes are unlimited.
+`.github/workflows/daily-scan.yml`: cron `47 11 * * *` + backup `47 15 * * *` (`--skip-if-ran-today`), routed by a `case` on `SCHEDULE`; phase-2 `17 */3 * * *` (`--alert-only`) is commented out; timeout 15 min, pytest gate, state commit with rebase-retry. `tests.yml` runs CI on 3.9/3.12.
+Measured from 100 GitHub runs (fact): the 15:00 cron fired 22/22 days (09-24..10-15), 3.2-7.3 h late (median 4.7 h); the 19:00 backup skipped 19/22 days and twice re-scanned after midnight UTC (second email). No dropped runs. Hence the 11:47/15:47 schedule (expected start ~16:30 UTC; backup lands before midnight even at 7.3 h late). Repo is public, so Actions minutes are unlimited.
 
 ## Hardcoded thresholds worth knowing
 
