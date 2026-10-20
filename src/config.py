@@ -288,6 +288,8 @@ def load_config() -> Config:
                 ),
                 max_listings=int(focus_settings.get("max_listings", 40)),
                 max_per_section=int(focus_settings.get("max_per_section", 10)),
+                browse_max_per_section=int(focus_settings.get("browse_max_per_section", 0)),
+                cheap_finds_enabled=bool(focus_settings.get("cheap_finds_enabled", True)),
                 cool_cards_price_ceiling=float(
                     focus_settings.get("cool_cards_price_ceiling", 100.0)
                 ),

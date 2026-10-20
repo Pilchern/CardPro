@@ -145,6 +145,15 @@ BUDGET_ORDER = (
 #: not-recommendations.
 BUDGET_NO_LEFTOVERS = (SECTION_NEEDS_REVIEW,)
 
+#: Held to focus.browse_max_per_section (cards with a MAX exempt); why: settings.json focus._browse_comment.
+BROWSE_SECTIONS = (
+    SECTION_CHEAP_AUCTIONS,
+    SECTION_COOL_CARDS,
+    SECTION_INVESTMENT,
+    SECTION_NEEDS_REVIEW,
+    SECTION_PRICE_DROPS,
+)
+
 SECTION_TITLES = {
     SECTION_ACT_NOW: "\U0001f6a8 ACT NOW",
     SECTION_TOP_OPPORTUNITIES: "⭐ DEALS",
@@ -1457,6 +1466,12 @@ def _auction_sort_key(deal: Listing):
     )
 
 
+def _has_max(deal: Listing) -> bool:
+    """Whether the card prints a usable MAX (a bid or offer that still nets
+    your minimum)."""
+    return (deal.max_rational_bid or 0.0) > 0.0
+
+
 def _cheap_auction_sort_key(deal: Listing):
     """Cheap auctions sort by the card, not the clock.
 
@@ -1472,6 +1487,9 @@ def _cheap_auction_sort_key(deal: Listing):
     """
     hours = _parse_time_left_hours(deal.time_left_text)
     return (
+        # A card that prints a MAX is a bid you can actually size, so it
+        # leads -- and is exempt from focus.browse_max_per_section.
+        not _has_max(deal),
         -desirability.interest_score(deal),
         deal.time_left_text is None,
         hours if hours is not None else float("inf"),
@@ -1954,6 +1972,11 @@ def _summary_line(sections) -> str:
     return " | ".join(parts)
 
 
+#: What a zero-deal subject leads with. The phone preview is often the only
+#: part read, so it has to say "no deal" before it says what there is.
+NO_DEALS_PREFIX = "No deals \u00b7 "
+
+
 def _subject(sections, date_short: str, stats=None) -> str:
     """Lead with the strongest thing that happened, short enough for a lock
     screen. Never leads with a dollar figure -- a big number off a weak comp
@@ -1981,33 +2004,30 @@ def _subject(sections, date_short: str, stats=None) -> str:
         return "{} ({})".format(_plural(opportunities, "opportunity", "opportunities"), date_short)
     if targets:
         return "{} ({})".format(_plural(targets, "target card hit"), date_short)
-    if auctions:
-        return "{} to review ({})".format(_plural(auctions, "auction"), date_short)
-    # Ahead of the breakage warning is deliberate on the expensive sections
-    # above and deliberate here too: a bid you can lose for a dollar is still
-    # something to look at, and "No opportunities today" over a list of them
-    # is the subject line arguing with the email underneath it.
-    if cheap_auctions:
-        return "{} to bid on ({})".format(
-            _plural(cheap_auctions, "cheap auction"), date_short
-        )
-    if getattr(stats, "breakage_warnings", None):
-        return "CHECK THIS -- today's scan may be broken ({})".format(date_short)
-    # No deal today does not mean nothing to look at. Leading with "No
-    # opportunities" above an email holding a dozen autographs and numbered
-    # rookies is the subject line arguing with its own contents, and it is
-    # the line most likely to be the only thing read.
+    # From here down there is no deal and no target hit, and the subject says
+    # so first ("No deals · 10 auctions to review"), then what there is.
+    # Ahead of the breakage warning is deliberate for bids: a bid you can
+    # lose for a dollar is still something to look at. Below it, no deal does
+    # not mean nothing to look at -- "No opportunities today" above a dozen
+    # autographs is the subject arguing with its own contents.
     cool = len(sections[SECTION_COOL_CARDS])
     cheap = len(sections[SECTION_CHEAP_FINDS])
-    if cool and cheap:
-        return "{} + {} ({})".format(
-            _plural(cool, "cool card"), _plural(cheap, "cheap find"), date_short
-        )
-    if cool:
-        return "{} to look at ({})".format(_plural(cool, "cool card"), date_short)
-    if cheap:
-        return "{} ({})".format(_plural(cheap, "cheap find"), date_short)
-    return "No opportunities today ({})".format(date_short)
+    breakage = getattr(stats, "breakage_warnings", None)
+    if auctions:
+        body = "{} to review".format(_plural(auctions, "auction"))
+    elif cheap_auctions:
+        body = "{} to bid on".format(_plural(cheap_auctions, "cheap auction"))
+    elif breakage:
+        return "CHECK THIS -- today's scan may be broken ({})".format(date_short)
+    elif cool and cheap:
+        body = "{} + {}".format(_plural(cool, "cool card"), _plural(cheap, "cheap find"))
+    elif cool:
+        body = "{} to look at".format(_plural(cool, "cool card"))
+    elif cheap:
+        body = _plural(cheap, "cheap find")
+    else:
+        return "No opportunities today ({})".format(date_short)
+    return "{}{} ({})".format(NO_DEALS_PREFIX, body, date_short)
 
 
 def _empty_state_block(threshold_pct: float, min_savings_dollars: float, stats,
@@ -2483,7 +2503,7 @@ def _focus_line(rules) -> str:
     return textwrap.fill(line, width=_WRAP_WIDTH)
 
 
-def _focus_footer(selection, trimmed: int, rules) -> str:
+def _focus_footer(selection, trimmed: int, rules, cheap_finds_hidden: int = 0) -> str:
     """What focus removed, in plain numbers, with the setting that would
     bring it back. A cap you cannot see the effect of is a cap you stop
     trusting -- and the fix for "I think it hid something good" has to be a
@@ -2517,6 +2537,13 @@ def _focus_footer(selection, trimmed: int, rules) -> str:
             " {} left out with no readable price -- nothing could be said about cost or "
             "value.".format(_plural(unknown, "listing was", "listings were"))
         )
+    if cheap_finds_hidden:
+        parts.append(
+            " {} hidden (pocket-change cards with no valuation, never a flip after fees): "
+            "set focus.cheap_finds_enabled to true to show them.".format(
+                _plural(cheap_finds_hidden, "cheap find", "cheap finds")
+            )
+        )
     if trimmed:
         # Deliberately does not say "trimmed to N listings": the email holds
         # at most max_listings, but a day whose only content is
@@ -2532,9 +2559,17 @@ def _focus_footer(selection, trimmed: int, rules) -> str:
             sentence += ", and at most {} from any one section".format(
                 _plural(rules.max_per_section, "listing")
             )
+        browse_capped = 0 < rules.browse_max_per_section and (
+            rules.max_per_section <= 0 or rules.browse_max_per_section < rules.max_per_section
+        )
+        if browse_capped:
+            sentence += " ({} from a browse section: cheap auctions without a MAX, cool cards, " \
+                        "young core, needs review, price drops)".format(rules.browse_max_per_section)
         sentence += (
             ". The cut comes off the bottom of a section, so nothing above it moved; raise "
-            "focus.max_listings or focus.max_per_section to see more."
+            "focus.max_listings or focus.max_per_section{} to see more.".format(
+                " or focus.browse_max_per_section" if browse_capped else ""
+            )
         )
         parts.append(sentence)
     return "".join(parts)
@@ -2649,8 +2684,19 @@ def build_model(
         cheap_auction_floor=cheap_auction_floor,
         cheap_auction_ceiling=cheap_auction_ceiling,
     )
+    # CHEAP FINDS are classified and then emptied, rather than never
+    # classified, so the cards still claim their slot in the walk and do not
+    # fall through into YOUNG CORE or WATCH. A card that is also a target hit
+    # stays in TARGET HITS and is not counted as hidden.
+    cheap_finds_hidden = 0
+    if focus_rules.enabled and not focus_rules.cheap_finds_enabled:
+        hidden_ids = {deal.id for deal in sections[SECTION_CHEAP_FINDS]}
+        sections[SECTION_CHEAP_FINDS] = []
+        elsewhere = {deal.id for key in SECTION_ORDER for deal in sections[key]}
+        cheap_finds_hidden = len(hidden_ids - elsewhere)
     sections, trimmed = focus.trim(
-        sections, BUDGET_ORDER, focus_rules, no_leftovers=BUDGET_NO_LEFTOVERS
+        sections, BUDGET_ORDER, focus_rules, no_leftovers=BUDGET_NO_LEFTOVERS,
+        browse=BROWSE_SECTIONS, browse_exempt=_has_max,
     )
 
     has_decision_content = any(sections[key] for key in DECISION_SECTIONS)
@@ -2687,6 +2733,7 @@ def build_model(
     # tell which of those happened.
     not_shown = (
         len({deal.id for deal in deals}) - len(shown) - selection.omitted_total - trimmed
+        - cheap_finds_hidden
     )
     thresholds = (
         "Thresholds: an opportunity needs {:.0f}%+ under market AND at least {} saved; "
@@ -2712,7 +2759,7 @@ def build_model(
             " {} reviewed and fitted no section -- they had a usable comp and were simply not "
             "close.".format(_plural(not_shown, "other listing was", "other listings were"))
         )
-    thresholds += _focus_footer(selection, trimmed, focus_rules)
+    thresholds += _focus_footer(selection, trimmed, focus_rules, cheap_finds_hidden)
 
     return ReportModel(
         subject=_subject(sections, date_short, stats),

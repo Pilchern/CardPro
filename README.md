@@ -432,6 +432,7 @@ one section.
 | `require_auction_bidding_room` | Drop auctions already bid past your max rational bid. | `true` | Set `false` if you want to watch auctions you can't profitably win. |
 | `max_listings` | Hard cap on distinct listings in one email. | `40` | 25 for a phone-sized digest, 60+ if you read it at a desk. |
 | `max_per_section` | Each section's first-pass share, and the hard cap for `NEEDS REVIEW`. | `10` | Raise it if one section keeps getting cut short; `0` disables the per-section pass entirely (pure top-down). |
+| `browse_max_per_section` / `cheap_finds_enabled` | Browse-section cap / show `CHEAP FINDS`; see `focus._browse_comment` in `config/settings.json`. | `5` / `false` | More to browse on a no-deal day. |
 
 On that same August corpus, this takes the email from **4,255 lines to
 215** without changing a single valuation.
