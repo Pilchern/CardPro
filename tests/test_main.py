@@ -33,7 +33,9 @@ from src import (
     price_history,
     reasons,
 )
+from src import focus, report
 from src.models import Listing
+from tests import test_report as report_fixtures
 
 # A fully-identified modern card: year + set + parallel + card number +
 # grader + grade. The CardPro 2.0 engine will only declare a deal off a comp
@@ -621,13 +623,15 @@ class TestApplyDedupe:
         listing.is_opportunity = True
         return listing
 
-    def test_first_sighting_is_reported_and_recorded(self):
+    def test_first_sighting_is_reported_and_recorded_once_printed(self):
         seen = {}
         stats = observability.RunStats()
         listing = self._opportunity(200.0)
         main_module.apply_dedupe([listing], seen, "2026-08-22", stats)
         assert listing.is_opportunity is True
-        assert seen["D1"]["price"] == 200.0
+        assert seen == {}  # not yet: it might be cut for length
+        main_module.record_shown([listing], frozenset({"D1"}), seen, "2026-08-22")
+        assert seen["D1"] == {"price": 200.0, "first_seen": "2026-08-22", "last_flagged": "2026-08-22"}
 
     def test_same_price_next_run_is_suppressed_with_a_reason(self):
         seen = {"D1": {"price": 200.0, "first_seen": "2026-08-21", "last_flagged": "2026-08-21"}}
@@ -688,6 +692,7 @@ class TestApplyDedupe:
         stats = observability.RunStats()
         assert main_module.apply_dedupe([deal], seen, "2026-10-16", stats) == [deal]
         assert deal.is_opportunity is True and stats.duplicates_suppressed == 0
+        main_module.record_shown([deal], frozenset({"C1"}), seen, "2026-10-16")
         assert "shown_only" not in seen["C1"]  # now it has been a deal
 
     def test_once_a_deal_always_a_deal(self):
@@ -695,6 +700,7 @@ class TestApplyDedupe:
         deal = self._card(40.0)
         deal.is_opportunity = True
         main_module.apply_dedupe([deal], seen, "2026-10-15", observability.RunStats())
+        main_module.record_shown([deal], frozenset({"C1"}), seen, "2026-10-15")
         main_module.record_shown([self._card(40.0)], frozenset({"C1"}), seen, "2026-10-16")
         again = self._card(40.0)
         again.is_opportunity = True
@@ -721,6 +727,106 @@ class TestApplyDedupe:
         shown, hidden = self._card(50.0), make_listing(EXACT_TITLE, 60.0, listing_id="C2")
         main_module.record_shown([shown, hidden], frozenset({"C1"}), seen, "2026-08-22")
         assert set(seen) == {"C1"} and seen["C1"]["price"] == 50.0
+
+
+class TestDedupeAfterTrim:
+    """A deal is recorded as sent only if the email printed it. apply_dedupe
+    used to record every opportunity before the report was built, so a deal
+    cut by focus.max_per_section / max_listings was never sent and then
+    suppressed at an unchanged price on every later day. These simulate the
+    digest run's order (apply_dedupe -> build_model -> record_shown) on
+    fixtures, twice, against one seen dict."""
+
+    RULES = focus.FocusRules(price_ceiling=40.0, max_listings=10, max_per_section=10)
+
+    @staticmethod
+    def _deals(price=20.0, count=12):
+        # Ranked by dollar_savings, so D0 and D1 sit at the bottom of DEALS.
+        return [
+            report_fixtures.make_cheap(
+                id="D{}".format(i), url="http://example.com/D{}".format(i),
+                price=price, dollar_savings=40.0 + i,
+            )
+            for i in range(count)
+        ]
+
+    def _run(self, listings, seen, today, rules=None):
+        stats = observability.RunStats()
+        kept = main_module.apply_dedupe(listings, seen, today, stats)
+        model = report.build_model(kept, 30, date.fromisoformat(today), focus_rules=rules or self.RULES)
+        main_module.record_shown(kept, model.shown_ids, seen, today)
+        return model, stats
+
+    def test_deals_cut_for_length_are_not_recorded_and_return_next_run(self):
+        seen = {}
+        day1, _ = self._run(self._deals(), seen, "2026-10-20")
+        assert day1.shown_ids == frozenset("D{}".format(i) for i in range(2, 12))
+        assert set(seen) == {"D{}".format(i) for i in range(2, 12)}
+        assert "2 of them were opportunities" in " ".join(day1.thresholds.split())
+
+        day2_listings = self._deals()  # same cards, same price
+        day2, stats = self._run(day2_listings, seen, "2026-10-21")
+        assert {"D0", "D1"} <= day2.shown_ids
+        by_id = {listing.id: listing for listing in day2_listings}
+        assert by_id["D0"].is_opportunity and by_id["D1"].is_opportunity
+        assert stats.duplicates_suppressed == 10
+        assert seen["D0"] == {"price": 20.0, "first_seen": "2026-10-21", "last_flagged": "2026-10-21"}
+
+    def test_printed_deals_are_recorded_exactly_as_before(self):
+        seen = {}
+        self._run(self._deals(count=3), seen, "2026-10-20")
+        assert seen == {
+            "D{}".format(i): {"price": 20.0, "first_seen": "2026-10-20", "last_flagged": "2026-10-20"}
+            for i in range(3)
+        }
+        day2 = self._deals(count=3)
+        _, stats = self._run(day2, seen, "2026-10-21")
+        assert stats.duplicates_suppressed == 3
+        assert all(listing.rejection_reason == reasons.Reason.PRICE_NOT_DROPPED for listing in day2)
+        # Still deal rows at the reported price (a suppressed card may print
+        # elsewhere, which only refreshes last_flagged).
+        assert all(
+            seen["D{}".format(i)]["price"] == 20.0 and seen["D{}".format(i)]["first_seen"] == "2026-10-20"
+            and "shown_only" not in seen["D{}".format(i)]
+            for i in range(3)
+        )
+
+    def test_a_price_drop_is_reshown_and_recorded_at_the_new_price(self):
+        seen = {}
+        self._run(self._deals(price=20.0, count=1), seen, "2026-10-20")
+        dropped = self._deals(price=18.0, count=1)
+        model, stats = self._run(dropped, seen, "2026-10-21")
+        assert dropped[0].is_price_drop and dropped[0].previous_price == 20.0
+        assert stats.price_drops == 1 and "D0" in model.shown_ids
+        assert seen["D0"] == {"price": 18.0, "first_seen": "2026-10-20", "last_flagged": "2026-10-21"}
+
+    def test_a_price_drop_cut_for_length_keeps_its_old_price_on_file(self):
+        seen = {"D{}".format(i): {"price": 25.0, "first_seen": "2026-10-19", "last_flagged": "2026-10-19"}
+                for i in range(12)}
+        self._run(self._deals(price=20.0), seen, "2026-10-20")
+        # D0/D1 dropped but were cut: still on file at $25, so tomorrow at
+        # $20 they are still a drop and still reported.
+        assert seen["D0"]["price"] == 25.0 and seen["D1"]["price"] == 25.0
+        assert seen["D11"]["price"] == 20.0
+        again = self._deals(price=20.0)
+        model, _ = self._run(again, seen, "2026-10-21", rules=focus.FocusRules(price_ceiling=40.0))
+        assert {"D0", "D1"} <= model.shown_ids
+        assert again[0].is_price_drop and again[0].is_opportunity
+
+    def test_an_existing_seen_file_without_shown_only_loads_unchanged(self, tmp_path):
+        from src import dedupe
+        path = tmp_path / "seen_listings.json"
+        path.write_text(json.dumps({
+            "D0": {"price": 20.0, "first_seen": "2026-09-01", "last_flagged": "2026-09-01"},
+            "C9": {"price": 5.0, "first_seen": "2026-09-01", "last_flagged": "2026-09-01",
+                   "shown_only": True},
+        }))
+        seen = dedupe.load_seen(path)
+        day = self._deals(count=1)
+        _, stats = self._run(day, seen, "2026-10-20")
+        assert stats.duplicates_suppressed == 1 and not day[0].is_opportunity
+        dedupe.save_seen(path, seen)
+        assert json.loads(path.read_text())["C9"]["shown_only"] is True
 
 
 class TestBrowseFields:
@@ -1091,6 +1197,25 @@ class TestAlertOnly:
         assert len(digest) == 1
         assert self.ITEM not in digest[0][1]
         assert (tmp_path / "data" / "last_run.json").exists()
+
+    def test_the_digest_marks_only_what_it_printed(self, project, monkeypatch, tmp_path):
+        # Every listing evaluated, deals included, reaches the seen file only
+        # through model.shown_ids: here the report "printed" nothing.
+        import dataclasses
+        self._wire(project, monkeypatch)
+        real_evaluate = project.evaluate_listings
+
+        def every_listing_a_deal(listings, *rest):
+            real_evaluate(listings, *rest)
+            for listing in listings:
+                listing.is_opportunity = True
+
+        monkeypatch.setattr(project, "evaluate_listings", every_listing_a_deal)
+        real_build = project.report.build_model
+        monkeypatch.setattr(project.report, "build_model",
+                            lambda *a, **k: dataclasses.replace(real_build(*a, **k), shown_ids=frozenset()))
+        project.run(argparse.Namespace(dry_run=False))
+        assert json.loads((tmp_path / "data" / "seen_listings.json").read_text()) == {}
 
 
 class TestFlagEligibilityOverride:

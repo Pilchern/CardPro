@@ -2403,10 +2403,8 @@ class TestShorterEmailOnNoDealDays:
         assert "focus.browse_max_per_section" in flat(body)
 
     def test_watch_is_not_a_browse_section(self):
-        # WATCH holds low-confidence opportunities; dedupe records every
-        # opportunity as reported before the report is built, so one cut by
-        # the browse cap would be suppressed on later days without ever
-        # being shown.
+        # WATCH holds low-confidence opportunities: deals, not browsing, so
+        # they keep the full section share.
         deals = [
             make_cheap(id=str(i), url="http://example.com/{}".format(i),
                        dollar_savings=40.0 + i, comp_match=make_match(confidence="low"))
@@ -2437,6 +2435,45 @@ class TestShorterEmailOnNoDealDays:
         printed = sum(len(cards) for cards in model.sections.values())
         assert printed == 12
         assert not model.subject.startswith("No deals")
+
+    def test_an_opportunity_in_a_browse_section_is_never_browse_capped(self):
+        # A low-confidence deal that is a cheap auction with no MAX lands in
+        # CHEAP AUCTIONS, a browse section. It is still a deal.
+        deals = [
+            cheap_auction(id="opp-{}".format(i), url="http://example.com/opp-{}".format(i),
+                          is_opportunity=True, comp_match=make_match(confidence="low"),
+                          market_value=10.0, pct_under_market=75.0, dollar_savings=7.5)
+            for i in range(8)
+        ]
+        model = report.build_model(deals, 30, RUN_DATE, focus_rules=self.RULES)
+        assert list(model.sections) == [report.SECTION_CHEAP_AUCTIONS]
+        assert model.shown_ids == frozenset("opp-{}".format(i) for i in range(8))
+
+    def test_opportunities_cut_for_length_are_counted_and_promised_again(self):
+        deals = [
+            make_cheap(id=str(i), url="http://example.com/{}".format(i), dollar_savings=40.0 + i)
+            for i in range(12)
+        ]
+        rules = focus.FocusRules(price_ceiling=40.0, max_listings=10, max_per_section=10)
+        model = report.build_model(deals, 30, RUN_DATE, focus_rules=rules)
+        assert model.shown_ids == frozenset(str(i) for i in range(2, 12))
+        footer = flat(model.thresholds)
+        assert "2 listings matched your focus but were trimmed for length" in footer
+        assert "2 of them were opportunities, not recorded as sent, so they will be re-sent " \
+               "on the next run." in footer
+
+    def test_no_resend_promise_when_only_browse_cards_were_cut(self):
+        deals = [
+            make_cheap(
+                id=str(i), url="http://example.com/{}".format(i),
+                comp_match=make_match(level="price_tier", flag_eligible=False),
+                is_opportunity=False,
+            )
+            for i in range(30)
+        ]
+        model = report.build_model(deals, 30, RUN_DATE, focus_rules=self.RULES)
+        assert "trimmed for length" in flat(model.thresholds)
+        assert "re-sent" not in model.thresholds
 
 
 class TestTheEmailSaysWhatItHas:

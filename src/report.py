@@ -2503,7 +2503,8 @@ def _focus_line(rules) -> str:
     return textwrap.fill(line, width=_WRAP_WIDTH)
 
 
-def _focus_footer(selection, trimmed: int, rules, cheap_finds_hidden: int = 0) -> str:
+def _focus_footer(selection, trimmed: int, rules, cheap_finds_hidden: int = 0,
+                  opportunities_cut: int = 0) -> str:
     """What focus removed, in plain numbers, with the setting that would
     bring it back. A cap you cannot see the effect of is a cap you stop
     trusting -- and the fix for "I think it hid something good" has to be a
@@ -2571,6 +2572,15 @@ def _focus_footer(selection, trimmed: int, rules, cheap_finds_hidden: int = 0) -
                 " or focus.browse_max_per_section" if browse_capped else ""
             )
         )
+        if opportunities_cut:
+            sentence += (
+                " {} of them {}, not recorded as sent, so {} be re-sent on the next "
+                "run.".format(
+                    opportunities_cut,
+                    "was an opportunity" if opportunities_cut == 1 else "were opportunities",
+                    "it will" if opportunities_cut == 1 else "they will",
+                )
+            )
         parts.append(sentence)
     return "".join(parts)
 
@@ -2694,9 +2704,12 @@ def build_model(
         sections[SECTION_CHEAP_FINDS] = []
         elsewhere = {deal.id for key in SECTION_ORDER for deal in sections[key]}
         cheap_finds_hidden = len(hidden_ids - elsewhere)
+    untrimmed = sections
     sections, trimmed = focus.trim(
         sections, BUDGET_ORDER, focus_rules, no_leftovers=BUDGET_NO_LEFTOVERS,
-        browse=BROWSE_SECTIONS, browse_exempt=_has_max,
+        # An opportunity is never held to the browse cap: it is a deal, not
+        # something to browse, wherever it was classified.
+        browse=BROWSE_SECTIONS, browse_exempt=lambda d: _has_max(d) or d.is_opportunity,
     )
 
     has_decision_content = any(sections[key] for key in DECISION_SECTIONS)
@@ -2727,6 +2740,11 @@ def build_model(
             shown_above.setdefault(deal.id, _plain_title(SECTION_TITLES[key]))
 
     shown = {deal.id for key in SECTION_ORDER for deal in sections[key]}
+    # Deals the length cap cut. They are not in shown_ids, so the seen file
+    # does not record them and the next run reports them again.
+    opportunities_cut = len(
+        {deal.id for deals in untrimmed.values() for deal in deals if deal.is_opportunity} - shown
+    )
     # Everything CardPro saw is accounted for in exactly one of these
     # buckets: printed, left out by focus, trimmed for length, or reviewed
     # and simply not close. A shorter email is only worth having if you can
@@ -2759,7 +2777,7 @@ def build_model(
             " {} reviewed and fitted no section -- they had a usable comp and were simply not "
             "close.".format(_plural(not_shown, "other listing was", "other listings were"))
         )
-    thresholds += _focus_footer(selection, trimmed, focus_rules, cheap_finds_hidden)
+    thresholds += _focus_footer(selection, trimmed, focus_rules, cheap_finds_hidden, opportunities_cut)
 
     return ReportModel(
         subject=_subject(sections, date_short, stats),
