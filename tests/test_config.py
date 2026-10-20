@@ -314,6 +314,8 @@ def test_focus_settings_load(tmp_path, monkeypatch):
                 "require_auction_bidding_room": False,
                 "max_listings": 30,
                 "max_per_section": 8,
+                "browse_max_per_section": 4,
+                "cheap_finds_enabled": False,
             }
         },
     )
@@ -324,6 +326,8 @@ def test_focus_settings_load(tmp_path, monkeypatch):
     assert cfg.focus_rules.require_auction_bidding_room is False
     assert cfg.focus_rules.max_listings == 30
     assert cfg.focus_rules.max_per_section == 8
+    assert cfg.focus_rules.browse_max_per_section == 4
+    assert cfg.focus_rules.cheap_finds_enabled is False
 
 
 def test_focus_absent_means_the_old_unfiltered_report(tmp_path, monkeypatch):

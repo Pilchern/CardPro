@@ -1324,10 +1324,19 @@ def test_subject_falls_back_to_opportunities_then_targets_then_auctions():
     assert report.build_report([opportunity], 30, RUN_DATE)[0] == "1 opportunity (Aug 10)"
 
     target = make_listing(is_opportunity=False, pct_under_market=1.0, target_hit=make_target_hit())
-    assert report.build_report([target], 30, RUN_DATE)[0] == "1 target card hit (Aug 10)"
+    assert report.build_report([target], 30, RUN_DATE)[0] == "No deals \u00b7 1 target card hit (Aug 10)"
 
     auction = make_listing(listing_type="auction", is_opportunity=False, pct_under_market=1.0)
-    assert report.build_report([auction], 30, RUN_DATE)[0] == "1 auction to review (Aug 10)"
+    assert report.build_report([auction], 30, RUN_DATE)[0] == "No deals \u00b7 1 auction to review (Aug 10)"
+
+
+def test_a_zero_deal_subject_leads_with_no_deals_and_a_deal_day_does_not():
+    # The phone preview is often all that is read. "10 auctions to review"
+    # on a zero-deal day reads like ten things worth money.
+    auction = make_listing(listing_type="auction", is_opportunity=False, pct_under_market=1.0)
+    assert report.build_report([auction], 30, RUN_DATE)[0].startswith("No deals \u00b7 ")
+    assert report.build_report([cheap_auction()], 30, RUN_DATE)[0].startswith("No deals \u00b7 ")
+    assert "No deals" not in report.build_report([make_listing()], 30, RUN_DATE)[0]
 
 
 def test_subject_says_no_opportunities_when_there_is_nothing():
@@ -2343,6 +2352,69 @@ class TestCheapFinds:
         sections = report.classify_sections([cheap_auto], cheap_find_ceiling=15.0)
         assert len(sections[report.SECTION_COOL_CARDS]) == 1
         assert sections[report.SECTION_CHEAP_FINDS] == []
+
+
+class TestShorterEmailOnNoDealDays:
+    """focus.cheap_finds_enabled and focus.browse_max_per_section: the
+    10-17..10-19 emails had 0 deals and ~4,000 words, almost all of it
+    browse sections."""
+
+    RULES = focus.FocusRules(
+        price_ceiling=40.0, max_listings=40, max_per_section=10,
+        browse_max_per_section=5, cheap_finds_enabled=False,
+    )
+
+    def test_cheap_finds_are_hidden_and_counted_with_the_setting_that_shows_them(self):
+        subject, body = report.build_report(
+            [carded(AUTO, 42.0), carded(CHEAP_ROOKIE, 1.99)], 30, RUN_DATE,
+            focus_rules=focus.FocusRules(price_ceiling=50.0, cheap_finds_enabled=False),
+        )
+        assert report.SECTION_TITLES[report.SECTION_CHEAP_FINDS] not in body
+        assert "cheap find" not in subject
+        assert subject.startswith("No deals \u00b7 1 cool card")
+        assert "1 cheap find hidden" in flat(body)
+        assert "focus.cheap_finds_enabled" in flat(body)
+
+    def test_cheap_finds_still_show_when_enabled_or_focus_is_off(self):
+        day = [carded(AUTO, 42.0), carded(CHEAP_ROOKIE, 1.99)]
+        on = body_of(day, focus_rules=focus.FocusRules(price_ceiling=50.0))
+        assert report.SECTION_TITLES[report.SECTION_CHEAP_FINDS] in on
+        off = body_of(day, focus_rules=focus.FocusRules(enabled=False, cheap_finds_enabled=False))
+        assert report.SECTION_TITLES[report.SECTION_CHEAP_FINDS] in off
+        assert "hidden" not in flat(off)
+
+    def test_a_hidden_cheap_find_does_not_fall_through_to_another_section(self):
+        model = report.build_model(
+            [carded(CHEAP_ROOKIE, 1.99)], 30, RUN_DATE,
+            focus_rules=focus.FocusRules(price_ceiling=50.0, cheap_finds_enabled=False),
+        )
+        assert model.shown_ids == frozenset()
+        assert "1 cheap find hidden" in flat(model.thresholds)
+        assert "reviewed and fitted no section" not in flat(model.thresholds)
+
+    def test_browse_sections_cap_at_five_even_with_leftover_budget(self):
+        deals = [
+            make_cheap(
+                id=str(i), url="http://example.com/{}".format(i),
+                comp_match=make_match(level="price_tier", flag_eligible=False),
+                is_opportunity=False,
+            )
+            for i in range(30)
+        ]
+        body = body_of(deals, focus_rules=self.RULES)
+        shown = sum(1 for i in range(30) if "http://example.com/{}  ".format(i) in body)
+        assert shown == 5
+        assert "focus.browse_max_per_section" in flat(body)
+
+    def test_deals_keep_the_full_section_share(self):
+        deals = [
+            make_cheap(id=str(i), url="http://example.com/{}".format(i), dollar_savings=40.0 + i)
+            for i in range(12)
+        ]
+        model = report.build_model(deals, 30, RUN_DATE, focus_rules=self.RULES)
+        printed = sum(len(cards) for cards in model.sections.values())
+        assert printed == 12
+        assert not model.subject.startswith("No deals")
 
 
 class TestTheEmailSaysWhatItHas:

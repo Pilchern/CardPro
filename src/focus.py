@@ -95,6 +95,21 @@ class FocusRules:
     require_auction_bidding_room: bool = True
     max_listings: int = 40
     max_per_section: int = 10
+    #: A tighter per-section cap for the browse sections -- the ones that
+    #: make no money claim (cheap auctions, cool cards, young core, watch,
+    #: needs review, price drops; the report names them, see
+    #: ``report.BROWSE_SECTIONS``). It holds in BOTH passes of ``trim``, so
+    #: leftover slots cannot refill a browse section past it. Deals, ACT
+    #: NOW, target hits and auctions keep ``max_per_section``. 0 = off: the
+    #: browse sections get ``max_per_section`` like everything else.
+    browse_max_per_section: int = 0
+    #: Whether CHEAP FINDS (sub-$15 cards with a rookie / parallel / grade
+    #: and no valuation) print at all. They are never flips -- after fees
+    #: and postage a $1 card has to sell for about $33 to net $15 -- so the
+    #: shipped config turns them off to shorten the email. Hidden ones are
+    #: counted in the footer with this setting's name, never dropped
+    #: silently. Only applies with focus enabled.
+    cheap_finds_enabled: bool = True
     #: The sales-tax rate from ``config/settings.json`` -> ``economics``,
     #: applied to the cost this module measures against ``price_ceiling``.
     #:
@@ -314,7 +329,7 @@ def select(deals, rules: FocusRules) -> Selection:
     return Selection(kept=kept, omitted=omitted)
 
 
-def trim(sections, order, rules: FocusRules, no_leftovers=()) -> tuple:
+def trim(sections, order, rules: FocusRules, no_leftovers=(), browse=()) -> tuple:
     """Cut the classified sections down to ``max_listings`` distinct
     listings. Returns ``(sections, trimmed)``.
 
@@ -330,6 +345,12 @@ def trim(sections, order, rules: FocusRules, no_leftovers=()) -> tuple:
     not a recommendation should not be able to become the email just by
     being the largest thing CardPro produced that morning. Those sections
     keep their first-pass share and the leftover slots go unspent.
+
+    ``browse`` names the sections capped at ``rules.browse_max_per_section``
+    (when it is above 0) instead of ``max_per_section``. That cap is a
+    ceiling, not a first-pass share: it holds through the leftover pass too,
+    so a quiet morning's spare budget cannot refill a browse section back
+    up to ten.
 
     The first pass is what stops one crowded section from eating the email.
     Forty listings allocated purely top-down means a 40-opportunity morning
@@ -372,12 +393,19 @@ def trim(sections, order, rules: FocusRules, no_leftovers=()) -> tuple:
         positions[key] = index
 
     per_section = rules.max_per_section if rules.max_per_section > 0 else rules.max_listings
+    browse_cap = rules.browse_max_per_section if rules.browse_max_per_section > 0 else None
+
+    def cap(key, limit):
+        if browse_cap is not None and key in browse:
+            return min(limit, browse_cap)
+        return limit
+
     for key in keys:
-        fill(key, per_section)
+        fill(key, cap(key, per_section))
     for key in keys:
         if key in no_leftovers:
             continue
-        fill(key, len(sections[key]))
+        fill(key, cap(key, len(sections[key])))
 
     all_ids = {deal.id for deals in sections.values() for deal in deals}
     return kept, len(all_ids) - len(kept_ids)

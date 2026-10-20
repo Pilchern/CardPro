@@ -385,6 +385,32 @@ def test_no_leftovers_still_yields_to_a_busy_day():
     assert kept["review"] == []
 
 
+def test_browse_sections_hold_their_own_cap_through_the_leftover_pass():
+    """browse_max_per_section is a ceiling, not a first-pass share: a quiet
+    morning's spare budget must not refill a browse section back to ten."""
+    rules = focus.FocusRules(max_listings=40, max_per_section=10, browse_max_per_section=5)
+    sections = sections_of(top=12, auctions=12, watch=12)
+    kept, trimmed = focus.trim(sections, ORDER, rules, browse=("watch",))
+    assert len(kept["watch"]) == 5
+    assert len(kept["top"]) == 12
+    assert len(kept["auctions"]) == 12
+    assert trimmed == 7
+
+
+def test_browse_cap_of_zero_means_browse_sections_get_the_normal_share():
+    rules = focus.FocusRules(max_listings=40, max_per_section=10, browse_max_per_section=0)
+    kept, _ = focus.trim(sections_of(watch=12), ORDER, rules, browse=("watch",))
+    assert len(kept["watch"]) == 12
+
+
+def test_browse_cap_never_raises_a_section_above_max_per_section():
+    rules = focus.FocusRules(max_listings=40, max_per_section=3, browse_max_per_section=5)
+    kept, _ = focus.trim(
+        sections_of(review=12), ("review",), rules, no_leftovers=("review",), browse=("review",)
+    )
+    assert len(kept["review"]) == 3
+
+
 def test_a_listing_that_is_both_kept_and_omitted_counts_as_kept():
     """The same item can arrive twice in one run with different data -- one
     copy in focus, one out. It is one card, it is being shown, and counting
