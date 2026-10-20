@@ -974,7 +974,8 @@ first, so the two sit side by side.
 
 The headline `WOULD FLAG` count is the **production deal gate**: each titled
 row is rebuilt as a listing and run through `main.evaluate_listings` with the
-shipped config, so a flag must clear the gross discount AND net at least
+shipped config (comp engine built from its `valuation` settings, valued as of
+the latest observation date), so a flag must clear the gross discount AND net at least
 `max($15, 10% of value)` after fees, both shipping legs, supplies and tax.
 Each flag prints its net profit and the net it needed. Shipping is not stored
 in the corpus, so every row is charged the configured assumed inbound

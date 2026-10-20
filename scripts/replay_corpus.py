@@ -14,14 +14,11 @@ This measures whether the ENGINE behaves correctly, not whether the market
 values are right -- no data source available to this project can tell us
 that yet.
 
-The headline "WOULD FLAG" count is the PRODUCTION deal gate: every titled
-observation is rebuilt as a Listing (main._build_listing) and run through
-main.evaluate_listings with the shipped config, so it applies the same gates
-in the same order as the daily run -- gross discount and min savings, then the
-net-profit floor (main.required_net_profit: max($15, 10% of value) as
-shipped), after fees, both shipping legs, supplies and buy tax. The old
-gross-discount-only count (30% and $10 off the median, the pre-10-16 rule) is
-printed on a secondary line so earlier numbers stay comparable.
+The headline "WOULD FLAG" count is the PRODUCTION deal gate: each titled
+row is rebuilt as a Listing and decided by main.evaluate_listings with the
+shipped config and an engine built as main.run builds it, valued as of the
+latest observation date. The old gross-discount-only count (30% and $10 off
+the median, the pre-10-16 rule) follows on a secondary line.
 
     python -m scripts.replay_corpus [--legacy] [--min-comps N] [--reextract]
 """
@@ -30,7 +27,6 @@ from __future__ import annotations
 import argparse
 import collections
 import json
-import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -39,17 +35,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src import card_identity, comps, matcher, observability, price_history  # noqa: E402
 from src import main as pipeline  # noqa: E402
+from eval import run_eval  # noqa: E402
 
 CORPUS = Path(__file__).resolve().parent.parent / "data" / "ebay_alert_price_history.json"
 
 
-def replay_new(observations, min_comps, today):
+def replay_new(observations, min_comps, today, engine=None):
     """Comp-level statistics, plus the GROSS-discount-only would-flag list
     (30% and $10 off the median, nothing netted out). That list is the
     pre-10-16 gate, kept for comparability and because eval/build_candidates
     draws its "engine_flag" stratum from it; the headline count is
     replay_production_gate below."""
-    engine = comps.CompEngine(observations, min_comps_required=min_comps, today=today)
+    engine = engine or comps.CompEngine(observations, min_comps_required=min_comps, today=today)
     levels = collections.Counter()
     confidences = collections.Counter()
     blocked = collections.Counter()
@@ -95,74 +92,29 @@ def replay_new(observations, min_comps, today):
     return engine, levels, confidences, blocked, flagged
 
 
-def listings_from_observations(cfg, observations):
-    """Rebuild each titled observation as the Listing production would have
-    built from that title, the way eval/run_eval.py does: main._build_listing
-    with the row's own player (as the Browse path passes it), its stored
-    listing type and truncation flag. Shipping is not stored, so it is
-    unknown here, exactly as on an alert listing, and economics.evaluate
-    charges the configured assumed inbound shipping for it.
-
-    Returns (listings, skipped): rows without a title, or whose title no
-    longer names the player, cannot be rebuilt and are counted, not gated.
-    """
-    listings, skipped = [], 0
-    for obs in observations:
-        title = obs.get("title")
-        listing = pipeline._build_listing(
-            cfg, listing_id=obs.get("id"), source="ebay-alert", title=title,
-            price=obs["price"], url=obs.get("id"), players=[obs["player"]],
-            listing_type=obs.get("listing_type") or "unknown",
-        ) if title else None
-        if listing is None:
-            skipped += 1
-            continue
-        listing.title_truncated = bool(obs.get("title_truncated"))
-        listings.append(listing)
-    return listings, skipped
-
-
 def replay_production_gate(observations, engine, cfg):
-    """The production deal decision over the corpus.
-
-    Not a re-implementation: it hands the rebuilt listings to
-    main.evaluate_listings, so every gate the daily run applies is applied
-    here, in the same order -- no price, negative signals, multi-player,
-    truncated grade, cheap commodity, comp lookup, economics, auctions
-    diverted, context-only level, gross discount, min savings, and the
-    net-profit floor (main.required_net_profit). What the replay cannot
-    reproduce is its INPUT, not the gate: shipping is unknown on every row
-    (assumed_inbound_shipping is charged), and each listing is valued against
-    the whole corpus rather than the corpus as it stood on its own day.
-
-    Returns (flagged, stats, skipped) where flagged is
-    [(listing, required_net)], most profitable first.
-    """
-    listings, skipped = listings_from_observations(cfg, observations)
+    """The production decision: rows rebuilt by eval's listing_from_row and
+    handed to main.evaluate_listings, so every gate the daily run applies is
+    applied here, in order. Returns ([(listing, required_net)] most
+    profitable first, stats, rows that could not be rebuilt)."""
+    rebuilt = [run_eval.listing_from_row(cfg, o, o["player"]) if o.get("title") else None
+               for o in observations]
+    listings = [listing for listing in rebuilt if listing is not None]
     stats = observability.RunStats()
     pipeline.evaluate_listings(listings, engine, cfg, stats)
-    flagged = [
-        (listing, pipeline.required_net_profit(cfg, listing.comp_median))
-        for listing in listings
-        if listing.is_opportunity
-    ]
-    flagged.sort(key=lambda item: item[0].economics.expected_profit, reverse=True)
-    return flagged, stats, skipped
+    flagged = sorted(
+        ((l, pipeline.required_net_profit(cfg, l.comp_median)) for l in listings if l.is_opportunity),
+        key=lambda item: item[0].economics.expected_profit, reverse=True,
+    )
+    return flagged, stats, len(observations) - len(listings)
 
 
-def _load_config():
-    """The shipped config, without needing mail credentials: the replay sends
-    nothing, but load_config insists on them (eval/run_eval.py does the same)."""
-    from src.config import load_config
-
-    os.environ.setdefault("GMAIL_ADDRESS", "replay@example.com")
-    os.environ.setdefault("GMAIL_APP_PASSWORD", "not-a-real-password")
-    return load_config()
-
-
-def report_production_gate(flagged, stats, skipped, gross_count, days) -> None:
+def report_production_gate(flagged, stats, skipped, gross_count, days, cfg) -> None:
     print(f"  WOULD FLAG: {len(flagged)}  (production gate: main.evaluate_listings, "
           f"net >= required net; {days} corpus day(s))")
+    print(f"  caveat: in-sample (each row valued against the whole corpus), unknown inbound "
+          f"shipping assumed ${cfg.assumed_inbound_shipping or 0:.2f}, single-player rebuild "
+          f"(multi-player gate can't fire)")
     print(f"  gross-discount only (pre-10-16 gate, 30% and $10 off median): {gross_count}")
     if skipped:
         print(f"  not gated (no title, or title no longer names the player): {skipped}")
@@ -463,9 +415,9 @@ def report_identity_coverage(observations, min_comps):
     print()
 
 
-def main() -> None:
+def main(argv=None) -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--min-comps", type=int, default=3)
+    parser.add_argument("--min-comps", type=int, help="override valuation.min_comps_required")
     parser.add_argument("--legacy", action="store_true", help="also show what the v1 engine did")
     parser.add_argument(
         "--reextract",
@@ -473,7 +425,7 @@ def main() -> None:
         help="re-derive identity from the stored titles before replaying, so the KPI "
              "measures the parser as it is now rather than as it was when each row was written",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if not CORPUS.exists():
         print(f"No corpus at {CORPUS} -- nothing to replay.")
@@ -482,12 +434,19 @@ def main() -> None:
     with open(CORPUS) as f:
         history = json.load(f)
     observations = price_history.deduped_observations(history)
-    today = datetime.now(timezone.utc)
+    cfg = run_eval.offline_config()
+    if args.min_comps is not None:
+        cfg.valuation_min_comps_required = args.min_comps
+    min_comps = cfg.valuation_min_comps_required
 
     print(f"Corpus: {CORPUS}")
     print(f"  distinct listings: {len(observations)}")
     dates = sorted({o.get("date") for o in observations if o.get("date")})
     print(f"  date range: {dates[0]} .. {dates[-1]}" if dates else "  date range: unknown")
+    # As of the newest row, not the clock, so a re-run next week reads the same.
+    today = datetime.strptime(dates[-1], "%Y-%m-%d").replace(tzinfo=timezone.utc) if dates \
+        else datetime.now(timezone.utc)
+    print(f"  valued as of: {today:%Y-%m-%d} (latest observation date)")
     basis = collections.Counter(o.get("basis", "asking") for o in observations)
     print(f"  basis: {dict(basis)}")
     report_title_coverage(observations)
@@ -497,10 +456,10 @@ def main() -> None:
         observations = refreshed
     print()
 
-    report_identity_coverage(observations, args.min_comps)
+    report_identity_coverage(observations, min_comps)
 
     if args.legacy:
-        table, levels, flagged = replay_legacy(observations, args.min_comps)
+        table, levels, flagged = replay_legacy(observations, min_comps)
         print("--- v1 engine (hierarchical, price-tier fallback) ---")
         print("  buckets:", {lvl: len(table[lvl]) for lvl in comps.COMP_LEVELS})
         print("  level used:", dict(levels))
@@ -514,15 +473,16 @@ def main() -> None:
             )
         print()
 
-    engine, levels, confidences, blocked, gross_flagged = replay_new(observations, args.min_comps, today)
+    engine = run_eval.build_engine(cfg, observations, today)
+    engine, levels, confidences, blocked, gross_flagged = replay_new(observations, min_comps, today, engine)
     print("--- CardPro 2.0 engine ---")
     print("  buckets:", engine.coverage())
     print("  level used:", dict(levels))
     print("  confidence:", dict(confidences))
     print("  quality gates hit:", dict(blocked))
     print("  skipped observations (unusable):", engine.skipped_observations())
-    flagged, stats, skipped = replay_production_gate(observations, engine, _load_config())
-    report_production_gate(flagged, stats, skipped, len(gross_flagged), len(dates))
+    flagged, stats, skipped = replay_production_gate(observations, engine, cfg)
+    report_production_gate(flagged, stats, skipped, len(gross_flagged), len(dates), cfg)
 
 
 if __name__ == "__main__":

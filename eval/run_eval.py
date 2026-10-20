@@ -34,11 +34,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-os.environ.setdefault("GMAIL_ADDRESS", "eval@example.com")
-os.environ.setdefault("GMAIL_APP_PASSWORD", "not-a-real-password")
-os.environ.pop("EBAY_CLIENT_ID", None)
-os.environ.pop("EBAY_CLIENT_SECRET", None)
-
 from src import comps, main, observability, price_history  # noqa: E402
 from src.config import load_config  # noqa: E402
 
@@ -58,6 +53,32 @@ def _tier(listing) -> str:
     return "Maybe" if listing.is_opportunity else "Pass"
 
 
+def offline_config():
+    """The shipped config for an offline replay: placeholder mail credentials
+    (nothing is sent) and no eBay credentials (nothing is fetched). Shared
+    with scripts/replay_corpus.py."""
+    os.environ.setdefault("GMAIL_ADDRESS", "eval@example.com")
+    os.environ.setdefault("GMAIL_APP_PASSWORD", "not-a-real-password")
+    os.environ.pop("EBAY_CLIENT_ID", None)
+    os.environ.pop("EBAY_CLIENT_SECRET", None)
+    return load_config()
+
+
+def listing_from_row(cfg, row, player, listing_type=None):
+    """A stored row (corpus or candidate) rebuilt as the Listing production
+    builds from its title: main._build_listing with the row's own player, as
+    the Browse path passes it. None when the title does not name the player.
+    Shared with scripts/replay_corpus.py."""
+    listing = main._build_listing(
+        cfg, listing_id=row["id"], source="ebay-alert", title=row["title"],
+        price=row["price"], url=row["id"], players=[player],
+        listing_type=listing_type or row.get("listing_type") or "unknown",
+    )
+    if listing is not None:
+        listing.title_truncated = bool(row.get("title_truncated"))
+    return listing
+
+
 def rebuild_corpus(cfg, stored: dict) -> tuple[dict, list]:
     """Re-record every titled row through today's code, on its own date."""
     history: dict = {}
@@ -70,14 +91,9 @@ def rebuild_corpus(cfg, stored: dict) -> tuple[dict, list]:
             if not row.get("title"):
                 untitled.append((key, row))
                 continue
-            listing = main._build_listing(
-                cfg, listing_id=row["id"], source="ebay-alert", title=row["title"],
-                price=row["price"], url=row["id"], players=[player],
-                listing_type=row.get("listing_type") or "unknown",
-            )
+            listing = listing_from_row(cfg, row, player)
             if listing is None:
                 continue
-            listing.title_truncated = bool(row.get("title_truncated"))
             by_date[row["date"]].append(listing)
             listings_by_row.append(listing)
     for date in sorted(by_date):
@@ -87,11 +103,13 @@ def rebuild_corpus(cfg, stored: dict) -> tuple[dict, list]:
     return history, listings_by_row
 
 
-def build_engine(cfg, history):
+def build_engine(cfg, observations, today=TODAY):
+    """The comp engine exactly as main.run builds it (src/main.py), from the
+    config's valuation settings. Shared with scripts/replay_corpus.py."""
     return comps.CompEngine(
-        price_history.deduped_observations(history),
+        observations,
         min_comps_required=cfg.valuation_min_comps_required,
-        today=TODAY,
+        today=today,
         half_life_days=cfg.valuation_half_life_days,
         stale_after_days=cfg.valuation_stale_after_days,
         max_dispersion=cfg.valuation_max_dispersion,
@@ -223,13 +241,8 @@ def score(items, labels) -> dict:
 def evaluate_candidates(cfg, engine, candidates):
     items = []
     for cand in candidates:
-        listing = main._build_listing(
-            cfg, listing_id=cand["id"], source="ebay-alert", title=cand["title"],
-            price=cand["price"], url=cand["id"], players=[cand["player"]],
-            listing_type="fixed_price",
-        )
+        listing = listing_from_row(cfg, cand, cand["player"], listing_type="fixed_price")
         if listing is not None:
-            listing.title_truncated = bool(cand.get("title_truncated"))
             main.evaluate_listings([listing], engine, cfg, observability.RunStats())
         items.append((cand, listing))
     return items
@@ -264,11 +277,11 @@ def main_(argv=None) -> int:
     parser.add_argument("--no-corpus", action="store_true", help="skip the corpus-wide replay")
     args = parser.parse_args(argv)
 
-    cfg = load_config()
+    cfg = offline_config()
     stored = json.loads((ROOT / "data" / "ebay_alert_price_history.json").read_text())
     cfg._eval_dates = sorted({r["date"] for rows in stored.values() for r in rows})
     history, corpus_listings = rebuild_corpus(cfg, stored)
-    engine = build_engine(cfg, history)
+    engine = build_engine(cfg, price_history.deduped_observations(history))
 
     candidates = json.loads(CANDIDATES.read_text())
     labels = {l["eval_id"]: l for l in json.loads(LABELS.read_text())} if LABELS.exists() else {}

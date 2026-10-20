@@ -13,15 +13,14 @@ import io
 import contextlib
 
 from scripts import replay_corpus
-from tests.test_main import (
-    EXACT_TITLE,
-    SPREAD_DATES,
-    TODAY,
-    engine_for,
-    fake_cfg,
-    observation,
-    spread_observations,
-)
+import json
+from datetime import datetime, timezone
+
+import pytest
+
+from eval import run_eval
+from src import config as config_module
+from src import price_history
 
 
 def obs(**overrides):
@@ -233,51 +232,75 @@ class TestReextractionDelta:
         assert "nothing to re-extract against" in self.render(stored, replay_corpus.reextract(stored))
 
 
+SILVER = "2024 Panini Prizm Caleb Williams Silver #301 PSA 10"
+BLUE = "2024 Panini Prizm Caleb Williams Blue #301 PSA 10"
+COMP_DATES = ("2026-08-01", "2026-08-05", "2026-08-09", "2026-08-13", "2026-08-17", "2026-08-20")
+
+
+def gate_corpus():
+    """Two cards, each with six comps spread over three weeks plus one cheap
+    listing on 2026-08-21. Silver: $55 against $100 clears the gross rule but
+    nets under the floor. Blue: $150 against $400 clears both. One untitled
+    row cannot be rebuilt. So gross says 2, production says 1."""
+    def row(title, price, row_id, date="2026-08-21"):
+        return {"id": row_id, "date": date, "price": price, "title": title,
+                "basis": "asking", "listing_type": "fixed_price"}
+    rows = [row(title, market, "%s-%d" % (name, i), date)
+            for title, name, market in ((SILVER, "s", 100.0), (BLUE, "b", 400.0))
+            for i, date in enumerate(COMP_DATES)]
+    rows += [row(SILVER, 55.0, "silver-cheap"), row(BLUE, 150.0, "blue-cheap"),
+             dict(row("", 20.0, "untitled"), title=None)]
+    return {"Caleb Williams|graded": rows}
+
+
+@pytest.fixture
+def shipped_cfg(monkeypatch):
+    """The shipped config (config/settings.json), without real credentials,
+    and installed as the replay's config so main() never touches os.environ."""
+    monkeypatch.setenv("GMAIL_ADDRESS", "replay@example.com")
+    monkeypatch.setenv("GMAIL_APP_PASSWORD", "not-a-real-password")
+    monkeypatch.delenv("EBAY_CLIENT_ID", raising=False)
+    monkeypatch.delenv("EBAY_CLIENT_SECRET", raising=False)
+    cfg = config_module.load_config()
+    monkeypatch.setattr(run_eval, "offline_config", lambda: cfg)
+    return cfg
+
+
 class TestProductionGate:
     """The headline WOULD FLAG count is main.evaluate_listings' decision, not
     the replay's own gross-discount rule. On the live corpus (2026-10-20) the
-    gross rule said 40 and production said 2: the replay is the yield metric,
-    so it must not count a discount that cannot be banked."""
+    gross rule said 40 and production said 2."""
 
-    @staticmethod
-    def _replay(market, price):
-        # Comp rows carry no title (only the listing under test is rebuilt);
-        # the listing row carries one, as every corpus row does today.
-        listing_obs = observation(price, "L-under-test", date="2026-08-21",
-                                  title=EXACT_TITLE, listing_type="fixed_price")
-        corpus = spread_observations(market) + [listing_obs]
-        cfg = fake_cfg(min_net_profit=15.0, min_net_profit_pct_of_value=0.10)
-        _, _, _, _, gross = replay_corpus.replay_new(corpus, 3, TODAY)
-        flagged, stats, skipped = replay_corpus.replay_production_gate(corpus, engine_for(corpus), cfg)
-        return gross, flagged, stats, skipped
+    def _replay(self, cfg):
+        observations = replay_corpus.reextract(price_history.deduped_observations(gate_corpus()))
+        today = datetime(2026, 8, 21, tzinfo=timezone.utc)
+        engine = run_eval.build_engine(cfg, observations, today)
+        _, _, _, _, gross = replay_corpus.replay_new(observations, 3, today, engine)
+        return gross, replay_corpus.replay_production_gate(observations, engine, cfg)
 
-    def test_clearing_gross_but_not_net_is_not_a_flag(self):
-        # 33% and $20 off a $60 median clears the gross rule; after fees,
-        # postage and supplies it nets a few dollars, under the $15 floor.
-        gross, flagged, stats, _ = self._replay(60.0, 40.0)
-        assert [o["id"] for _, _, _, o in gross] == ["L-under-test"]
-        assert flagged == []
-        assert stats.rejections.counts() == {"below_min_net_profit": 1}
-
-    def test_a_deal_that_nets_the_scaled_floor_is_a_flag(self):
-        _, flagged, _, _ = self._replay(400.0, 200.0)
-        assert len(flagged) == 1
+    def test_clearing_gross_but_not_net_is_not_a_flag(self, shipped_cfg):
+        gross, (flagged, stats, skipped) = self._replay(shipped_cfg)
+        assert sorted(o["id"] for _, _, _, o in gross) == ["blue-cheap", "silver-cheap"]
+        assert [listing.id for listing, _ in flagged] == ["blue-cheap"]
+        assert stats.rejections.counts()["below_min_net_profit"] == 1
+        assert skipped == 1
         listing, required = flagged[0]
-        assert listing.id == "L-under-test"
-        assert required == 40.0  # max($15, 10% of the $400 median)
+        assert required == pytest.approx(max(shipped_cfg.min_net_profit,
+                                             shipped_cfg.min_net_profit_pct_of_value * 400.0))
         assert listing.economics.expected_profit >= required
 
-    def test_untitled_rows_are_counted_not_gated(self):
-        _, _, _, skipped = self._replay(400.0, 200.0)
-        assert skipped == len(SPREAD_DATES)
-
-    def test_the_report_shows_net_and_required_net_per_flag(self):
-        _, flagged, stats, skipped = self._replay(400.0, 200.0)
+    def test_the_headline_is_the_production_count(self, shipped_cfg, tmp_path, monkeypatch):
+        corpus = tmp_path / "corpus.json"
+        corpus.write_text(json.dumps(gate_corpus()))
+        monkeypatch.setattr(replay_corpus, "CORPUS", corpus)
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            replay_corpus.report_production_gate(flagged, stats, skipped, gross_count=3, days=6)
+            replay_corpus.main(["--reextract"])
         text = out.getvalue()
-        assert "WOULD FLAG: 1" in text
-        assert "gross-discount only (pre-10-16 gate, 30% and $10 off median): 3" in text
-        net = flagged[0][0].economics.expected_profit
-        assert "net ${:>7.2f} (needs $ 40.00)".format(net) in text
+        assert "  WOULD FLAG: 1  (production gate" in text
+        assert "gross-discount only (pre-10-16 gate, 30% and $10 off median): 2" in text
+        assert "valued as of: 2026-08-21" in text
+        assert "unknown inbound shipping assumed $%.2f" % shipped_cfg.assumed_inbound_shipping in text
+        assert "not gated (no title, or title no longer names the player): 1" in text
+        required = max(shipped_cfg.min_net_profit, shipped_cfg.min_net_profit_pct_of_value * 400.0)
+        assert "(needs ${:>6.2f})".format(required) in text
