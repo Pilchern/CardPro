@@ -64,9 +64,9 @@ No shipping, no listing start time, no seller. Sold comps: `config/sold_comps.js
 
 ## Measurement tools
 
-- `python -m scripts.replay_corpus --reextract`: identity KPI + would-flag list over the whole corpus.
+- `python -m scripts.replay_corpus --reextract`: identity KPI + would-flag list over the whole corpus. Since 2026-10-20 `WOULD FLAG` is the production gate (rows rebuilt via `main._build_listing`, decided by `main.evaluate_listings`, net >= `main.required_net_profit`), with net and required net per flag; the old gross-only count is on a `gross-discount only (pre-10-16 gate)` line. Shipping is not stored, so assumed inbound shipping is charged. Should equal `python -m eval.run_eval` `corpus_replay.flags_total` (2026-10-20: both 2; gross-only 40).
 - `python -m scripts.rehearse_run`: renders the real report offline.
-- Baseline KPI (2026-10-16, fact): same_card-complete key 28.4%, exact 20.9%; first blocker parallel 36.1%, set_name 28.5%, year 7.0%; would-flag 15 (whole corpus, gross-discount gate).
+- Baseline KPI (2026-10-16, fact): same_card-complete key 28.4%, exact 20.9%; first blocker parallel 36.1%, set_name 28.5%, year 7.0%; would-flag 15 (whole corpus, gross-discount gate; the replay printed this rule until 2026-10-20).
 
 ## Known gaps (vs. the brief)
 

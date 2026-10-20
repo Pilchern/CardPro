@@ -1,4 +1,5 @@
-"""Tests for the identity-coverage KPI in scripts/replay_corpus.py.
+"""Tests for scripts/replay_corpus.py: the identity-coverage KPI and the
+would-flag count (which must be the production deal gate).
 
 Deliberately built on synthetic observations rather than the real corpus in
 data/. That file is rewritten by the daily production run, so any test
@@ -12,6 +13,15 @@ import io
 import contextlib
 
 from scripts import replay_corpus
+from tests.test_main import (
+    EXACT_TITLE,
+    SPREAD_DATES,
+    TODAY,
+    engine_for,
+    fake_cfg,
+    observation,
+    spread_observations,
+)
 
 
 def obs(**overrides):
@@ -221,3 +231,53 @@ class TestReextractionDelta:
     def test_an_untitled_corpus_says_so_rather_than_dividing_by_zero(self):
         stored = [obs(title="")]
         assert "nothing to re-extract against" in self.render(stored, replay_corpus.reextract(stored))
+
+
+class TestProductionGate:
+    """The headline WOULD FLAG count is main.evaluate_listings' decision, not
+    the replay's own gross-discount rule. On the live corpus (2026-10-20) the
+    gross rule said 40 and production said 2: the replay is the yield metric,
+    so it must not count a discount that cannot be banked."""
+
+    @staticmethod
+    def _replay(market, price):
+        # Comp rows carry no title (only the listing under test is rebuilt);
+        # the listing row carries one, as every corpus row does today.
+        listing_obs = observation(price, "L-under-test", date="2026-08-21",
+                                  title=EXACT_TITLE, listing_type="fixed_price")
+        corpus = spread_observations(market) + [listing_obs]
+        cfg = fake_cfg(min_net_profit=15.0, min_net_profit_pct_of_value=0.10)
+        _, _, _, _, gross = replay_corpus.replay_new(corpus, 3, TODAY)
+        flagged, stats, skipped = replay_corpus.replay_production_gate(corpus, engine_for(corpus), cfg)
+        return gross, flagged, stats, skipped
+
+    def test_clearing_gross_but_not_net_is_not_a_flag(self):
+        # 33% and $20 off a $60 median clears the gross rule; after fees,
+        # postage and supplies it nets a few dollars, under the $15 floor.
+        gross, flagged, stats, _ = self._replay(60.0, 40.0)
+        assert [o["id"] for _, _, _, o in gross] == ["L-under-test"]
+        assert flagged == []
+        assert stats.rejections.counts() == {"below_min_net_profit": 1}
+
+    def test_a_deal_that_nets_the_scaled_floor_is_a_flag(self):
+        _, flagged, _, _ = self._replay(400.0, 200.0)
+        assert len(flagged) == 1
+        listing, required = flagged[0]
+        assert listing.id == "L-under-test"
+        assert required == 40.0  # max($15, 10% of the $400 median)
+        assert listing.economics.expected_profit >= required
+
+    def test_untitled_rows_are_counted_not_gated(self):
+        _, _, _, skipped = self._replay(400.0, 200.0)
+        assert skipped == len(SPREAD_DATES)
+
+    def test_the_report_shows_net_and_required_net_per_flag(self):
+        _, flagged, stats, skipped = self._replay(400.0, 200.0)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            replay_corpus.report_production_gate(flagged, stats, skipped, gross_count=3, days=6)
+        text = out.getvalue()
+        assert "WOULD FLAG: 1" in text
+        assert "gross-discount only (pre-10-16 gate, 30% and $10 off median): 3" in text
+        net = flagged[0][0].economics.expected_profit
+        assert "net ${:>7.2f} (needs $ 40.00)".format(net) in text

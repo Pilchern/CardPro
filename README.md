@@ -972,6 +972,16 @@ which quality gates fired, and what each engine would have flagged. With
 `--legacy` it runs the v1 hierarchical/price-tier engine over the same data
 first, so the two sit side by side.
 
+The headline `WOULD FLAG` count is the **production deal gate**: each titled
+row is rebuilt as a listing and run through `main.evaluate_listings` with the
+shipped config, so a flag must clear the gross discount AND net at least
+`max($15, 10% of value)` after fees, both shipping legs, supplies and tax.
+Each flag prints its net profit and the net it needed. Shipping is not stored
+in the corpus, so every row is charged the configured assumed inbound
+shipping. The old gross-discount-only count (30% and $10 off the median, the
+rule before 2026-10-16) follows on a line labelled `gross-discount only` so
+older numbers stay comparable.
+
 It also prints the **identity-coverage KPI**, which is the part that says
 *why* the answer is what it is rather than only what it is -- see
 [Sold comps worth adding](#sold-comps-worth-adding-and-why-nothing-flags-today)

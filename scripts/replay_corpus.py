@@ -14,25 +14,41 @@ This measures whether the ENGINE behaves correctly, not whether the market
 values are right -- no data source available to this project can tell us
 that yet.
 
-    python -m scripts.replay_corpus [--legacy] [--min-comps N]
+The headline "WOULD FLAG" count is the PRODUCTION deal gate: every titled
+observation is rebuilt as a Listing (main._build_listing) and run through
+main.evaluate_listings with the shipped config, so it applies the same gates
+in the same order as the daily run -- gross discount and min savings, then the
+net-profit floor (main.required_net_profit: max($15, 10% of value) as
+shipped), after fees, both shipping legs, supplies and buy tax. The old
+gross-discount-only count (30% and $10 off the median, the pre-10-16 rule) is
+printed on a secondary line so earlier numbers stay comparable.
+
+    python -m scripts.replay_corpus [--legacy] [--min-comps N] [--reextract]
 """
 from __future__ import annotations
 
 import argparse
 import collections
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src import card_identity, comps, matcher, price_history  # noqa: E402
+from src import card_identity, comps, matcher, observability, price_history  # noqa: E402
+from src import main as pipeline  # noqa: E402
 
 CORPUS = Path(__file__).resolve().parent.parent / "data" / "ebay_alert_price_history.json"
 
 
 def replay_new(observations, min_comps, today):
+    """Comp-level statistics, plus the GROSS-discount-only would-flag list
+    (30% and $10 off the median, nothing netted out). That list is the
+    pre-10-16 gate, kept for comparability and because eval/build_candidates
+    draws its "engine_flag" stratum from it; the headline count is
+    replay_production_gate below."""
     engine = comps.CompEngine(observations, min_comps_required=min_comps, today=today)
     levels = collections.Counter()
     confidences = collections.Counter()
@@ -77,6 +93,97 @@ def replay_new(observations, min_comps, today):
             flagged.append((savings, pct, match, obs))
 
     return engine, levels, confidences, blocked, flagged
+
+
+def listings_from_observations(cfg, observations):
+    """Rebuild each titled observation as the Listing production would have
+    built from that title, the way eval/run_eval.py does: main._build_listing
+    with the row's own player (as the Browse path passes it), its stored
+    listing type and truncation flag. Shipping is not stored, so it is
+    unknown here, exactly as on an alert listing, and economics.evaluate
+    charges the configured assumed inbound shipping for it.
+
+    Returns (listings, skipped): rows without a title, or whose title no
+    longer names the player, cannot be rebuilt and are counted, not gated.
+    """
+    listings, skipped = [], 0
+    for obs in observations:
+        title = obs.get("title")
+        listing = pipeline._build_listing(
+            cfg, listing_id=obs.get("id"), source="ebay-alert", title=title,
+            price=obs["price"], url=obs.get("id"), players=[obs["player"]],
+            listing_type=obs.get("listing_type") or "unknown",
+        ) if title else None
+        if listing is None:
+            skipped += 1
+            continue
+        listing.title_truncated = bool(obs.get("title_truncated"))
+        listings.append(listing)
+    return listings, skipped
+
+
+def replay_production_gate(observations, engine, cfg):
+    """The production deal decision over the corpus.
+
+    Not a re-implementation: it hands the rebuilt listings to
+    main.evaluate_listings, so every gate the daily run applies is applied
+    here, in the same order -- no price, negative signals, multi-player,
+    truncated grade, cheap commodity, comp lookup, economics, auctions
+    diverted, context-only level, gross discount, min savings, and the
+    net-profit floor (main.required_net_profit). What the replay cannot
+    reproduce is its INPUT, not the gate: shipping is unknown on every row
+    (assumed_inbound_shipping is charged), and each listing is valued against
+    the whole corpus rather than the corpus as it stood on its own day.
+
+    Returns (flagged, stats, skipped) where flagged is
+    [(listing, required_net)], most profitable first.
+    """
+    listings, skipped = listings_from_observations(cfg, observations)
+    stats = observability.RunStats()
+    pipeline.evaluate_listings(listings, engine, cfg, stats)
+    flagged = [
+        (listing, pipeline.required_net_profit(cfg, listing.comp_median))
+        for listing in listings
+        if listing.is_opportunity
+    ]
+    flagged.sort(key=lambda item: item[0].economics.expected_profit, reverse=True)
+    return flagged, stats, skipped
+
+
+def _load_config():
+    """The shipped config, without needing mail credentials: the replay sends
+    nothing, but load_config insists on them (eval/run_eval.py does the same)."""
+    from src.config import load_config
+
+    os.environ.setdefault("GMAIL_ADDRESS", "replay@example.com")
+    os.environ.setdefault("GMAIL_APP_PASSWORD", "not-a-real-password")
+    return load_config()
+
+
+def report_production_gate(flagged, stats, skipped, gross_count, days) -> None:
+    print(f"  WOULD FLAG: {len(flagged)}  (production gate: main.evaluate_listings, "
+          f"net >= required net; {days} corpus day(s))")
+    print(f"  gross-discount only (pre-10-16 gate, 30% and $10 off median): {gross_count}")
+    if skipped:
+        print(f"  not gated (no title, or title no longer names the player): {skipped}")
+    rejected = {
+        reason: n for reason, n in stats.rejections.counts().items()
+        if reason in ("below_discount_threshold", "below_min_savings", "below_min_net_profit")
+    }
+    if rejected:
+        print("  flag-eligible but rejected by:", rejected)
+    for listing, required in flagged:
+        e = listing.economics
+        print(
+            "    net ${:>7.2f} (needs ${:>6.2f})  gross ${:>7.2f} ({:>3.0f}%) via {:<9s} "
+            "median ${:<8.2f} n={:<3d} conf={:<6s} <- ${:.2f} {} | {}".format(
+                e.expected_profit, required, listing.dollar_savings, listing.pct_under_market,
+                listing.comp_level_matched, listing.comp_median, listing.comp_sample_size,
+                listing.comp_confidence, listing.price, listing.player, listing.title,
+            )
+        )
+    if not flagged:
+        print("    (nothing -- no card in this corpus clears the production deal gate)")
 
 
 def replay_legacy(observations, min_comps):
@@ -407,23 +514,15 @@ def main() -> None:
             )
         print()
 
-    engine, levels, confidences, blocked, flagged = replay_new(observations, args.min_comps, today)
+    engine, levels, confidences, blocked, gross_flagged = replay_new(observations, args.min_comps, today)
     print("--- CardPro 2.0 engine ---")
     print("  buckets:", engine.coverage())
     print("  level used:", dict(levels))
     print("  confidence:", dict(confidences))
     print("  quality gates hit:", dict(blocked))
     print("  skipped observations (unusable):", engine.skipped_observations())
-    print(f"  WOULD FLAG: {len(flagged)}")
-    for savings, pct, match, obs in sorted(flagged, reverse=True, key=lambda f: f[0])[:8]:
-        print(
-            "    ${:>8.2f} ({:>3.0f}%) via {:<11s} median ${:<8.2f} n={:<3d} conf={:<6s} <- ${:.2f} {}".format(
-                savings, pct, match.level, match.stats.median, match.stats.sample_size,
-                match.confidence, obs["price"], obs["player"],
-            )
-        )
-    if not flagged:
-        print("    (nothing -- no card in this corpus can be honestly called underpriced)")
+    flagged, stats, skipped = replay_production_gate(observations, engine, _load_config())
+    report_production_gate(flagged, stats, skipped, len(gross_flagged), len(dates))
 
 
 if __name__ == "__main__":
