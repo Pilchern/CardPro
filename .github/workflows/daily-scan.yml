@@ -23,13 +23,13 @@ on:
     # skips. GitHub starts scheduled runs late: 2.14 h minimum over 52
     # scheduled runs (10-01..10-19), median 4.71 h for the old 15:00 cron.
     # 12:47 + 2.14 h = 14:55, 30 min after the burst; at the median it
-    # starts ~17:17, ~2.2 h earlier than the old cron. Minute 47 only
+    # starts ~17:30, ~2.2 h earlier than the old cron. Minute 47 only
     # avoids top-of-hour load; it does not shorten the delay. Fixed UTC
     # time -- cron doesn't follow DST, and eBay's send time is what matters.
     # After merge: if any of the first 7 primary runs starts before 14:30
     # UTC, move the cron 1 h later.
     - cron: "47 12 * * *"
-    # Backup, four hours later. GitHub's scheduled workflows are best-effort:
+    # Backup, three hours later. GitHub's scheduled workflows are best-effort:
     # under load they are delayed by hours and sometimes dropped outright,
     # and a dropped run was the one failure nothing here could see -- no
     # email, no failure notification, no red job, just silence that looks
@@ -100,6 +100,9 @@ jobs:
         # marker is written only after a digest is sent, never by
         # --alert-only. The phase-2 poll emails only ACT NOW. Any other value
         # (a cron edited above but not here) also skips if today already ran.
+        # A manual run marks the day as done, so that day's scheduled runs
+        # skip. Avoid manual runs before ~14:30 UTC or the alert burst lands
+        # a day late.
         run: |
           case "${SCHEDULE}" in
             "")               python -m src.main ;;

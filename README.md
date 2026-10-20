@@ -836,11 +836,13 @@ One-time setup:
    at 12:47 UTC, with a backup at 15:47 UTC; both pass `--skip-if-ran-today`.
    GitHub starts scheduled runs late (2.14 h minimum, ~4.7 h median,
    measured), so the scan starts after eBay's 13:55-14:25 UTC alert burst,
-   typically ~17:15 UTC. The backup starts before midnight UTC even at the
+   typically ~17:30 UTC. The backup starts before midnight UTC even at the
    worst measured delay, so "today" doesn't roll over between the two.
    Cron is UTC and doesn't follow DST.
 3. To trigger a run immediately instead of waiting for the schedule: repo
-   **Actions tab -> Daily Card Deal Scan -> Run workflow**.
+   **Actions tab -> Daily Card Deal Scan -> Run workflow**. A manual run
+   marks the day as done, so that day's scheduled runs skip. Avoid manual
+   runs before ~14:30 UTC or the alert burst lands a day late.
 
 What the job does, in order: installs `requirements-dev.txt`, **runs the
 test suite**, runs the scan, then persists state. The test step is a gate,
