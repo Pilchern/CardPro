@@ -1063,8 +1063,12 @@ def apply_dedupe(listings, seen, today_str, stats) -> list:
     by SHOWN_REPEAT_MIN_DROP_PCT: the same cool cards and cheap finds
     every morning buried the one new line worth reading. Target hits are
     always shown -- you named those cards. Left-out cards are counted in the
-    footer, not dropped silently. What counts as "printed" is recorded after
-    the report is built (record_shown).
+    footer, not dropped silently.
+
+    Writes nothing to ``seen``, opportunities included. What counts as
+    "told" is decided after the report is built and trimmed (record_shown):
+    an opportunity cut for length was never in the email, and recording it
+    here would suppress it at an unchanged price on every later day.
     """
     kept = []
     for listing in listings:
@@ -1084,7 +1088,6 @@ def apply_dedupe(listings, seen, today_str, stats) -> list:
         prior = seen.get(listing.id)
         if not dedupe.was_reported_as_deal(prior):
             # Never seen, or only ever shown as a browse card: a new deal.
-            dedupe.record_flagged(listing.id, listing.price, seen, today_str)
             kept.append(listing)
             continue
 
@@ -1092,7 +1095,6 @@ def apply_dedupe(listings, seen, today_str, stats) -> list:
             listing.is_price_drop = True
             listing.previous_price = prior["price"]
             stats.price_drops += 1
-            dedupe.record_flagged(listing.id, listing.price, seen, today_str)
             kept.append(listing)
             continue
 
@@ -1139,8 +1141,10 @@ def annotate_listing_age(listings, history, today) -> None:
 
 def record_shown(listings, shown_ids, seen, today_str) -> None:
     """Mark every card the report actually printed as seen, at today's price.
-    A card that was not a deal is marked shown-only, so it can still be
-    reported as a deal later -- see dedupe.record_flagged."""
+    The only place a run writes a listing to ``seen`` (apply_dedupe writes
+    nothing), so a deal cut for length stays unrecorded and comes back on the
+    next run. A card that was not a deal is marked shown-only, so it can
+    still be reported as a deal later -- see dedupe.record_flagged."""
     for listing in listings:
         if listing.id in shown_ids and listing.price is not None:
             dedupe.record_flagged(
@@ -1426,8 +1430,8 @@ def run(args: argparse.Namespace) -> None:
     if alert_only:
         # An intra-day poll: the corpus above is always kept, but email goes
         # out only for an ACT NOW, and only the ACT NOW cards are marked seen
-        # -- read fresh, because apply_dedupe has already marked every new
-        # opportunity in `seen`, and those were not sent. No run marker: the
+        # -- into a fresh read of the file, so nothing else this run put in
+        # `seen` (flips.mark_seen) is written by a poll. No run marker: the
         # daily digest and its --skip-if-ran-today backup key off it.
         if not model.act_now_ids:
             logger.info("Alert-only poll: nothing in ACT NOW -- no email")
