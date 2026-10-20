@@ -18,14 +18,16 @@ CardPro uses Browse API listings to model a market price for each card (the aski
 
 Nick (2026-10-20, chat): "Ignore the ebay stuff, they're not worried about me." -> accept. eBay API expansion unfrozen.
 
-## N2 (2026-10-20): Sold data. The automated route is closed; the hand-entry list has sat unused for 4 days.
+## N2 (2026-10-20) RESOLVED: Sold data. The automated route is closed; the hand-entry list has sat unused for 4 days.
 **Decision request:** Reply "drop it" (the app stays ASKING-only, Maybe-tier flags only) or "keep the list" (leave the 10 commands in the email footer).
 
 Findings this run (fact): the corpus can't infer sales (listings fall off the 200-item search page whether or not they sell). Browse never returns sold items or prices. Finding/Shopping APIs were decommissioned 2025-02-05. Marketplace Insights is closed to new apps. So real SOLD comps come only from your hand entry or your own flips (`data/flips.csv`).
 - **PM recommendation: keep the list**, but the PM will stop treating sold data as the next build and work on flag yield and email quality inside the ASKING world.
 
-## N3 (2026-10-20): The daily email is ~40 browse cards and 0 deals. Trim it?
+## N3 (2026-10-20) RESOLVED: The daily email is ~40 browse cards and 0 deals. Trim it?
 **Decision request:** Reply "trim" (on no-deal days: subject "No deals" + auctions with bidding room, then 5 cards max per browse section; CHEAP FINDS dropped), or "keep" (as is).
 
 Fact (Scout, 10-17..10-19): every post-merge email was "10 auctions to review", 0 deals, 40 cards (the focus cap), ~4,000 words in an offline rehearsal. The config records that you collect /99-and-under and "cool cards", so the PM won't cut browse sections without your say.
 - **PM recommendation: "trim".** CHEAP FINDS are sub-$10 cards that can't net $15 under the fee model (a $1 card has to sell for ~$33). The collecting sections stay, just shorter.
+
+Nick (2026-10-20, chat) on N2/N3: "do whatever you think is best". PM decided: N2 keep the list (no build); N3 trim (B2 building).

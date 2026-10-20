@@ -31,3 +31,4 @@
 - 2026-10-20: Did NOT do the manual follow-ups from that report in 4 days: 0 sold comps entered, 0 flips logged, schedule diff not applied. Inference: anything that needs his hands stalls. Ship it as a mergeable PR or automate it; never as a to-do for him.
 - 2026-10-20: Waved off the eBay API license risk ("they're not worried about me"). Don't escalate ToS/compliance again unless a change goes well beyond personal-scale use.
 - 2026-10-20: Said "merge when done". The PM may merge reviewed, CI-green PRs itself; the WIP gate is less binding while that standing permission holds.
+- 2026-10-20: Delegates taste calls ("do whatever you think is best"). Escalate less: decide, ship, and note the call. Escalate only irreversible actions or real money.
