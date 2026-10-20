@@ -18,22 +18,25 @@ on:
   schedule:
     # eBay sends the day's saved-search alerts in one burst between about
     # 13:55 and 14:25 UTC (measured over 2026-09-20..23); the scan has to
-    # START after it. GitHub starts this cron 3.2-7.3 h late (median 4.7 h,
-    # 22/22 days measured 09-24..10-15), so it is scheduled for 11:47 to
-    # actually start ~16:30 UTC instead of the ~19:45 the old 15:00 cron
-    # gave. Minute 47 avoids the top-of-hour queue that makes the delay
-    # worse. Even the shortest measured delay (3.2 h) starts it at ~15:00,
-    # after the burst. Fixed UTC time -- GitHub Actions cron doesn't follow
-    # DST, and eBay's send time is what matters, not your clock.
-    - cron: "47 11 * * *"
+    # START after it: alerts are fetched by a SINCE-2-days date window, so a
+    # run before the burst reports them ~24 h late and the backup then
+    # skips. GitHub starts scheduled runs late: 2.14 h minimum over 52
+    # scheduled runs (10-01..10-19), median 4.71 h for the old 15:00 cron.
+    # 12:47 + 2.14 h = 14:55, 30 min after the burst; at the median it
+    # starts ~17:17, ~2.2 h earlier than the old cron. Minute 47 only
+    # avoids top-of-hour load; it does not shorten the delay. Fixed UTC
+    # time -- cron doesn't follow DST, and eBay's send time is what matters.
+    # After merge: if any of the first 7 primary runs starts before 14:30
+    # UTC, move the cron 1 h later.
+    - cron: "47 12 * * *"
     # Backup, four hours later. GitHub's scheduled workflows are best-effort:
     # under load they are delayed by hours and sometimes dropped outright,
     # and a dropped run was the one failure nothing here could see -- no
     # email, no failure notification, no red job, just silence that looks
     # exactly like a day you were not looking. This run passes
     # --skip-if-ran-today, so on the days the primary run worked it exits in
-    # seconds having done nothing. Kept well before midnight UTC: even 7.3 h
-    # late it starts ~23:05, so "today" has not rolled over (the old 19:00
+    # seconds having done nothing. Kept before midnight UTC: 15:47 + 7.34 h
+    # worst case = 23:07, so "today" has not rolled over (the old 19:00
     # backup twice started after midnight and sent a second email).
     - cron: "47 15 * * *"
     # Phase 2, off until 3 days of corpus growth are measured: an intra-day
@@ -90,14 +93,17 @@ jobs:
         # Keyed on WHICH cron fired, not on the clock: GitHub delays
         # scheduled runs by hours, so a wall-clock test would make a late
         # primary run skip itself -- the exact failure this exists to fix.
-        # Primary (and a manual dispatch, which has no schedule) always
-        # scans; the 15:47 backup exits in seconds if today already ran;
-        # the phase-2 poll emails only ACT NOW. Any other value (a cron
-        # edited above but not here) takes the safe backup path, which can
-        # never send a second digest.
+        # A manual dispatch (no schedule) always scans. The primary and the
+        # 15:47 backup both pass --skip-if-ran-today, so whichever starts
+        # second exits in seconds -- a primary delayed past the backup, or
+        # run after a manual dispatch, doesn't send a second digest. The
+        # marker is written only after a digest is sent, never by
+        # --alert-only. The phase-2 poll emails only ACT NOW. Any other value
+        # (a cron edited above but not here) also skips if today already ran.
         run: |
           case "${SCHEDULE}" in
-            "47 11 * * *"|"") python -m src.main ;;
+            "")               python -m src.main ;;
+            "47 12 * * *")    python -m src.main --skip-if-ran-today ;;
             "17 */3 * * *")   python -m src.main --alert-only ;;
             "47 15 * * *")    python -m src.main --skip-if-ran-today ;;
             *)                python -m src.main --skip-if-ran-today ;;

@@ -833,11 +833,12 @@ One-time setup:
    secret form, which is write-only (nobody, including repo admins, can
    read a secret's value back afterward).
 2. That's it -- the workflow is already in the repo. It is scheduled daily
-   at 11:47 UTC, with a `--skip-if-ran-today` backup at 15:47 UTC. GitHub
-   starts scheduled runs 3-7 h late (median 4.7 h, measured), so the scan
-   actually starts ~16:30 UTC, after eBay's 13:55-14:25 UTC alert burst,
-   and the backup stays before midnight UTC so it never sends a second
-   email. Cron is UTC and doesn't follow DST.
+   at 12:47 UTC, with a backup at 15:47 UTC; both pass `--skip-if-ran-today`.
+   GitHub starts scheduled runs late (2.14 h minimum, ~4.7 h median,
+   measured), so the scan starts after eBay's 13:55-14:25 UTC alert burst,
+   typically ~17:15 UTC. The backup starts before midnight UTC even at the
+   worst measured delay, so "today" doesn't roll over between the two.
+   Cron is UTC and doesn't follow DST.
 3. To trigger a run immediately instead of waiting for the schedule: repo
    **Actions tab -> Daily Card Deal Scan -> Run workflow**.
 

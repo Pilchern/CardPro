@@ -41,8 +41,8 @@ Longer narrative: `docs/PROJECT_STATUS.md`, `docs/AUDIT_2026_09.md`, `docs/CARDP
 
 ## Scheduling
 
-`.github/workflows/daily-scan.yml`: cron `47 11 * * *` + backup `47 15 * * *` (`--skip-if-ran-today`), routed by a `case` on `SCHEDULE`; phase-2 `17 */3 * * *` (`--alert-only`) is commented out; timeout 15 min, pytest gate, state commit with rebase-retry. `tests.yml` runs CI on 3.9/3.12.
-Measured from 100 GitHub runs (fact): the 15:00 cron fired 22/22 days (09-24..10-15), 3.2-7.3 h late (median 4.7 h); the 19:00 backup skipped 19/22 days and twice re-scanned after midnight UTC (second email). No dropped runs. Hence the 11:47/15:47 schedule (expected start ~16:30 UTC; backup lands before midnight even at 7.3 h late). Repo is public, so Actions minutes are unlimited.
+`.github/workflows/daily-scan.yml`: cron `47 12 * * *` + backup `47 15 * * *` (both `--skip-if-ran-today`; manual dispatch scans unconditionally), routed by a `case` on `SCHEDULE`; phase-2 `17 */3 * * *` (`--alert-only`) is commented out; timeout 15 min, pytest gate, state commit with rebase-retry. `tests.yml` runs CI on 3.9/3.12.
+Measured from 100 GitHub runs (fact): the 15:00 cron fired 22/22 days (09-24..10-15), 3.2-7.3 h late (median 4.7 h); the 19:00 backup skipped 19/22 days and twice re-scanned after midnight UTC (second email). No dropped runs. Reviewer data, 52 scheduled runs 10-01..10-19: minimum lateness 2.14 h. Hence 12:47/15:47: earliest start 14:55 (after the burst), median ~17:17, backup worst case 23:07. After merge: if any of the first 7 primary runs starts before 14:30 UTC, move the cron 1 h later. Repo is public, so Actions minutes are unlimited.
 
 ## Hardcoded thresholds worth knowing
 
