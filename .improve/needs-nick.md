@@ -2,7 +2,7 @@
 
 Answer inline under any item (write "Nick:" and your answer). The PM reads this at the start of each run.
 
-## N1 (2026-10-20): eBay API license vs. what CardPro does. Decision: accept the risk, or change course?
+## N1 (2026-10-20) RESOLVED: eBay API license vs. what CardPro does. Decision: accept the risk, or change course?
 **Decision request:** Reply "accept", "ask eBay", or "stop Browse".
 
 eBay's API License Agreement (edp.ebay.com/join/api-license-agreement, footer dated Sept 3 2025, verified by the PM 2026-10-20):
@@ -15,6 +15,8 @@ CardPro uses Browse API listings to model a market price for each card (the aski
 - Likely consequence (inferred): eBay revokes the developer keyset. Browse supplies ~90% of listings, so the app falls back to alert emails only. Enforcement against a single-user, ~50-calls/day tool is unlikely (hypothesis), but the keyset may be tied to the eBay account you sell on.
 - **PM recommendation: "accept" for the current use**, at today's volume, and don't expand eBay API use. The PM has frozen the one expansion that was on the table (a daily getItem re-check to infer sales, which is also §8.1.4.2 territory). The option the PM would not take is "ask eBay": asking for permission puts the app on their radar with low odds of a yes.
 - Until you answer: no new eBay API calls get built. Nothing else changes.
+
+Nick (2026-10-20, chat): "Ignore the ebay stuff, they're not worried about me." -> accept. eBay API expansion unfrozen.
 
 ## N2 (2026-10-20): Sold data. The automated route is closed; the hand-entry list has sat unused for 4 days.
 **Decision request:** Reply "drop it" (the app stays ASKING-only, Maybe-tier flags only) or "keep the list" (leave the 10 commands in the email footer).
