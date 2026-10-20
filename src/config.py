@@ -111,6 +111,14 @@ class Config:
 
     auction_required_margin_pct: float
     auction_ending_soon_hours: int
+    # The Browse auction pass asks only for auctions ending this many hours
+    # from now (None = that side open); an alert-email auction already under
+    # the minimum is left out of the report, counted. See settings.json.
+    auction_min_hours_left: Optional[float]
+    auction_max_hours_left: Optional[float]
+    # How many auctions WITHOUT a MAX the AUCTIONS section prints, after
+    # every one that has a MAX; the rest are counted. 0 = no cap.
+    auction_no_max_cap: int
 
     immediate_alert_min_savings_dollars: float
     immediate_alert_min_discount_pct: float
@@ -149,6 +157,11 @@ def _section(settings: dict, name: str) -> dict:
     """
     value = settings.get(name)
     return value if isinstance(value, dict) else {}
+
+
+def _optional_float(value) -> Optional[float]:
+    """A number, or None when the setting is null (meaning "no bound")."""
+    return None if value is None else float(value)
 
 
 def load_config() -> Config:
@@ -251,6 +264,9 @@ def load_config() -> Config:
         grading=dict(_section(settings, "grading")),
         auction_required_margin_pct=float(auctions.get("required_margin_pct", 0.0)),
         auction_ending_soon_hours=int(auctions.get("ending_soon_hours", 24)),
+        auction_min_hours_left=_optional_float(auctions.get("min_hours_left", 3.0)),
+        auction_max_hours_left=_optional_float(auctions.get("max_hours_left", 27.0)),
+        auction_no_max_cap=int(auctions.get("no_max_cap", 3)),
         immediate_alert_min_savings_dollars=float(alerts.get("immediate_alert_min_savings_dollars", 150.0)),
         immediate_alert_min_discount_pct=float(alerts.get("immediate_alert_min_discount_pct", 40.0)),
         cheap_cards_enabled=bool(cheap.get("enabled", True)),

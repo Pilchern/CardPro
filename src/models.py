@@ -47,6 +47,11 @@ class Listing:
     listing_type: str = "unknown"
     bid_count: Optional[int] = None
     time_left_text: Optional[str] = None  # raw countdown text, e.g. "2d 04h"
+    # When the auction closes: Browse's itemEndDate (ISO 8601 UTC, e.g.
+    # "2026-10-21T00:14:00.000Z"). The countdown above is only true at fetch
+    # time; this is what the report prints ("ends Tue 7:14 PM CT"). None on
+    # alert-email listings, which carry only the countdown.
+    ends_at: Optional[str] = None
     has_best_offer: bool = False
 
     # Canonical negative signals found in the title (reprint, custom, sealed

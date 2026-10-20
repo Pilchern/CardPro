@@ -72,12 +72,17 @@ def search_active_listings(
     buying_options: tuple = ("FIXED_PRICE", "AUCTION"),
     max_pages: int = 1,
     min_price: Optional[float] = None,
+    ending_between: Optional[tuple] = None,
     failures: Optional[list] = None,
 ) -> list[dict]:
     """Active for-sale listings for `query`. Returns raw Browse API item dicts.
 
     `min_price` (USD, item price) narrows the search server-side; None
     searches every price.
+
+    `ending_between` is a (start, end) pair of aware datetimes, either side
+    None for an open bound: only listings scheduled to end inside it come
+    back (see item_end_date_filter). None searches every end date.
 
     `limit` is the page size and `max_pages` how many pages to walk, so one
     call returns at most limit * max_pages items. Measured 2026-10-15: every
@@ -100,6 +105,10 @@ def search_active_listings(
     if min_price is not None:
         # eBay's documented lower-bound form: "price:[20]" (no "..").
         params["filter"] += ",price:[%s],priceCurrency:USD" % format(min_price, "g")
+    if ending_between is not None:
+        end_filter = item_end_date_filter(*ending_between)
+        if end_filter:
+            params["filter"] += "," + end_filter
     if sort:
         params["sort"] = sort
     items: list[dict] = []
@@ -124,6 +133,37 @@ def search_active_listings(
         if not payload.get("next"):
             break
     return items
+
+
+def _browse_timestamp(moment: datetime) -> str:
+    """UTC, whole seconds, "Z" suffix: the form every example in eBay's
+    Browse filter reference uses ("2018-11-14T07:47:48Z")."""
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def item_end_date_filter(start: Optional[datetime], end: Optional[datetime]) -> Optional[str]:
+    """The Browse `itemEndDate` filter for listings ending between `start`
+    and `end`, either of which may be None for an open bound; None when both
+    are.
+
+    Syntax per eBay's Browse filter reference
+    (https://developer.ebay.com/api-docs/buy/static/ref-buy-browse-filters.html,
+    "itemEndDate", read 2026-10-20): "Only items scheduled to end within the
+    specified date-time range are returned", written
+    `itemEndDate:[2018-11-14T07:47:48Z..2018-12-14T07:47:48Z]`, UTC ISO 8601.
+    A start-only range drops the two dots (`[start]`); an end-only range
+    keeps them (`[..end]`). requests URL-encodes the value, as the page
+    requires.
+    """
+    if start is None and end is None:
+        return None
+    if end is None:
+        return "itemEndDate:[{}]".format(_browse_timestamp(start))
+    if start is None:
+        return "itemEndDate:[..{}]".format(_browse_timestamp(end))
+    return "itemEndDate:[{}..{}]".format(_browse_timestamp(start), _browse_timestamp(end))
 
 
 def search_sold_items(
