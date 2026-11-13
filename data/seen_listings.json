@@ -149,6 +149,12 @@
     "price": 28.0,
     "shown_only": true
   },
+  "https://www.ebay.com/itm/117508736911": {
+    "first_seen": "2026-11-13",
+    "last_flagged": "2026-11-13",
+    "price": 3.25,
+    "shown_only": true
+  },
   "https://www.ebay.com/itm/117509598622": {
     "first_seen": "2026-11-07",
     "last_flagged": "2026-11-07",
@@ -164,6 +170,11 @@
     "first_seen": "2026-11-12",
     "last_flagged": "2026-11-12",
     "price": 75.0
+  },
+  "https://www.ebay.com/itm/117518533337": {
+    "first_seen": "2026-11-13",
+    "last_flagged": "2026-11-13",
+    "price": 65.0
   },
   "https://www.ebay.com/itm/128028749434": {
     "first_seen": "2026-08-21",
@@ -620,6 +631,18 @@
     "price": 20.0,
     "shown_only": true
   },
+  "https://www.ebay.com/itm/128191225857": {
+    "first_seen": "2026-11-13",
+    "last_flagged": "2026-11-13",
+    "price": 95.0,
+    "shown_only": true
+  },
+  "https://www.ebay.com/itm/128191378119": {
+    "first_seen": "2026-11-13",
+    "last_flagged": "2026-11-13",
+    "price": 92.0,
+    "shown_only": true
+  },
   "https://www.ebay.com/itm/137622657102": {
     "first_seen": "2026-08-21",
     "last_flagged": "2026-08-21",
@@ -832,6 +855,18 @@
     "price": 35.0,
     "shown_only": true
   },
+  "https://www.ebay.com/itm/137927580062": {
+    "first_seen": "2026-11-13",
+    "last_flagged": "2026-11-13",
+    "price": 40.0,
+    "shown_only": true
+  },
+  "https://www.ebay.com/itm/137927790698": {
+    "first_seen": "2026-11-13",
+    "last_flagged": "2026-11-13",
+    "price": 25.0,
+    "shown_only": true
+  },
   "https://www.ebay.com/itm/147472220601": {
     "first_seen": "2026-10-19",
     "last_flagged": "2026-10-19",
@@ -1027,6 +1062,12 @@
     "price": 20.0,
     "shown_only": true
   },
+  "https://www.ebay.com/itm/147671745342": {
+    "first_seen": "2026-11-13",
+    "last_flagged": "2026-11-13",
+    "price": 0.99,
+    "shown_only": true
+  },
   "https://www.ebay.com/itm/147672223011": {
     "first_seen": "2026-11-09",
     "last_flagged": "2026-11-09",
@@ -1039,6 +1080,12 @@
     "price": 39.95,
     "shown_only": true
   },
+  "https://www.ebay.com/itm/147672500213": {
+    "first_seen": "2026-11-13",
+    "last_flagged": "2026-11-13",
+    "price": 0.99,
+    "shown_only": true
+  },
   "https://www.ebay.com/itm/147673905184": {
     "first_seen": "2026-11-12",
     "last_flagged": "2026-11-12",
@@ -1047,8 +1094,8 @@
   },
   "https://www.ebay.com/itm/147677121134": {
     "first_seen": "2026-11-12",
-    "last_flagged": "2026-11-12",
-    "price": 74.99,
+    "last_flagged": "2026-11-13",
+    "price": 44.99,
     "shown_only": true
   },
   "https://www.ebay.com/itm/158229449802": {
@@ -1229,6 +1276,12 @@
     "price": 0.99,
     "shown_only": true
   },
+  "https://www.ebay.com/itm/168844495071": {
+    "first_seen": "2026-11-13",
+    "last_flagged": "2026-11-13",
+    "price": 0.99,
+    "shown_only": true
+  },
   "https://www.ebay.com/itm/168846713301": {
     "first_seen": "2026-11-08",
     "last_flagged": "2026-11-08",
@@ -1251,6 +1304,18 @@
     "first_seen": "2026-11-12",
     "last_flagged": "2026-11-12",
     "price": 99.99,
+    "shown_only": true
+  },
+  "https://www.ebay.com/itm/168860467426": {
+    "first_seen": "2026-11-13",
+    "last_flagged": "2026-11-13",
+    "price": 20.0,
+    "shown_only": true
+  },
+  "https://www.ebay.com/itm/168860623463": {
+    "first_seen": "2026-11-13",
+    "last_flagged": "2026-11-13",
+    "price": 30.0,
     "shown_only": true
   },
   "https://www.ebay.com/itm/178473384762": {
@@ -1861,6 +1926,12 @@
     "price": 27.99,
     "shown_only": true
   },
+  "https://www.ebay.com/itm/206693452440": {
+    "first_seen": "2026-11-13",
+    "last_flagged": "2026-11-13",
+    "price": 22.45,
+    "shown_only": true
+  },
   "https://www.ebay.com/itm/206694671669": {
     "first_seen": "2026-11-12",
     "last_flagged": "2026-11-12",
@@ -2051,6 +2122,24 @@
     "price": 20.0,
     "shown_only": true
   },
+  "https://www.ebay.com/itm/227611711164": {
+    "first_seen": "2026-11-13",
+    "last_flagged": "2026-11-13",
+    "price": 39.99,
+    "shown_only": true
+  },
+  "https://www.ebay.com/itm/227611751232": {
+    "first_seen": "2026-11-13",
+    "last_flagged": "2026-11-13",
+    "price": 20.0,
+    "shown_only": true
+  },
+  "https://www.ebay.com/itm/227613057404": {
+    "first_seen": "2026-11-13",
+    "last_flagged": "2026-11-13",
+    "price": 35.99,
+    "shown_only": true
+  },
   "https://www.ebay.com/itm/237021406010": {
     "first_seen": "2026-08-21",
     "last_flagged": "2026-08-21",
@@ -2237,8 +2326,8 @@
   },
   "https://www.ebay.com/itm/237163529603": {
     "first_seen": "2026-11-11",
-    "last_flagged": "2026-11-11",
-    "price": 2.25,
+    "last_flagged": "2026-11-13",
+    "price": 1.99,
     "shown_only": true
   },
   "https://www.ebay.com/itm/237163541593": {
@@ -2269,6 +2358,12 @@
     "first_seen": "2026-11-12",
     "last_flagged": "2026-11-12",
     "price": 24.99,
+    "shown_only": true
+  },
+  "https://www.ebay.com/itm/237180265166": {
+    "first_seen": "2026-11-13",
+    "last_flagged": "2026-11-13",
+    "price": 29.99,
     "shown_only": true
   },
   "https://www.ebay.com/itm/257789311006": {
@@ -2561,6 +2656,12 @@
     "first_seen": "2026-11-10",
     "last_flagged": "2026-11-10",
     "price": 29.99,
+    "shown_only": true
+  },
+  "https://www.ebay.com/itm/267842755018": {
+    "first_seen": "2026-11-13",
+    "last_flagged": "2026-11-13",
+    "price": 99.99,
     "shown_only": true
   },
   "https://www.ebay.com/itm/278301002589": {
@@ -2951,6 +3052,11 @@
     "price": 105.0,
     "shown_only": true
   },
+  "https://www.ebay.com/itm/307281145914": {
+    "first_seen": "2026-11-13",
+    "last_flagged": "2026-11-13",
+    "price": 75.0
+  },
   "https://www.ebay.com/itm/318822530694": {
     "first_seen": "2026-09-11",
     "last_flagged": "2026-09-11",
@@ -3052,6 +3158,12 @@
     "first_seen": "2026-11-11",
     "last_flagged": "2026-11-11",
     "price": 79.99,
+    "shown_only": true
+  },
+  "https://www.ebay.com/itm/327452015606": {
+    "first_seen": "2026-11-13",
+    "last_flagged": "2026-11-13",
+    "price": 36.0,
     "shown_only": true
   },
   "https://www.ebay.com/itm/336775324609": {
@@ -3300,6 +3412,12 @@
     "first_seen": "2026-11-04",
     "last_flagged": "2026-11-04",
     "price": 175.0,
+    "shown_only": true
+  },
+  "https://www.ebay.com/itm/336880319232": {
+    "first_seen": "2026-11-13",
+    "last_flagged": "2026-11-13",
+    "price": 0.99,
     "shown_only": true
   },
   "https://www.ebay.com/itm/336882172787": {
@@ -3612,10 +3730,22 @@
     "last_flagged": "2026-11-11",
     "price": 89.99
   },
+  "https://www.ebay.com/itm/366802477708": {
+    "first_seen": "2026-11-13",
+    "last_flagged": "2026-11-13",
+    "price": 20.5,
+    "shown_only": true
+  },
   "https://www.ebay.com/itm/366803681393": {
     "first_seen": "2026-11-12",
     "last_flagged": "2026-11-12",
     "price": 20.0,
+    "shown_only": true
+  },
+  "https://www.ebay.com/itm/366805926699": {
+    "first_seen": "2026-11-13",
+    "last_flagged": "2026-11-13",
+    "price": 22.72,
     "shown_only": true
   },
   "https://www.ebay.com/itm/377437303654": {
@@ -4026,6 +4156,12 @@
     "price": 35.0,
     "shown_only": true
   },
+  "https://www.ebay.com/itm/377627582447": {
+    "first_seen": "2026-11-13",
+    "last_flagged": "2026-11-13",
+    "price": 5.5,
+    "shown_only": true
+  },
   "https://www.ebay.com/itm/377633220960": {
     "first_seen": "2026-11-09",
     "last_flagged": "2026-11-09",
@@ -4044,10 +4180,22 @@
     "price": 120.0,
     "shown_only": true
   },
+  "https://www.ebay.com/itm/377637894056": {
+    "first_seen": "2026-11-13",
+    "last_flagged": "2026-11-13",
+    "price": 127.5,
+    "shown_only": true
+  },
   "https://www.ebay.com/itm/377638075762": {
     "first_seen": "2026-11-11",
     "last_flagged": "2026-11-11",
     "price": 39.13,
+    "shown_only": true
+  },
+  "https://www.ebay.com/itm/377641328522": {
+    "first_seen": "2026-11-13",
+    "last_flagged": "2026-11-13",
+    "price": 59.99,
     "shown_only": true
   },
   "https://www.ebay.com/itm/398310661674": {
@@ -4308,6 +4456,18 @@
     "first_seen": "2026-11-11",
     "last_flagged": "2026-11-11",
     "price": 165.0,
+    "shown_only": true
+  },
+  "https://www.ebay.com/itm/407358509093": {
+    "first_seen": "2026-11-13",
+    "last_flagged": "2026-11-13",
+    "price": 45.0,
+    "shown_only": true
+  },
+  "https://www.ebay.com/itm/407360801475": {
+    "first_seen": "2026-11-13",
+    "last_flagged": "2026-11-13",
+    "price": 79.0,
     "shown_only": true
   },
   "https://www.ebay.com/itm/800543302428": {
@@ -4596,6 +4756,17 @@
     "price": 79.99,
     "shown_only": true
   },
+  "https://www.ebay.com/itm/800909609707": {
+    "first_seen": "2026-11-13",
+    "last_flagged": "2026-11-13",
+    "price": 45.99
+  },
+  "https://www.ebay.com/itm/800910257695": {
+    "first_seen": "2026-11-13",
+    "last_flagged": "2026-11-13",
+    "price": 59.99,
+    "shown_only": true
+  },
   "https://www.ebay.com/itm/820028489867": {
     "first_seen": "2026-08-21",
     "last_flagged": "2026-08-21",
@@ -4805,6 +4976,18 @@
     "price": 1.0,
     "shown_only": true
   },
+  "https://www.ebay.com/itm/820326143677": {
+    "first_seen": "2026-11-13",
+    "last_flagged": "2026-11-13",
+    "price": 1.99,
+    "shown_only": true
+  },
+  "https://www.ebay.com/itm/820326718662": {
+    "first_seen": "2026-11-13",
+    "last_flagged": "2026-11-13",
+    "price": 31.0,
+    "shown_only": true
+  },
   "https://www.ebay.com/itm/820328279887": {
     "first_seen": "2026-11-08",
     "last_flagged": "2026-11-08",
@@ -4815,6 +4998,12 @@
     "first_seen": "2026-11-12",
     "last_flagged": "2026-11-12",
     "price": 45.0,
+    "shown_only": true
+  },
+  "https://www.ebay.com/itm/820348185589": {
+    "first_seen": "2026-11-13",
+    "last_flagged": "2026-11-13",
+    "price": 80.0,
     "shown_only": true
   },
   "https://www.ebay.com/itm/840007187394": {
@@ -4968,6 +5157,12 @@
     "first_seen": "2026-11-09",
     "last_flagged": "2026-11-09",
     "price": 25.0,
+    "shown_only": true
+  },
+  "https://www.ebay.com/itm/840122853749": {
+    "first_seen": "2026-11-13",
+    "last_flagged": "2026-11-13",
+    "price": 30.05,
     "shown_only": true
   },
   "https://www.ebay.com/itm/860035543609": {
@@ -5226,6 +5421,12 @@
     "price": 177.5,
     "shown_only": true
   },
+  "https://www.ebay.com/itm/860141021254": {
+    "first_seen": "2026-11-13",
+    "last_flagged": "2026-11-13",
+    "price": 21.17,
+    "shown_only": true
+  },
   "https://www.ebay.com/itm/880008075036": {
     "first_seen": "2026-10-18",
     "last_flagged": "2026-10-18",
@@ -5386,6 +5587,12 @@
     "first_seen": "2026-10-31",
     "last_flagged": "2026-10-31",
     "price": 45.0,
+    "shown_only": true
+  },
+  "https://www.ebay.com/itm/880068745329": {
+    "first_seen": "2026-11-13",
+    "last_flagged": "2026-11-13",
+    "price": 19.64,
     "shown_only": true
   },
   "https://www.ebay.com/itm/880069231641": {
@@ -6063,6 +6270,12 @@
     "price": 148.0,
     "shown_only": true
   },
+  "https://www.ebay.com/itm/940086724449": {
+    "first_seen": "2026-11-13",
+    "last_flagged": "2026-11-13",
+    "price": 26.0,
+    "shown_only": true
+  },
   "https://www.ebay.com/itm/960072303984": {
     "first_seen": "2026-10-17",
     "last_flagged": "2026-10-17",
@@ -6247,6 +6460,18 @@
     "first_seen": "2026-11-08",
     "last_flagged": "2026-11-08",
     "price": 27.5,
+    "shown_only": true
+  },
+  "https://www.ebay.com/itm/960164005886": {
+    "first_seen": "2026-11-13",
+    "last_flagged": "2026-11-13",
+    "price": 3.0,
+    "shown_only": true
+  },
+  "https://www.ebay.com/itm/960164160550": {
+    "first_seen": "2026-11-13",
+    "last_flagged": "2026-11-13",
+    "price": 1.25,
     "shown_only": true
   }
 }
